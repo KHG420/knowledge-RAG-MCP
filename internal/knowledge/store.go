@@ -586,6 +586,108 @@ func (s *Store) ListDocuments() ([]DocumentMeta, error) {
 	return docs, nil
 }
 
+// SnapshotPath returns the path to the list snapshot file.
+func (s *Store) SnapshotPath() string {
+	return filepath.Join(s.knowledgeDir(), "LIST_SNAPSHOT.json")
+}
+
+// ListChecksum computes a SHA256 checksum over the full list of DocumentMeta
+// serialized as JSON. This is used to detect if the knowledge base has changed.
+func ListChecksum(docs []DocumentMeta) string {
+	h := sha256.New()
+	data, _ := json.Marshal(docs)
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// WriteListSnapshot saves the full document list and its checksum to the
+// snapshot file. If docs is nil or empty, the file is removed.
+func (s *Store) WriteListSnapshot(docs []DocumentMeta) error {
+	if len(docs) == 0 {
+		os.Remove(s.SnapshotPath())
+		return nil
+	}
+	cs := ListChecksum(docs)
+	snapshot := struct {
+		Checksum  string         `json:"checksum"`
+		UpdatedAt time.Time      `json:"updated_at"`
+		Documents []DocumentMeta `json:"documents"`
+	}{
+		Checksum:  cs,
+		UpdatedAt: time.Now(),
+		Documents: docs,
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal snapshot: %w", err)
+	}
+	if err := os.WriteFile(s.SnapshotPath(), data, 0o644); err != nil {
+		return fmt.Errorf("write snapshot: %w", err)
+	}
+	return nil
+}
+
+// ReadListSnapshot reads the snapshot file and returns the saved checksum
+// and document list. Returns empty checksum and nil docs if the file doesn't
+// exist, so callers can treat "no snapshot" as "needs refresh".
+func (s *Store) ReadListSnapshot() (checksum string, docs []DocumentMeta, err error) {
+	data, readErr := os.ReadFile(s.SnapshotPath())
+	if os.IsNotExist(readErr) {
+		return "", nil, nil
+	}
+	if readErr != nil {
+		return "", nil, fmt.Errorf("read snapshot: %w", readErr)
+	}
+	var snapshot struct {
+		Checksum  string         `json:"checksum"`
+		UpdatedAt time.Time      `json:"updated_at"`
+		Documents []DocumentMeta `json:"documents"`
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return "", nil, fmt.Errorf("unmarshal snapshot: %w", err)
+	}
+	return snapshot.Checksum, snapshot.Documents, nil
+}
+
+// ListWithSnapshot returns the full document list. On first call or when the
+// knowledge base has changed (checksum mismatch), it regenerates the snapshot
+// file. On subsequent calls with no changes, it returns cached data without
+// writing to disk.
+func (s *Store) ListWithSnapshot() ([]DocumentMeta, error) {
+	docs, err := s.ListDocuments()
+	if err != nil {
+		return nil, err
+	}
+
+	// If no documents, clean up and return.
+	if len(docs) == 0 {
+		os.Remove(s.SnapshotPath())
+		return docs, nil
+	}
+
+	cs := ListChecksum(docs)
+	savedCS, _, _ := s.ReadListSnapshot()
+
+	if savedCS != cs {
+		// Knowledge base changed: regenerate snapshot.
+		_ = s.WriteListSnapshot(docs)
+	}
+
+	return docs, nil
+}
+
+// ListWithLimit returns up to n documents from the full list.
+func (s *Store) ListWithLimit(n int) ([]DocumentMeta, error) {
+	docs, err := s.ListDocuments()
+	if err != nil {
+		return nil, err
+	}
+	if len(docs) > n {
+		docs = docs[:n]
+	}
+	return docs, nil
+}
+
 // Exists checks whether a document slug exists.
 func (s *Store) Exists(slug string) bool {
 	_, err := os.Stat(s.DocDir(slug))

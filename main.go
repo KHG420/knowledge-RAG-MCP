@@ -176,15 +176,22 @@ func registerList(s *server.MCPServer, store *knowledge.Store) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		docs, err := store.List()
+		display, full, err := store.ListPreview(10)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		if len(docs) == 0 {
+		if len(display) == 0 {
 			return mcp.NewToolResultText("Knowledge base is empty."), nil
 		}
-		data, _ := json.MarshalIndent(docs, "", "  ")
-		return mcp.NewToolResultText(string(data)), nil
+
+		// Notify the user if there are more docs than shown.
+		var msg string
+		if len(full) > 10 {
+			msg = fmt.Sprintf("Showing %d of %d documents. Full list saved to snapshot file.\n\n", len(display), len(full))
+		}
+
+		data, _ := json.MarshalIndent(display, "", "  ")
+		return mcp.NewToolResultText(msg + string(data)), nil
 	})
 }
 
