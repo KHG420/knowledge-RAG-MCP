@@ -6,8 +6,9 @@ import (
 )
 
 // paperIndicators are section headings whose presence suggests the text is an
-// academic paper. At least 2 must match for looksLikePaper to return true.
+// academic paper. At least 1 must match for looksLikePaper to return true.
 var paperIndicators = []string{
+	// English
 	"abstract",
 	"introduction",
 	"related work",
@@ -17,24 +18,29 @@ var paperIndicators = []string{
 	"references",
 	"discussion",
 	"results",
+	// Chinese
+	"摘要",
+	"引言",
+	"相关工作",
+	"方法论",
+	"实验",
+	"结论",
+	"参考文献",
+	"讨论",
 }
 
 // looksLikePaper heuristically determines whether the given plain text looks
-// like an academic paper by scanning the first ~2000 characters for at least 2
-// standard paper section headings.
+// like an academic paper by scanning the first ~6000 characters for at least 1
+// standard paper section heading ("abstract" alone is a strong signal).
 func looksLikePaper(text string) bool {
 	head := text
-	if len(head) > 2000 {
-		head = head[:2000]
+	if len(head) > 6000 {
+		head = head[:6000]
 	}
 	lower := strings.ToLower(head)
-	hits := 0
 	for _, ind := range paperIndicators {
 		if strings.Contains(lower, ind) {
-			hits++
-			if hits >= 2 {
-				return true
-			}
+			return true
 		}
 	}
 	return false
@@ -68,9 +74,13 @@ func ExtractPaperMeta(text string) (title string, authors []string, abstract str
 		title = cleanTitle(lines[titleLine])
 	}
 
-	// Phase 3: extract authors (lines between title and abstract).
+	// Phase 3: extract authors (lines between title and abstract, capped at 20).
 	if titleLine >= 0 && abstractStart > 0 {
-		authorLines := lines[titleLine+1 : abstractStart]
+		end := abstractStart
+		if end > titleLine+1+20 {
+			end = titleLine + 1 + 20 // max 20 lines after title
+		}
+		authorLines := lines[titleLine+1 : end]
 		authors = extractAuthors(authorLines)
 	}
 
@@ -100,12 +110,12 @@ func locateLandmarks(lines []string) (titleLine, abstractStart, abstractEnd int)
 		}
 	}
 
-	// If no abstract heading found, search for "abstract" as a standalone word.
+	// If no abstract heading found, search for "abstract" / "摘要" as a standalone word.
 	if abstractStart < 0 {
 		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			lower := strings.ToLower(trimmed)
-			if lower == "abstract" || lower == "abstract." {
+			if lower == "abstract" || lower == "abstract." || lower == "摘要" || lower == "摘要：" {
 				abstractStart = i
 				break
 			}
@@ -147,8 +157,8 @@ func locateLandmarks(lines []string) (titleLine, abstractStart, abstractEnd int)
 			titleLine = i
 			break
 		}
-		// Short initial lines (no punctuation as sentence) → likely title.
-		if len(trimmed) < 120 && !strings.ContainsAny(trimmed, ".?!") {
+		// Short initial lines (no sentence-ending punctuation except ?) → likely title.
+		if len(trimmed) < 120 && !strings.ContainsAny(trimmed, ".!") {
 			// Skip lines that look like author content.
 			if !looksLikeAuthorLine(trimmed) {
 				titleLine = i
@@ -209,12 +219,21 @@ func extractAuthors(lines []string) []string {
 
 // looksLikeAuthorLine heuristically checks if a line contains author-like
 // content: commas separating names, "@" emails, or " and " between names,
-// while being reasonably short (< 300 chars).
+// while being reasonably short (< 200 chars) and not looking like prose.
 func looksLikeAuthorLine(line string) bool {
 	lower := strings.ToLower(line)
 	// Too long → likely paragraph text.
-	if len(line) > 300 {
+	if len(line) > 200 {
 		return false
+	}
+	// Contains common prose words → not an author line.
+	proseWords := []string{"however", "therefore", "moreover", "furthermore",
+		"specifically", "consequently", "additionally", "nevertheless",
+		"in this", "we propose", "our method", "experiment", "result"}
+	for _, w := range proseWords {
+		if strings.Contains(lower, w) {
+			return false
+		}
 	}
 	// Contains email → clearly author line.
 	if strings.Contains(line, "@") {
@@ -226,7 +245,6 @@ func looksLikeAuthorLine(line string) bool {
 	}
 	// Contains " and " in the middle (e.g. "John Doe and Jane Smith").
 	if strings.Contains(lower, " and ") {
-		// Make sure it's not a sentence fragment like "theory and practice".
 		idx := strings.Index(lower, " and ")
 		if idx > 0 && idx < len(lower)-6 {
 			return true
