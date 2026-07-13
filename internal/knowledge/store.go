@@ -580,6 +580,7 @@ func (s *Store) ListDocuments() ([]DocumentMeta, error) {
 		if err != nil {
 			continue // skip invalid entries
 		}
+		meta.Slug = e.Name()
 		docs = append(docs, meta)
 	}
 	return docs, nil

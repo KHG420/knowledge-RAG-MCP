@@ -31,7 +31,8 @@ import "time"
 // DocumentMeta is the per-document metadata persisted in meta.json.
 type DocumentMeta struct {
 	OriginalName string    `json:"original_name"`
-	SourceType   string    `json:"source_type"` // e.g. "pdf", "docx", "md", "txt"
+	Slug         string    `json:"slug"`          // unique identifier, e.g. "2501-05366v1-20260713-094555"
+	SourceType   string    `json:"source_type"`   // e.g. "pdf", "docx", "md", "txt"
 	AddedAt      time.Time `json:"added_at"`
 	ChunkCount   int       `json:"chunk_count"`
 	TotalChars   int       `json:"total_chars"`
