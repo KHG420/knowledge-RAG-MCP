@@ -2,8 +2,6 @@
 
 MCP (Model Context Protocol) server that provides a local, file-based knowledge base with BM25 full-text search and optional hybrid (BM25 + embedding) retrieval.
 
-Extracted from the [Reasonix](https://github.com/aq/DeepSeek-Reasonix) knowledge base subsystem.
-
 ## Features
 
 - **Document ingestion** — PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT
