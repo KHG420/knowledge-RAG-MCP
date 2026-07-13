@@ -28,10 +28,11 @@ const boundaryMergeM = 5 // G12: number of new head chunks for incremental bound
 type Store struct {
 	root    string // workspace root (contains .reasonix/)
 	dataDir string // if set, overrides the default knowledge dir path (.reasonix/knowledge/)
-	rewriter     QueryRewriter
-	embedder     Embedder
-	reranker     Reranker
-	searchLogger SearchLogger
+	rewriter           QueryRewriter
+	embedder           Embedder
+	reranker           Reranker
+	rerankCandidateLimit int   // max candidates fed to reranker (default 100)
+	searchLogger       SearchLogger
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
 }
 

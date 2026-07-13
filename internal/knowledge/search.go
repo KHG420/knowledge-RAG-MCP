@@ -514,14 +514,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		results = trimmed
 	}
 
-	// Phase 8: cap to limit.
-	if len(results) > limit {
-		results = results[:limit]
-	}
-
-	// Phase 8a: reranker (optional). If a Reranker is configured, re-score the
-	// top results using a cross-encoder for improved precision. The reranker
-	// scores replace the RRF scores.
+	// Phase 8: reranker (optional). Applied BEFORE the final cap so the
+	// cross-encoder sees the full candidate pool (up to rerankCandidateLimit).
+	// When no reranker is configured, this is a no-op.
 	if s.reranker != nil && len(results) > 0 {
 		entries := make([]searchEntry, len(results))
 		scores := make([]float64, len(results))
@@ -534,6 +529,11 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		for i := range newEntries {
 			results[i] = hybridRanked{entry: newEntries[i], rrfScore: newScores[i]}
 		}
+	}
+
+	// Phase 9: cap to limit — AFTER rerank so cross-encoder sees all candidates.
+	if len(results) > limit {
+		results = results[:limit]
 	}
 
 	// Phase 9: read chunk text for index-path results.
@@ -777,9 +777,15 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 		return entries, scores
 	}
 
-	candLimit := limit * 2
-	if candLimit < 20 {
-		candLimit = 20
+	// candLimit controls how many top-N BM25 results are fed to the reranker.
+	// When RerankCandidateLimit is set (>0), use it. Otherwise fall back to
+	// the legacy heuristic (limit×2, min 20).
+	candLimit := s.rerankCandidateLimit
+	if candLimit <= 0 {
+		candLimit = limit * 2
+		if candLimit < 20 {
+			candLimit = 20
+		}
 	}
 	n := len(entries)
 	if n > candLimit {

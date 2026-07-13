@@ -268,6 +268,13 @@ func (s *Store) SetReranker(r Reranker) {
 	s.reranker = r
 }
 
+// SetRerankCandidateLimit sets the maximum number of candidates passed to the
+// reranker. Default 0 means use the legacy limit*2 heuristic. Set to 100 or more
+// for a proper "wide recall → fine rerank" two-stage pipeline.
+func (s *Store) SetRerankCandidateLimit(n int) {
+	s.rerankCandidateLimit = n
+}
+
 // SetEmbedder configures the vector embedder on the store. When set, uploaded
 // documents will have their chunk vectors pre-computed and stored in the index,
 // enabling hybrid (BM25 + dense) search.

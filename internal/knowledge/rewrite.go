@@ -32,7 +32,20 @@ type SynonymRewriter struct {
 
 // NewSynonymRewriter returns a SynonymRewriter with a built-in synonym map.
 func NewSynonymRewriter() *SynonymRewriter {
-	return &SynonymRewriter{m: builtinSynonyms}
+	// Copy the built-in map so per-instance additions don't leak.
+	m := make(map[string][]string, len(builtinSynonyms))
+	for k, v := range builtinSynonyms {
+		m[k] = append([]string{}, v...)
+	}
+	return &SynonymRewriter{m: m}
+}
+
+// AddSynonym registers a custom synonym pair: given the canonical term,
+// searching for it will also match the synonym (and vice versa).
+func (r *SynonymRewriter) AddSynonym(term, synonym string) {
+	term = strings.ToLower(term)
+	synonym = strings.ToLower(synonym)
+	r.m[term] = append(r.m[term], synonym)
 }
 
 // Rewrite expands the query by adding synonym alternatives. The original query
