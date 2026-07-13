@@ -17,6 +17,8 @@ go.work
 .vscode/
 *.swp
 *.swo
+.reasonix/
+.codegraph/
 
 # OS
 .DS_Store
