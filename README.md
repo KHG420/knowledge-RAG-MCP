@@ -1,14 +1,16 @@
 # knowledge-mcp
 
-MCP (Model Context Protocol) server that provides a local, file-based knowledge base with BM25 full-text search and optional hybrid (BM25 + embedding) retrieval.
+MCP (Model Context Protocol) server that provides a local, file-based knowledge base with BM25 keyword search, hybrid (BM25 + vector) retrieval, and optional two-stage Cross-Encoder reranking.
 
 ## Features
 
 - **Document ingestion** — PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT
-- **BM25 search** — Unicode-aware, CJK bigram-aware tokenizer
-- **Hybrid search** — BM25 + dense embedding via Reciprocal Rank Fusion (optional, requires embedding API)
-- **Paragraph-level chunking** with semantic merging and hierarchical (fine + coarse) sections
-- **Paper metadata extraction** — title, authors, abstract for academic papers
+- **BM25 search** — Unicode-aware, CJK bigram-aware tokenizer with query rewriting
+- **Hybrid search** — BM25 + dense embedding fusion via Reciprocal Rank Fusion (RRF) with adaptive query-type weighting
+- **Two-stage reranking** — optional Cross-Encoder (Infinity/Cohere-compatible) to re-rank the top-K recalls for improved precision
+- **Paragraph-level chunking** — semantic-boundary splitting, overlap, hierarchical fine + coarse sections, section-role classification
+- **Parent-child retrieval** — read a chunk's full parent section for richer context
+- **Paper metadata extraction** — title, authors, abstract, section-role detection for academic papers
 
 ## Installation
 
@@ -16,72 +18,186 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 go install ./...
 ```
 
-## Usage
+## Quick Start
 
-### Configure
-
-Set the data directory via environment variable (defaults to `<cwd>/.reasonix/knowledge/`):
+### Minimal (BM25 only, zero dependencies)
 
 ```bash
-export KNOWLEDGE_MCP_DATA_DIR=/path/to/data
-```
-
-### Run as MCP server (stdio transport)
-
-```bash
+export KNOWLEDGE_MCP_DATA_DIR=./kb-data
 knowledge-mcp
 ```
 
-Add to your MCP client (e.g. Claude Desktop, Reasonix):
+### Full stack (BM25 + embeddings + reranker)
 
-```json
-{
-  "mcpServers": {
-    "knowledge": {
-      "command": "/path/to/knowledge-mcp",
-      "env": {
-        "KNOWLEDGE_MCP_DATA_DIR": "/path/to/data"
-      }
-    }
-  }
-}
+Refer to [docs/deployment-models.md](docs/deployment-models.md) for detailed model deployment instructions.
+
+```bash
+# Embedding service (Ollama + BGE-M3)
+ollama pull bge-m3
+
+# Reranker service (Infinity + gte-multilingual-reranker-base)
+pip install infinity-emb[all]
+infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
+
+# knowledge-mcp
+EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_MODEL=bge-m3 \
+RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_CANDIDATE_LIMIT=100 \
+KNOWLEDGE_MCP_DATA_DIR=./kb-data \
+  knowledge-mcp
 ```
 
-### MCP Tools
+## Environment Variables
 
-| Tool | Description |
-|------|-------------|
-| `knowledge_search` | BM25/hybrid search across all documents |
-| `knowledge_read` | Read a specific chunk by docSlug + chunkID |
-| `knowledge_list` | List all uploaded documents |
-| `knowledge_upload` | Upload a file or batch-upload a directory |
-| `knowledge_remove` | Remove a document and all its chunks |
+### Required
 
-### Supported file formats
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KNOWLEDGE_MCP_DATA_DIR` | `.reasonix/knowledge/` | Knowledge base storage directory |
 
-`.md` `.txt` `.pdf` `.docx` `.odt` `.epub` `.html` `.xlsx` `.pptx`
+### Embedding (hybrid search)
 
-## Storage layout
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBED_API_BASE_URL` | — | OpenAI-compatible `/v1/embeddings` endpoint |
+| `EMBED_MODEL` | `text-embedding-ada-002` | Model name |
+| `EMBED_API_KEY` | — | API key (not needed for Ollama) |
+| `EMBED_DIM` | auto-detect | Vector dimension |
+
+### Reranker (two-stage retrieval)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RERANK_API_BASE_URL` | `http://localhost:7997` | Infinity/Cohere-compatible `/rerank` endpoint |
+| `RERANK_MODEL` | `gte-multilingual-reranker-base` | Cross-Encoder model name |
+| `RERANK_API_KEY` | — | API key (not needed for self-hosted) |
+| `RERANK_CANDIDATE_LIMIT` | `100` | How many BM25/RRF candidates to feed the reranker |
+
+### Search behavior
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUERY_REWRITE_SYNONYMS` | — | Custom synonym pairs, format: `term:syn,term:syn` |
+
+## MCP Tools
+
+### `knowledge_search`
+
+Search across all documents. Supports BM25 (default) and hybrid modes.
+When a reranker is configured, results go through two-stage retrieval:
+BM25/RRF recall → Cross-Encoder re-rank → final top-K.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `search_keywords` | **yes** | Rewritten keyword string (space-separated). Do NOT pass the user's raw question — fix typos, expand context, add synonyms first |
+| `original_question` | no | User's original question verbatim (for logging) |
+| `query` | no | **Deprecated** — use `search_keywords` |
+| `limit` | no | Max results (default 8, max 20) |
+| `mode` | no | `bm25` or `hybrid` (auto-picks hybrid if embedder available) |
+| `sourceType` | no | Filter by file extension: `pdf`, `md`, `txt`, etc. |
+| `section` | no | Filter chunks whose section heading contains this substring |
+
+### `knowledge_read`
+
+Read a specific chunk or its full parent section.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `docSlug` | **yes** | Document slug (from search/list results) |
+| `chunkID` | **yes** | Chunk identifier, e.g. `005` |
+| `context` | no | Adjacent chunks to include before/after (default 0, max 5) |
+| `level` | no | `chunk` (default) or `section` — reads the full parent section |
+
+### `knowledge_list`
+
+List all uploaded documents with metadata.
+
+### `knowledge_upload`
+
+Upload a single file or batch-upload a directory.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `filePath` | * | Path to a single file |
+| `directory` | * | Directory path for batch upload |
+| `recursive` | no | Recurse into subdirectories (for batch) |
+
+\* Exactly one of `filePath` or `directory` is required.
+
+### `knowledge_remove`
+
+Remove a document and all its chunks.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `docSlug` | **yes** | Document slug to remove (from list results) |
+
+## Search Pipeline
+
+```
+query → query rewriting (synonyms) → tokenization
+  → Phase 1: Fast Recall ─────────────────────
+  │   BM25 keyword scoring
+  │   + optional dense embedding cosine similarity
+  │   → RRF fusion (adaptive query-type weights)
+  │   → top-N candidates (default N=100)
+  → Phase 2: Precision Re-rank ────────────────  [if reranker configured]
+  │   Cross-Encoder scores each (query, chunk) pair
+  │   → re-sort by relevance score
+  → cap to limit → snippet generation → deduplicate → return
+```
+
+**Graceful degradation**: Without an embedder, hybrid falls back to pure BM25.
+Without a reranker, the pipeline skips Phase 2 and returns RRF/BM25 results directly.
+
+## Storage Layout
 
 ```
 <data-dir>/
 ├── INDEX.md
 ├── .searchlog.jsonl
 └── <document-slug>/
-    ├── meta.json
-    ├── CHUNKS.toml
-    ├── source.<ext>
+    ├── meta.json          # OriginalName, SourceType, AddedAt, Title, Authors, Abstract
+    ├── CHUNKS.toml        # Per-chunk: terms, vector, section, offset, sectionRole
+    ├── source.<ext>       # Original file copy
     └── chunks/
-        ├── 000.md
+        ├── 000.md         # Fine-grained chunks
         ├── 001.md
-        └── ...
+        └── sections/
+            ├── S00.md     # Coarse section-level chunks
+            └── S01.md
 ```
 
-## Dependencies
+## Architecture
 
-- [tabula](https://github.com/tsawler/tabula) — document parsing (MIT)
-- [toml](https://github.com/BurntSushi/toml) — index serialization (MIT)
-- [mcp-go](https://github.com/mark3labs/mcp-go) — MCP protocol (MIT)
+```
+main.go                  — MCP server setup, tool registration, env parsing
+internal/
+  knowledge/
+    store.go             — Store struct, data dir management
+    search.go            — Search, HybridSearch, SearchDocuments, coarseToFine, rerankTop
+    chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge
+    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit
+    embed.go             — Embedder interface, OpenAIEmbedder, Reranker interface
+    rerank.go            — InfinityReranker (Cohere/Infinity-compatible)
+    rewrite.go           — QueryRewriter interface, SynonymRewriter
+    rewrite_llm.go       — LLMQueryRewriter (optional LLM-based expansion)
+    upload.go            — UploadDocument, UploadDirectory
+    upload_doc.go        — Format-specific parsers (PDF, DOCX, etc.)
+    parser.go            — Document parser dispatch
+    inverted.go          — Inverted index for accelerated candidate lookup (G7)
+    list.go              — ListPreview, ReadChunk, ReadChunkContext
+    remove.go            — RemoveDocument
+    searchlog.go         — FileSearchLogger
+    meta_extract.go      — Paper metadata extraction
+    store_index.go       — CHUNKS.toml read/write
+  retrieval/
+    bm25.go              — Tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
+docs/
+  deployment-models.md   — Embedding & reranker model deployment guide
+  roadmap.md             — RAG optimization roadmap
+```
 
 ## License
 
