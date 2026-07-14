@@ -32,13 +32,13 @@
 
 **计划**:
 
-- [ ] `SearchFilter` 新增字段:
+- [x] `SearchFilter` 新增字段:
   - `Tags []string` — 标签白名单（文档必须有至少一个匹配标签）
   - `AddedAfter` / `AddedBefore` — 上传时间范围 (`meta.json` 已有 `AddedAt`)
-- [ ] `meta.json` 结构新增 `Tags []string`
-- [ ] `knowledge_upload` 工具新增可选 `tags` 参数 (逗号分隔)
-- [ ] `knowledge_search` 工具新增可选 `tags` 参数
-- [ ] `collectEntries` / `collectEntriesFromCandidates` 增加标签和时间过滤逻辑
+- [x] `meta.json` 结构新增 `Tags []string`
+- [x] `knowledge_upload` 工具新增可选 `tags` 参数 (逗号分隔)
+- [x] `knowledge_search` 工具新增可选 `tags` / `addedAfter` / `addedBefore` 参数
+- [x] `collectEntries` / `collectEntriesFromCandidates` 增加标签和时间过滤逻辑
 
 ### 2. Coarse 模式暴露到 MCP 工具
 

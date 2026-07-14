@@ -20,7 +20,7 @@ import (
 // The original file is NOT copied into the knowledge base by this method; the
 // caller is responsible for preserving source.<ext> if desired. Returns the
 // generated slug and the metadata written.
-func (s *Store) UploadDocument(path string) (DocumentMeta, error) {
+func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
 	// Step 1: parse.
 	text, err := ParseFile(path)
 	if err != nil {
@@ -58,6 +58,7 @@ func (s *Store) UploadDocument(path string) (DocumentMeta, error) {
 		AddedAt:      time.Now().Truncate(time.Second),
 		ChunkCount:   len(chunks),
 		TotalChars:   len(text),
+		Tags:         tags,
 	}
 
 	// C1: attempt paper metadata extraction for paper-like documents.
@@ -129,7 +130,7 @@ func (s *Store) updateIndex(slug string, meta DocumentMeta) error {
 // UploadDirectory ingests all supported document files under dir. When recursive
 // is true it walks subdirectories; otherwise it scans only the top level.
 // Returns a summary string for the caller (e.g. "Uploaded 5 documents (3 pdf, 2 md), 0 failures").
-func (s *Store) UploadDirectory(dir string, recursive bool) (string, error) {
+func (s *Store) UploadDirectory(dir string, recursive bool, tags ...string) (string, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return "", fmt.Errorf("access directory %q: %w", dir, err)
@@ -160,7 +161,7 @@ func (s *Store) UploadDirectory(dir string, recursive bool) (string, error) {
 		default:
 			return nil
 		}
-		_, uploadErr := s.UploadDocument(path)
+		_, uploadErr := s.UploadDocument(path, tags...)
 		results = append(results, result{path: path, ext: ext, err: uploadErr})
 		return nil // never abort the walk for individual file failures
 	}

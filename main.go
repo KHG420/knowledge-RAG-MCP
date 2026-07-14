@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -121,6 +122,15 @@ Examples of required rewriting:
 		mcp.WithString("section",
 			mcp.Description("Filter chunks whose section heading contains this substring."),
 		),
+		mcp.WithString("tags",
+			mcp.Description("Comma-separated tags. Only documents matching at least one tag are returned."),
+		),
+		mcp.WithString("addedAfter",
+			mcp.Description("ISO 8601 date (e.g. '2026-07-01' or '2026-07-01T00:00:00Z'). Only docs added at or after this time."),
+		),
+		mcp.WithString("addedBefore",
+			mcp.Description("ISO 8601 date (e.g. '2026-07-31' or '2026-07-31T23:59:59Z'). Only docs added at or before this time."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -142,8 +152,11 @@ Examples of required rewriting:
 		}
 
 		filter := knowledge.SearchFilter{
-			SourceType: getString(req, "sourceType"),
-			Section:    getString(req, "section"),
+			SourceType:  getString(req, "sourceType"),
+			Section:     getString(req, "section"),
+			Tags:        parseTags(getString(req, "tags")),
+			AddedAfter:  parseTime(getString(req, "addedAfter")),
+			AddedBefore: parseTime(getString(req, "addedBefore")),
 		}
 
 		var hits []knowledge.SearchHit
@@ -269,11 +282,15 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		mcp.WithBoolean("recursive",
 			mcp.Description("When true, recursively walk subdirectories (for batch upload)."),
 		),
+		mcp.WithString("tags",
+			mcp.Description("Comma-separated tags to assign to the uploaded document(s)."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		filePath := getString(req, "filePath")
 		directory := getString(req, "directory")
+		tags := parseTags(getString(req, "tags"))
 		recursive := false
 		if v, ok := req.Params.Arguments["recursive"].(bool); ok {
 			recursive = v
@@ -283,7 +300,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 			if filePath != "" {
 				return mcp.NewToolResultError("filePath and directory are mutually exclusive"), nil
 			}
-			summary, err := store.UploadDirectory(directory, recursive)
+			summary, err := store.UploadDirectory(directory, recursive, tags...)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("batch upload failed: %v", err)), nil
 			}
@@ -293,7 +310,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		if filePath == "" {
 			return mcp.NewToolResultError("filePath or directory is required for upload"), nil
 		}
-		meta, err := store.UploadDocument(filePath)
+		meta, err := store.UploadDocument(filePath, tags...)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("upload failed: %v", err)), nil
 		}
@@ -330,4 +347,37 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 func getString(req mcp.CallToolRequest, key string) string {
 	v, _ := req.Params.Arguments[key].(string)
 	return v
+}
+
+// parseTags splits a comma-separated tag string, trims whitespace,
+// and filters out empty strings.
+func parseTags(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseTime parses an ISO 8601 date string, supporting both date-only
+// ("2006-01-02") and full RFC 3339 ("2006-01-02T15:04:05Z07:00") formats.
+// Returns the zero time on empty input or parse failure.
+func parseTime(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		return t
+	}
+	return time.Time{}
 }

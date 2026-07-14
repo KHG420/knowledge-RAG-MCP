@@ -40,6 +40,7 @@ type DocumentMeta struct {
 	Authors      []string  `json:"authors,omitempty"`  // extracted paper authors (C1)
 	Abstract     string    `json:"abstract,omitempty"` // extracted abstract text (C1)
 	IsPaper      bool      `json:"is_paper,omitempty"` // true when looksLikePaper(text) during upload (G13)
+	Tags         []string  `json:"tags,omitempty"`     // user-assigned labels for filtering (G15)
 }
 
 // Chunk is a single paragraph-level slice of a document, stored as 000.md etc.
@@ -72,13 +73,16 @@ type SearchHit struct {
 }
 
 // SearchFilter holds optional filters for narrowing a knowledge base search.
-// When a field is the zero value (empty string / 0 / false), the filter is not applied.
+// When a field is the zero value (empty slice/string/zero time/false), the filter is not applied.
 // Multiple filters are AND-ed together.
 type SearchFilter struct {
-	DocSlug    string // if non-empty, only search documents with this exact slug
-	SourceType string // if non-empty, only search documents with this source type
-	Section    string // if non-empty, only include chunks whose section contains this string (substring match)
-	Coarse     bool   // G14: enable coarse-to-fine search (2-phase: section-level then fine-grained)
+	DocSlug     string    // if non-empty, only search documents with this exact slug
+	SourceType  string    // if non-empty, only search documents with this source type
+	Section     string    // if non-empty, only include chunks whose section contains this string (substring match)
+	Tags        []string  // if non-empty, only include docs that have at least one matching tag
+	AddedAfter  time.Time // if non-zero, only include docs added at or after this time
+	AddedBefore time.Time // if non-zero, only include docs added at or before this time
+	Coarse      bool      // G14: enable coarse-to-fine search (2-phase: section-level then fine-grained)
 }
 
 // DocumentHit is a ranked document result from SearchDocuments. It groups

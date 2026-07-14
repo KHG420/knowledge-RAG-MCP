@@ -90,6 +90,15 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 		if filter.SourceType != "" && meta.SourceType != filter.SourceType {
 			continue
 		}
+		if !matchesMetaTags(meta.Tags, filter.Tags) {
+			continue
+		}
+		if !filter.AddedAfter.IsZero() && meta.AddedAt.Before(filter.AddedAfter) {
+			continue
+		}
+		if !filter.AddedBefore.IsZero() && meta.AddedAt.After(filter.AddedBefore) {
+			continue
+		}
 
 		index, idxErr := s.ReadChunksIndex(slug)
 		if idxErr != nil {
@@ -159,6 +168,15 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 			continue
 		}
 		if filter.SourceType != "" && meta.SourceType != filter.SourceType {
+			continue
+		}
+		if !matchesMetaTags(meta.Tags, filter.Tags) {
+			continue
+		}
+		if !filter.AddedAfter.IsZero() && meta.AddedAt.Before(filter.AddedAfter) {
+			continue
+		}
+		if !filter.AddedBefore.IsZero() && meta.AddedAt.After(filter.AddedBefore) {
 			continue
 		}
 		index, idxErr := s.ReadChunksIndex(slug)
@@ -1047,4 +1065,22 @@ func snippetJaccard(a, b string) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// matchesMetaTags returns true when the document passes the tag filter:
+// if filterTags is empty, all documents match (no filter applied);
+// otherwise the document must have at least one tag that equal-folds to one of
+// the filter tags.
+func matchesMetaTags(docTags, filterTags []string) bool {
+	if len(filterTags) == 0 {
+		return true
+	}
+	for _, dt := range docTags {
+		for _, ft := range filterTags {
+			if strings.EqualFold(dt, ft) {
+				return true
+			}
+		}
+	}
+	return false
 }
