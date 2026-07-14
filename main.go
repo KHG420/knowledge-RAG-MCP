@@ -131,6 +131,9 @@ Examples of required rewriting:
 		mcp.WithString("addedBefore",
 			mcp.Description("ISO 8601 date (e.g. '2026-07-31' or '2026-07-31T23:59:59Z'). Only docs added at or before this time."),
 		),
+		mcp.WithBoolean("coarse",
+			mcp.Description("Enable coarse-to-fine 2-phase search: first score sections, then only search within top-3 sections."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -157,6 +160,7 @@ Examples of required rewriting:
 			Tags:        parseTags(getString(req, "tags")),
 			AddedAfter:  parseTime(getString(req, "addedAfter")),
 			AddedBefore: parseTime(getString(req, "addedBefore")),
+			Coarse:      getBool(req, "coarse"),
 		}
 
 		var hits []knowledge.SearchHit
@@ -346,6 +350,11 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 
 func getString(req mcp.CallToolRequest, key string) string {
 	v, _ := req.Params.Arguments[key].(string)
+	return v
+}
+
+func getBool(req mcp.CallToolRequest, key string) bool {
+	v, _ := req.Params.Arguments[key].(bool)
 	return v
 }
 

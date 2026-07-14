@@ -46,8 +46,8 @@
 
 **计划**:
 
-- [ ] `knowledge_search` 工具新增 `coarse` boolean 参数
-- [ ] 当 `coarse=true` 时，handler 设置 `filter.Coarse = true`
+- [x] `knowledge_search` 工具新增 `coarse` boolean 参数
+- [x] 当 `coarse=true` 时，handler 设置 `filter.Coarse = true`
 
 ### 3. 父块命中自动提示
 
