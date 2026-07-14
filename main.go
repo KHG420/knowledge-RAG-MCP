@@ -184,7 +184,9 @@ Examples of required rewriting:
 
 func registerRead(s *server.MCPServer, store *knowledge.Store) {
 	tool := mcp.NewTool("knowledge_read",
-		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.`),
+		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
+
+If search results show multiple hits from the same section (SectionHint field is non-empty), consider reading with level=section to get the full section context instead of just the individual chunk.`),
 		mcp.WithString("docSlug",
 			mcp.Required(),
 			mcp.Description("Document slug (from list/search results)."),

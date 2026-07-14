@@ -55,11 +55,11 @@
 
 **计划**:
 
-- [ ] `SearchHit` 新增 `SectionHint` 字段: 当同一 section 被 ≥2 个 chunk 命中时，
+- [x] `SearchHit` 新增 `SectionHint` 字段: 当同一 section 被 ≥2 个 chunk 命中时，
   返回 `"Multiple hits in section 'XXX'. Consider reading with level=section for full context."`
-- [ ] 实现逻辑: 在 `Search` / `HybridSearch` 的 Phase 9 后统计 sectionChunkID 频率，
+- [x] 实现逻辑: 在 `Search` / `HybridSearch` 的 Phase 9 后统计 sectionChunkID 频率，
   给命中 ≥2 次的 section 的 chunk 添加 section hint
-- [ ] 或者: 让 `knowledge_read` 的描述明确建议"如果搜索结果来自同一 section，使用 level=section"
+- [x] 或者: 让 `knowledge_read` 的描述明确建议"如果搜索结果来自同一 section，使用 level=section"
 
 ---
 

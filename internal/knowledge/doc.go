@@ -70,6 +70,12 @@ type SearchHit struct {
 	Offset      int    // character offset in the original document text (0-based)
 	SectionRole string // classified section role, e.g. "abstract", "introduction" (C2)
 	DuplicateOf string // if non-empty, this hit is an approximate duplicate of chunkID (G9)
+
+	// SectionHint is non-empty when multiple chunks from the same section
+	// appear in the search results. It suggests reading the full section for
+	// complete context, e.g. "Multiple hits in section 'Introduction'.
+	// Consider reading with level=section for full context."
+	SectionHint string
 }
 
 // SearchFilter holds optional filters for narrowing a knowledge base search.

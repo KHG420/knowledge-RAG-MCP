@@ -350,6 +350,22 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	}
 	// Phase 9a: deduplicate overlapping snippets (G9).
 	hits = deduplicateSnippets(hits)
+
+	// Phase 9b: section hint — when multiple chunks from the same section appear
+	// in the results, annotate them so the caller knows to read the full section.
+	type sectionKey struct{ doc, heading string }
+	secCount := make(map[sectionKey]int)
+	for _, h := range hits {
+		if h.Section != "" {
+			secCount[sectionKey{h.DocSlug, h.Section}]++
+		}
+	}
+	for i := range hits {
+		if hits[i].Section != "" && secCount[sectionKey{hits[i].DocSlug, hits[i].Section}] >= 2 {
+			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Section)
+		}
+	}
+
 	// G11: log search if a logger is configured.
 	if s.searchLogger != nil {
 		topN := 3
@@ -580,6 +596,22 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	}
 	// Phase 10a: deduplicate overlapping snippets (G9).
 	hits = deduplicateSnippets(hits)
+
+	// Phase 10b: section hint — when multiple chunks from the same section appear
+	// in the results, annotate them so the caller knows to read the full section.
+	type hsSectionKey struct{ doc, heading string }
+	hsSecCount := make(map[hsSectionKey]int)
+	for _, h := range hits {
+		if h.Section != "" {
+			hsSecCount[hsSectionKey{h.DocSlug, h.Section}]++
+		}
+	}
+	for i := range hits {
+		if hits[i].Section != "" && hsSecCount[hsSectionKey{hits[i].DocSlug, hits[i].Section}] >= 2 {
+			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Section)
+		}
+	}
+
 	// G11: log search if a logger is configured.
 	if s.searchLogger != nil {
 		topN := 3
