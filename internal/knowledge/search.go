@@ -22,11 +22,13 @@ type SearchLogger interface {
 
 // SearchLogEntry captures a single search query and its top results.
 type SearchLogEntry struct {
-	Query     string        `json:"query"`
-	HitCount  int           `json:"hit_count"`
-	TopScores []float64     `json:"top_scores,omitempty"`
-	Filter    *SearchFilter `json:"filter,omitempty"`
-	Timestamp time.Time     `json:"timestamp"`
+	Query      string        `json:"query"`
+	HitCount   int           `json:"hit_count"`
+	HitIDs     []string      `json:"hit_ids,omitempty"`     // returned chunk IDs in ranked order
+	TopScores  []float64     `json:"top_scores,omitempty"`
+	JudgedHits []string      `json:"judged_hits,omitempty"` // human-annotated relevant chunk IDs
+	Filter     *SearchFilter `json:"filter,omitempty"`
+	Timestamp  time.Time     `json:"timestamp"`
 }
 
 // searchEntry is a unified representation of one chunk during scoring. When the
@@ -373,12 +375,15 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 			topN = len(hits)
 		}
 		topScores := make([]float64, topN)
+		hitIDs := make([]string, topN)
 		for i := 0; i < topN; i++ {
 			topScores[i] = hits[i].Score
+			hitIDs[i] = hits[i].ChunkID
 		}
 		s.searchLogger.LogSearch(SearchLogEntry{
 			Query:     query,
 			HitCount:  len(hits),
+			HitIDs:    hitIDs,
 			TopScores: topScores,
 			Filter:    &filter,
 			Timestamp: time.Now(),
@@ -619,12 +624,15 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 			topN = len(hits)
 		}
 		topScores := make([]float64, topN)
+		hitIDs := make([]string, topN)
 		for i := 0; i < topN; i++ {
 			topScores[i] = hits[i].Score
+			hitIDs[i] = hits[i].ChunkID
 		}
 		s.searchLogger.LogSearch(SearchLogEntry{
 			Query:     query,
 			HitCount:  len(hits),
+			HitIDs:    hitIDs,
 			TopScores: topScores,
 			Filter:    &filter,
 			Timestamp: time.Now(),

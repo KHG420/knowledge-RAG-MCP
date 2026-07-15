@@ -67,16 +67,17 @@
 
 ### 4. 评估体系
 
-**现状**: `SearchLogger` 接口已存在，输出 `.searchlog.jsonl`（Query / HitCount / TopScores / Filter / Timestamp）。
-但无 relevance judgment、无 NDCG/MRR 计算。
+**现状**: `SearchLogger` 接口已存在，输出 `.searchlog.jsonl`（Query / HitCount / HitIDs / TopScores / Filter / Timestamp）。
+`SearchLogEntry` 已新增 `JudgedHits` 字段用于人工标注。评测脚本 `scripts/eval.go` 已完成，
+可读取 `.searchlog.jsonl` + 人工标注 JSON 并计算 NDCG@5 / MRR / Recall@10。
 
 **前置条件**: 需要先积累人工标注的 query→relevant_chunk 映射。
 
-**粗略计划**:
+**已完成**:
 
-- [ ] 编写评测脚本 `scripts/eval.go`：读取 `.searchlog.jsonl` + 人工标注 JSON → 计算 NDCG@5 / MRR / Recall@10
-- [ ] `SearchLogEntry` 新增 `JudgedHits []string`（人工标注的 relevant chunk IDs）字段
-- [ ] 提供一个交互式标注 CLI（可选）
+- [x] 编写评测脚本 `scripts/eval.go`：读取 `.searchlog.jsonl` + 人工标注 JSON → 计算 NDCG@5 / MRR / Recall@10
+- [x] `SearchLogEntry` 新增 `JudgedHits []string`（人工标注的 relevant chunk IDs）字段
+- [x] 提供一个交互式标注 CLI（可选）
 
 ---
 
