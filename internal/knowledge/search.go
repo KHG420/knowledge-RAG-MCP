@@ -392,6 +392,54 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	return hits, nil
 }
 
+// SearchAll searches across all knowledge bases and merges results.
+// When no kbName is set, it traverses every KB and combines hits sorted
+// by score descending, capped at limit.
+func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	kbs, err := s.ListKBs()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	type scoredHit struct {
+		hit   SearchHit
+		score float64
+	}
+	var all []scoredHit
+	seen := map[string]bool{}
+	for _, kb := range kbs {
+		kbStore := s.WithKB(kb)
+		hits, err := kbStore.Search(query, limit, filters...)
+		if err != nil {
+			continue
+		}
+		for _, h := range hits {
+			key := h.DocSlug + "/" + h.ChunkID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			all = append(all, scoredHit{hit: h, score: h.Score})
+		}
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].score > all[j].score
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	result := make([]SearchHit, len(all))
+	for i, sh := range all {
+		result[i] = sh.hit
+	}
+	return result, nil
+}
+
 // HybridSearch runs a combined BM25 + dense embedding search using Reciprocal
 // Rank Fusion (RRF). It searches all chunks, computes both BM25 scores and
 // cosine similarity with the query embedding, then fuses the rankings.

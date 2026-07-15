@@ -1,5 +1,11 @@
 # knowledge-mcp
 
+[中文](README_zh.md)
+
+> ⚡ **No need to build a knowledge base from scratch — just connect MCP, and your agent gets an intelligent knowledge base instantly.**
+>
+> Drop in documents → auto chunk & index → BM25 + vector hybrid search + cross-encoder rerank → plug & play, zero ops.
+
 MCP (Model Context Protocol) server that provides a local, file-based knowledge base with BM25 keyword search, hybrid (BM25 + vector) retrieval, and optional two-stage Cross-Encoder reranking.
 
 ## Features
@@ -47,6 +53,18 @@ RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
   knowledge-mcp
 ```
+
+## Web Management UI
+
+Start a standalone web interface to upload, browse, and delete documents:
+
+```bash
+MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
+```
+
+Open [http://localhost:8080](http://localhost:8080) in your browser.
+
+The manager shares the same data directory as the MCP server, so any document you upload via the web UI is immediately searchable via `knowledge_search`.
 
 ## Environment Variables
 

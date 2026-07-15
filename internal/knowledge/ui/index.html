@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Base Manager</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1a1d23;
+    --text-secondary: #6b7280;
+    --text-muted: #9ca3af;
+    --primary: #4f46e5;
+    --primary-light: #eef2ff;
+    --primary-hover: #4338ca;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+    --success: #16a34a;
+    --warning: #f59e0b;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+    --transition: 0.2s ease;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 0;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color: #fff;
+    padding: 32px 24px;
+  }
+  .header-inner { max-width: 1100px; margin: 0 auto; }
+  .header h1 { font-size: 26px; font-weight: 700; }
+  .header h1 span { margin-right: 8px; }
+  .header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px 24px 40px; }
+
+  /* Stats cards */
+  .stats-row {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--card); border-radius: var(--radius); padding: 16px 18px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+  }
+  .stat-card .num { font-size: 28px; font-weight: 700; color: var(--primary); }
+  .stat-card .label { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+  .stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+
+  /* Upload zone */
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 28px 20px; text-align: center; cursor: pointer;
+    transition: all var(--transition); background: var(--card);
+    margin-bottom: 20px; position: relative;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: var(--primary); background: var(--primary-light);
+    box-shadow: var(--shadow-md);
+  }
+  .dropzone .icon { font-size: 36px; margin-bottom: 6px; }
+  .dropzone .text { font-size: 15px; font-weight: 600; }
+  .dropzone .sub { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+  .dropzone input[type="file"] { display: none; }
+  .dropzone .upload-btn {
+    display: inline-block; margin-top: 10px; padding: 8px 22px;
+    background: var(--primary); color: #fff; border-radius: var(--radius-sm);
+    font-size: 14px; font-weight: 500; border: none; cursor: pointer;
+    transition: background var(--transition);
+  }
+  .dropzone .upload-btn:hover { background: var(--primary-hover); }
+  .dropzone .upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Upload progress */
+  .upload-progress { margin-bottom: 16px; display: none; }
+  .upload-progress.active { display: block; }
+  .upload-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); margin-bottom: 5px; font-size: 14px;
+    box-shadow: var(--shadow);
+  }
+  .upload-item .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border);
+    border-top-color: var(--primary); border-radius: 50%;
+    animation: spin 0.6s linear infinite; flex-shrink: 0;
+  }
+  .upload-item.done .spinner { border-color: var(--success); animation: none; }
+  .upload-item.fail .spinner { border-color: var(--danger); animation: none; }
+  .upload-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload-item .status { font-size: 12px; flex-shrink: 0; }
+  .upload-item.done .status { color: var(--success); }
+  .upload-item.fail .status { color: var(--danger); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
+  }
+  .toolbar input, .toolbar select {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-size: 14px; background: var(--card); outline: none; transition: border var(--transition);
+  }
+  .toolbar input:focus, .toolbar select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
+  .toolbar .search-box { flex: 1; min-width: 160px; }
+  .toolbar .filter-select { min-width: 100px; }
+  .toolbar .count-info { font-size: 13px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+
+  /* View toggle */
+  .view-toggle { display: flex; gap: 4px; }
+  .view-toggle button {
+    padding: 6px 12px; border: 1px solid var(--border); background: var(--card);
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; transition: all var(--transition);
+    color: var(--text-secondary);
+  }
+  .view-toggle button:hover { border-color: var(--primary); color: var(--primary); }
+  .view-toggle button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  /* Search results indicator */
+  .search-active-bar {
+    display: none; align-items: center; gap: 8px;
+    padding: 8px 14px; background: var(--primary-light); border-radius: var(--radius-sm);
+    margin-bottom: 12px; font-size: 13px; color: var(--primary);
+  }
+  .search-active-bar.show { display: flex; }
+  .search-active-bar .clear-btn {
+    background: none; border: none; color: var(--primary); cursor: pointer;
+    font-size: 13px; font-weight: 500; text-decoration: underline; margin-left: auto;
+  }
+
+  /* ===== CARD VIEW ===== */
+  .card-grid {
+    display: none; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  .card-grid.active { display: grid; }
+  .doc-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px; box-shadow: var(--shadow); cursor: pointer;
+    transition: all var(--transition); position: relative;
+  }
+  .doc-card:hover {
+    box-shadow: var(--shadow-md); border-color: var(--primary);
+    transform: translateY(-2px);
+  }
+  .doc-card .card-top { display: flex; align-items: flex-start; gap: 12px; }
+  .doc-card .type-icon { font-size: 28px; flex-shrink: 0; line-height: 1; }
+  .doc-card .card-info { flex: 1; min-width: 0; }
+  .doc-card .card-title {
+    font-weight: 600; font-size: 14px; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .doc-card .card-meta {
+    display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .doc-card .card-meta span { white-space: nowrap; }
+  .doc-card .card-badges { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .doc-card .badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 3px;
+    background: #e0e7ff; color: #3730a3;
+  }
+  .doc-card .badge-paper { background: #fef3c7; color: #92400e; }
+  .doc-card .card-actions { margin-top: 10px; display: flex; gap: 6px; }
+  .doc-card .btn-detail {
+    font-size: 12px; padding: 4px 12px; border: 1px solid var(--border);
+    background: transparent; border-radius: var(--radius-sm); cursor: pointer;
+    transition: all var(--transition);
+  }
+  .doc-card .btn-detail:hover { border-color: var(--primary); color: var(--primary); }
+  .doc-card .btn-delete-card {
+    font-size: 12px; padding: 4px 12px; border: 1px solid transparent;
+    background: transparent; border-radius: var(--radius-sm); cursor: pointer;
+    color: var(--danger); transition: all var(--transition); margin-left: auto;
+  }
+  .doc-card .btn-delete-card:hover { background: #fef2f2; border-color: var(--danger); }
+
+  /* ===== TABLE VIEW ===== */
+  .table-wrap { display: none; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; box-shadow: var(--shadow); }
+  .table-wrap.active { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600; color: var(--text-secondary);
+    border-bottom: 2px solid var(--border); white-space: nowrap; cursor: pointer;
+    user-select: none; font-size: 13px;
+  }
+  th:hover { color: var(--primary); }
+  th .sort-icon { margin-left: 3px; opacity: 0.3; }
+  th.sorted .sort-icon { opacity: 1; color: var(--primary); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8f9ff; }
+  .doc-name-cell { font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-type-badge { font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 3px;
+    background: #e0e7ff; color: #3730a3; cursor: pointer; transition: opacity var(--transition); }
+  .tag:hover { opacity: 0.7; }
+  .btn-delete {
+    padding: 4px 10px; font-size: 12px; border: 1px solid var(--danger);
+    background: transparent; color: var(--danger); border-radius: var(--radius-sm);
+    cursor: pointer; white-space: nowrap; transition: all var(--transition);
+  }
+  .btn-delete:hover { background: #fef2f2; }
+
+  /* Empty state */
+  .empty-state {
+    display: none; text-align: center; padding: 60px 24px 40px; color: var(--text-muted);
+  }
+  .empty-state.active { display: block; }
+  .empty-state .icon { font-size: 56px; margin-bottom: 12px; }
+  .empty-state .title { font-size: 18px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .empty-state .desc { font-size: 14px; max-width: 360px; margin: 0 auto 16px; }
+
+  /* Pagination */
+  .pagination {
+    display: none; align-items: center; justify-content: center;
+    gap: 4px; margin-top: 16px; flex-wrap: wrap;
+  }
+  .pagination.active { display: flex; }
+  .pagination button {
+    padding: 5px 11px; border: 1px solid var(--border); background: var(--card);
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; transition: all var(--transition);
+  }
+  .pagination button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+  .pagination button:disabled { opacity: 0.35; cursor: default; }
+  .pagination button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .pagination .info { font-size: 13px; color: var(--text-muted); margin: 0 6px; }
+
+  /* ===== DETAIL DRAWER ===== */
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+    display: none; z-index: 200;
+  }
+  .drawer-overlay.show { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: -480px; width: 480px; max-width: 92vw;
+    height: 100vh; background: var(--card); z-index: 210;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+    transition: right 0.3s ease; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .drawer.open { right: 0; }
+  .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 22px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .drawer-header h2 { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer-close {
+    background: none; border: none; font-size: 22px; cursor: pointer;
+    color: var(--text-secondary); padding: 4px; line-height: 1;
+  }
+  .drawer-close:hover { color: var(--text); }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 20px 22px; }
+  .drawer-body .meta-group { margin-bottom: 16px; }
+  .drawer-body .meta-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+  .drawer-body .meta-value { font-size: 14px; color: var(--text); word-break: break-all; }
+  .drawer-body .meta-value.authors { color: var(--primary); }
+  .drawer-section-title { font-size: 14px; font-weight: 600; margin: 20px 0 10px; display: flex; align-items: center; gap: 6px; }
+  /* Search results in drawer */
+  .search-hit {
+    padding: 10px 14px; background: var(--bg); border-radius: var(--radius-sm);
+    margin-bottom: 8px; font-size: 13px; line-height: 1.6;
+  }
+  .search-hit .hit-score { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+  .search-hit .hit-snippet { color: var(--text-secondary); }
+  .search-hit .hit-meta { font-size: 11px; color: var(--primary); margin-top: 4px; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; padding: 12px 22px;
+    border-radius: var(--radius-sm); font-size: 14px; font-weight: 500;
+    color: #fff; opacity: 0; transform: translateY(16px);
+    transition: opacity 0.3s, transform 0.3s; pointer-events: none; z-index: 300;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.success { background: var(--success); }
+  .toast.error { background: var(--danger); }
+
+  /* Confirm dialog */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: none; align-items: center; justify-content: center; z-index: 250;
+  }
+  .overlay.show { display: flex; }
+  .confirm-box {
+    background: var(--card); border-radius: var(--radius); padding: 24px;
+    max-width: 400px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  }
+  .confirm-box h3 { margin-bottom: 8px; font-size: 16px; }
+  .confirm-box p { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; word-break: break-all; }
+  .confirm-box .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .confirm-box button {
+    padding: 8px 16px; border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; border: none;
+  }
+  .confirm-box .btn-cancel { background: var(--border); color: var(--text); }
+  .confirm-box .btn-confirm { background: var(--danger); color: #fff; }
+  .confirm-box .btn-confirm:hover { background: var(--danger-hover); }
+
+  /* Loading spinner */
+  .loading-docs {
+    text-align: center; padding: 60px 0; color: var(--text-muted);
+    display: none;
+  }
+  .loading-docs.active { display: block; }
+  .loading-docs .spinner-lg {
+    width: 32px; height: 32px; border: 3px solid var(--border);
+    border-top-color: var(--primary); border-radius: 50%;
+    animation: spin 0.7s linear infinite; margin: 0 auto 10px;
+  }
+
+  /* KB badge */
+  .kb-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 13px; opacity: 0.9; margin-top: 6px;
+  }
+  .kb-badge span { font-weight: 600; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .header { padding: 24px 16px; }
+    .header h1 { font-size: 22px; }
+    .container { padding: 16px; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .card-grid { grid-template-columns: 1fr; }
+    .drawer { width: 100vw; max-width: 100vw; right: -100vw; }
+    .toolbar .search-box { min-width: 120px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-inner">
+      <h1><span>📚</span> Knowledge Base Manager</h1>
+      <p>管理你的本地知识库 · 上传、浏览、搜索和删除文档</p>
+      <div class="kb-badge">🏷️ 知识库：<span id="currentKBLabel">默认</span></div>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- Stats -->
+    <div class="stats-row" id="statsRow">
+      <div class="stat-card"><div class="num" id="statTotal">-</div><div class="label">文档总数</div></div>
+      <div class="stat-card"><div class="num" id="statChunks">-</div><div class="label">总分块数</div></div>
+      <div class="stat-card"><div class="num" id="statPapers">-</div><div class="label">学术论文</div></div>
+      <div class="stat-card"><div class="num" id="statTypes">-</div><div class="label">文件类型</div></div>
+    </div>
+
+    <!-- Upload zone -->
+    <div class="dropzone" id="dropzone">
+      <div class="icon">📤</div>
+      <div class="text">拖拽文件到此处上传</div>
+      <div class="sub">支持 PDF · DOCX · MD · TXT · EPUB · HTML · XLSX · PPTX</div>
+      <button class="upload-btn" onclick="document.getElementById('fileInput').click()">选择文件</button>
+      <input type="file" id="fileInput" multiple onchange="onFilesSelected(this.files)">
+    </div>
+
+    <!-- Upload progress -->
+    <div class="upload-progress" id="uploadProgress"></div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <input class="search-box" type="text" id="searchInput" placeholder="🔍 搜索文件名…" oninput="onFilterChange()">
+      <input class="search-box" type="text" id="fulltextInput" placeholder="📄 全文搜索…" onkeydown="if(event.key==='Enter')doFulltextSearch()" style="min-width:140px">
+      <select class="filter-select" id="kbSelect" onchange="switchKB(this.value)">
+        <option value="">加载中…</option>
+      </select>
+      <button class="filter-select" style="padding:8px 10px;cursor:pointer;min-width:auto" onclick="createKB()" title="创建新知识库">➕</button>
+      <select class="filter-select" id="typeFilter" onchange="onFilterChange()">
+        <option value="">全部类型</option>
+        <option value="pdf">PDF</option>
+        <option value="docx">DOCX</option>
+        <option value="md">MD</option>
+        <option value="txt">TXT</option>
+        <option value="epub">EPUB</option>
+        <option value="html">HTML</option>
+      </select>
+      <div class="view-toggle">
+        <button class="active" id="viewCard" onclick="setView('card')">📇 卡片</button>
+        <button id="viewTable" onclick="setView('table')">📋 表格</button>
+      </div>
+      <span class="count-info" id="resultCount"></span>
+    </div>
+
+    <!-- Fulltext search active bar -->
+    <div class="search-active-bar" id="searchBar">
+      <span>🔍 全文搜索：<strong id="searchQueryLabel"></strong></span>
+      <span id="searchResultCount"></span>
+      <button class="clear-btn" onclick="clearFulltextSearch()">清除搜索</button>
+    </div>
+
+    <!-- Loading -->
+    <div class="loading-docs active" id="loadingDocs">
+      <div class="spinner-lg"></div>
+      <div>加载知识库中…</div>
+    </div>
+
+    <!-- Card view -->
+    <div class="card-grid" id="cardGrid"></div>
+
+    <!-- Table view -->
+    <div class="table-wrap" id="tableView">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortBy('name')">文档名 <span class="sort-icon">▲</span></th>
+            <th onclick="sortBy('sourceType')">类型 <span class="sort-icon">▲</span></th>
+            <th onclick="sortBy('chunkCount')" style="text-align:right">分块 <span class="sort-icon">▲</span></th>
+            <th onclick="sortBy('addedAt')">时间 <span class="sort-icon">▲</span></th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Empty state -->
+    <div class="empty-state" id="emptyState">
+      <div class="icon">📭</div>
+      <div class="title">知识库还是空的</div>
+      <div class="desc">拖入 PDF、Markdown 或文本文档，系统会自动分块索引，立即可搜索。</div>
+      <button class="upload-btn" style="background:var(--primary);color:#fff;border:none;padding:8px 22px;border-radius:6px;cursor:pointer;font-size:14px" onclick="document.getElementById('fileInput').click()">📤 上传第一个文档</button>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination" id="pagination"></div>
+  </div>
+</div>
+
+<!-- Detail drawer -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <h2 id="drawerTitle">文档详情</h2>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody">
+    <div class="meta-group">
+      <div class="meta-label">文件名</div>
+      <div class="meta-value" id="ddFileName"></div>
+    </div>
+    <div class="meta-group">
+      <div class="meta-label">类型</div>
+      <div class="meta-value" id="ddType"></div>
+    </div>
+    <div class="meta-group" id="ddPaperGroup" style="display:none">
+      <div class="meta-label">📄 论文信息</div>
+      <div class="meta-value" id="ddTitle" style="font-weight:600;margin-bottom:4px"></div>
+      <div class="meta-value authors" id="ddAuthors"></div>
+      <div class="meta-value" id="ddAbstract" style="font-size:13px;margin-top:6px;color:var(--text-secondary)"></div>
+    </div>
+    <div class="meta-group">
+      <div class="meta-label">分块数 · 大小</div>
+      <div class="meta-value" id="ddSize"></div>
+    </div>
+    <div class="meta-group">
+      <div class="meta-label">上传时间</div>
+      <div class="meta-value" id="ddTime"></div>
+    </div>
+    <div class="meta-group" id="ddTagsGroup" style="display:none">
+      <div class="meta-label">标签</div>
+      <div class="meta-value" id="ddTags"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <h3>确认删除</h3>
+    <p id="confirmText">确定要删除此文档吗？此操作不可撤销。</p>
+    <div class="actions">
+      <button class="btn-cancel" onclick="closeConfirm()">取消</button>
+      <button class="btn-confirm" id="confirmBtn" onclick="doDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// === State ===
+let currentKB = '';
+let allDocs = [];
+let currentSort = { by: 'addedAt', order: 'desc' };
+let currentPage = 0;
+const pageSize = 15;
+let pendingDelete = null;
+let currentView = 'card';
+let fulltextMode = false;
+let fulltextHits = [];
+let fulltextQuery = '';
+
+// === Init ===
+document.addEventListener('DOMContentLoaded', async () => {
+  setupDragDrop();
+  await loadKBs();
+  loadDocs();
+});
+
+// === Knowledge Bases ===
+async function loadKBs() {
+  try {
+    const data = await api('/api/knowledge-bases');
+    const kbs = data.knowledgeBases || ['default'];
+    const current = data.currentKB || '';
+    const sel = document.getElementById('kbSelect');
+    sel.innerHTML = kbs.map(kb =>
+      `<option value="${escHtml(kb)}" ${(kb === current || (!current && kb === 'default')) ? 'selected' : ''}>${escHtml(kb)}</option>`
+    ).join('');
+    currentKB = current || 'default';
+    document.getElementById('currentKBLabel').textContent = currentKB;
+  } catch (e) {
+    currentKB = 'default';
+    document.getElementById('currentKBLabel').textContent = 'default';
+  }
+}
+
+function switchKB(name) {
+  currentKB = name;
+  document.getElementById('currentKBLabel').textContent = name;
+  currentPage = 0;
+  fulltextMode = false;
+  fulltextHits = [];
+  document.getElementById('searchBar').classList.remove('show');
+  loadDocs();
+}
+
+async function createKB() {
+  const name = prompt('请输入新知识库名称：');
+  if (!name) return;
+  try {
+    await api('/api/knowledge-bases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    showToast('知识库 "' + name + '" 创建成功', 'success');
+    await loadKBs();
+    switchKB(name);
+  } catch (e) {
+    showToast('创建失败: ' + e.message, 'error');
+  }
+}
+
+// === API ===
+async function api(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = path + sep + 'kb=' + encodeURIComponent(currentKB);
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'request failed');
+  return data;
+}
+
+// === Load docs ===
+async function loadDocs() {
+  document.getElementById('loadingDocs').classList.add('active');
+  try {
+    const data = await api('/api/documents');
+    allDocs = data.documents || [];
+    fulltextMode = false;
+    fulltextHits = [];
+    fulltextQuery = '';
+    document.getElementById('searchBar').classList.remove('show');
+    currentPage = 0;
+    render();
+  } catch (e) {
+    showToast('加载失败: ' + e.message, 'error');
+  } finally {
+    document.getElementById('loadingDocs').classList.remove('active');
+  }
+}
+
+// === Fulltext search ===
+async function doFulltextSearch() {
+  const q = document.getElementById('fulltextInput').value.trim();
+  if (!q) return;
+  try {
+    document.getElementById('loadingDocs').classList.add('active');
+    const data = await api('/api/search?q=' + encodeURIComponent(q) + '&limit=30');
+    fulltextMode = true;
+    fulltextHits = data.hits || [];
+    fulltextQuery = q;
+    document.getElementById('searchQueryLabel').textContent = q;
+    document.getElementById('searchResultCount').textContent = `（${data.count} 条结果）`;
+    document.getElementById('searchBar').classList.add('show');
+    currentPage = 0;
+    render();
+  } catch (e) {
+    showToast('搜索失败: ' + e.message, 'error');
+  } finally {
+    document.getElementById('loadingDocs').classList.remove('active');
+  }
+}
+
+function clearFulltextSearch() {
+  document.getElementById('fulltextInput').value = '';
+  fulltextMode = false;
+  fulltextHits = [];
+  fulltextQuery = '';
+  document.getElementById('searchBar').classList.remove('show');
+  currentPage = 0;
+  render();
+}
+
+// === Filter & Sort ===
+function onFilterChange() {
+  fulltextMode = false;
+  fulltextHits = [];
+  fulltextQuery = '';
+  document.getElementById('searchBar').classList.remove('show');
+  document.getElementById('fulltextInput').value = '';
+  currentPage = 0;
+  render();
+}
+
+function sortBy(field) {
+  const { by, order } = currentSort;
+  if (by === field) {
+    currentSort.order = order === 'desc' ? 'asc' : 'desc';
+  } else {
+    currentSort.by = field;
+    currentSort.order = 'desc';
+  }
+  document.querySelectorAll('#tableView th').forEach(el => el.classList.remove('sorted'));
+  document.querySelectorAll('#tableView th .sort-icon').forEach(el => { el.textContent = '▲'; });
+  const ths = document.querySelectorAll('#tableView th');
+  const idx = field === 'name' ? 0 : field === 'sourceType' ? 1 : field === 'chunkCount' ? 2 : 3;
+  if (ths[idx]) {
+    ths[idx].classList.add('sorted');
+    const icon = ths[idx].querySelector('.sort-icon');
+    if (icon) icon.textContent = currentSort.order === 'desc' ? '▼' : '▲';
+  }
+  currentPage = 0;
+  render();
+}
+
+// === View toggle ===
+function setView(v) {
+  currentView = v;
+  document.getElementById('viewCard').classList.toggle('active', v === 'card');
+  document.getElementById('viewTable').classList.toggle('active', v === 'table');
+  render();
+}
+
+// === Render ===
+function render() {
+  let displayDocs, displayHits;
+  if (fulltextMode) {
+    displayHits = fulltextHits;
+    displayDocs = [];
+  } else {
+    const search = document.getElementById('searchInput').value.trim().toLowerCase();
+    const type = document.getElementById('typeFilter').value;
+    displayDocs = allDocs.filter(d => {
+      if (type && d.sourceType !== type) return false;
+      if (search && !d.name.toLowerCase().includes(search)) return false;
+      return true;
+    });
+    // Sort
+    const { by, order } = currentSort;
+    displayDocs.sort((a, b) => {
+      let cmp = 0;
+      switch (by) {
+        case 'name': cmp = (a.name||'').localeCompare(b.name||''); break;
+        case 'sourceType': cmp = (a.sourceType||'').localeCompare(b.sourceType||''); break;
+        case 'chunkCount': cmp = (a.chunkCount||0) - (b.chunkCount||0); break;
+        default: cmp = (a.addedAt||'').localeCompare(b.addedAt||''); break;
+      }
+      return order === 'desc' ? -cmp : cmp;
+    });
+    displayHits = [];
+  }
+
+  const total = fulltextMode ? displayHits.length : displayDocs.length;
+  document.getElementById('resultCount').textContent = fulltextMode
+    ? `🔍 搜索结果 ${total} 条`
+    : `共 ${total} 个文档`;
+
+  // Stats
+  updateStats(displayDocs);
+
+  // Empty
+  if (total === 0 && !fulltextMode) {
+    document.getElementById('cardGrid').classList.remove('active');
+    document.getElementById('cardGrid').innerHTML = '';
+    document.getElementById('tableView').classList.remove('active');
+    document.getElementById('emptyState').classList.add('active');
+    document.getElementById('pagination').classList.remove('active');
+    return;
+  }
+  document.getElementById('emptyState').classList.remove('active');
+
+  const start = currentPage * pageSize;
+  const pageTotal = total;
+  const totalPages = Math.ceil(pageTotal / pageSize);
+  const pageItems = fulltextMode
+    ? displayHits.slice(start, start + pageSize)
+    : displayDocs.slice(start, start + pageSize);
+
+  renderCards(pageItems, fulltextMode);
+  renderTable(pageItems, fulltextMode);
+  renderPagination(pageTotal, totalPages);
+}
+
+function updateStats(docs) {
+  document.getElementById('statTotal').textContent = allDocs.length;
+  const totalChunks = allDocs.reduce((s, d) => s + (d.chunkCount || 0), 0);
+  document.getElementById('statChunks').textContent = totalChunks;
+  const papers = allDocs.filter(d => d.isPaper).length;
+  document.getElementById('statPapers').textContent = papers;
+  const types = new Set(allDocs.map(d => d.sourceType));
+  document.getElementById('statTypes').textContent = types.size;
+}
+
+// === Cards ===
+function renderCards(items, isHits) {
+  const grid = document.getElementById('cardGrid');
+  if (currentView !== 'card') { grid.classList.remove('active'); return; }
+  grid.classList.add('active');
+  document.getElementById('tableView').classList.remove('active');
+
+  if (isHits) {
+    grid.innerHTML = items.map(h => {
+      const score = (h.score || 0).toFixed(3);
+      return `<div class="doc-card" onclick="showHitDetail('${escHtml(h.docSlug)}')">
+        <div class="card-top">
+          <div class="type-icon">📄</div>
+          <div class="card-info">
+            <div class="card-title">${escHtml(h.docSlug)}</div>
+            <div class="card-meta">
+              <span>⭐ ${score}</span>
+              <span>${h.section || ''}</span>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${escHtml(h.snippet||'')}</div>
+      </div>`;
+    }).join('');
+    return;
+  }
+
+  grid.innerHTML = items.map(d => {
+    const icon = typeIcon(d.sourceType);
+    const paperTag = d.isPaper ? '<span class="badge badge-paper">📄 论文</span>' : '';
+    const tags = (d.tags||[]).map(t => `<span class="badge">${escHtml(t)}</span>`).join('');
+    const sizeStr = formatSize(d.totalChars);
+    return `<div class="doc-card">
+      <div class="card-top">
+        <div class="type-icon">${icon}</div>
+        <div class="card-info">
+          <div class="card-title" title="${escHtml(d.name)}">${escHtml(d.name)}</div>
+          <div class="card-meta">
+            <span>📦 ${d.chunkCount} 分块</span>
+            <span>📏 ${sizeStr}</span>
+            <span>🕐 ${formatTime(d.addedAt)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-badges">${paperTag}${tags}</div>
+      <div class="card-actions">
+        <button class="btn-detail" onclick="event.stopPropagation();showDetail('${escHtml(d.slug)}')">📖 查看详情</button>
+        <button class="btn-delete-card" onclick="event.stopPropagation();confirmDelete('${escHtml(d.slug)}','${escHtml(d.name)}')">🗑️</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// === Table ===
+function renderTable(items, isHits) {
+  const tbody = document.getElementById('tableBody');
+  if (currentView !== 'table') { document.getElementById('tableView').classList.remove('active'); return; }
+  document.getElementById('tableView').classList.add('active');
+  document.getElementById('cardGrid').classList.remove('active');
+
+  if (isHits) {
+    tbody.innerHTML = items.map(h => `<tr>
+      <td><div class="doc-name-cell" onclick="showHitDetail('${escHtml(h.docSlug)}')" style="cursor:pointer;color:var(--primary)">${escHtml(h.docSlug)}</div></td>
+      <td><span class="doc-type-badge">🔍</span></td>
+      <td style="text-align:right;font-size:13px;color:var(--text-secondary)">${(h.score||0).toFixed(3)}</td>
+      <td><span style="font-size:12px;color:var(--text-muted)">${h.section||''}</span></td>
+      <td><button class="btn-delete" onclick="event.stopPropagation();showHitDetail('${escHtml(h.docSlug)}')">📖 查看</button></td>
+    </tr>`).join('');
+    return;
+  }
+
+  tbody.innerHTML = items.map(d => {
+    const tags = (d.tags||[]).map(t => `<span class="tag" onclick="filterByTag('${escHtml(t)}')">${escHtml(t)}</span>`).join(' ');
+    return `<tr>
+      <td><div class="doc-name-cell" title="${escHtml(d.name)}">${escHtml(d.name)}</div></td>
+      <td><span class="doc-type-badge">${escHtml(d.sourceType||'')}</span></td>
+      <td style="text-align:right">${d.chunkCount}</td>
+      <td><span style="font-size:13px;color:var(--text-muted)">${formatTime(d.addedAt)}</span></td>
+      <td>
+        <button class="btn-delete" style="border-color:var(--primary);color:var(--primary);margin-right:4px" onclick="showDetail('${escHtml(d.slug)}')">📖</button>
+        <button class="btn-delete" onclick="confirmDelete('${escHtml(d.slug)}','${escHtml(d.name)}')">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// === Pagination ===
+function renderPagination(total, totalPages) {
+  const el = document.getElementById('pagination');
+  if (totalPages <= 1) { el.classList.remove('active'); return; }
+  el.classList.add('active');
+
+  let html = '';
+  html += `<button onclick="goPage(0)" ${currentPage===0?'disabled':''}>«</button>`;
+  html += `<button onclick="goPage(${currentPage-1})" ${currentPage===0?'disabled':''}>‹</button>`;
+  const startPage = Math.max(0, currentPage - 2);
+  const endPage = Math.min(totalPages - 1, currentPage + 2);
+  if (startPage > 0) { html += `<button onclick="goPage(0)">1</button>`; if (startPage>1) html += `<span class="info">…</span>`; }
+  for (let i = startPage; i <= endPage; i++) {
+    html += `<button class="${i===currentPage?'active':''}" onclick="goPage(${i})">${i+1}</button>`;
+  }
+  if (endPage < totalPages - 1) { if (endPage < totalPages-2) html += `<span class="info">…</span>`; html += `<button onclick="goPage(${totalPages-1})">${totalPages}</button>`; }
+  html += `<button onclick="goPage(${currentPage+1})" ${currentPage>=totalPages-1?'disabled':''}>›</button>`;
+  html += `<button onclick="goPage(${totalPages-1})" ${currentPage>=totalPages-1?'disabled':''}>»</button>`;
+  html += `<span class="info">${total} 条</span>`;
+  el.innerHTML = html;
+}
+
+function goPage(n) { currentPage = n; render(); }
+
+// === Detail drawer ===
+async function showDetail(slug) {
+  document.getElementById('drawerBody').innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div class="spinner-lg" style="width:28px;height:28px;border-width:3px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.7s linear infinite;margin:0 auto 10px"></div>加载中…</div>';
+  document.getElementById('drawerTitle').textContent = '文档详情';
+  openDrawer();
+  try {
+    const data = await api('/api/documents/' + encodeURIComponent(slug));
+    renderDrawer(data);
+  } catch (e) {
+    document.getElementById('drawerBody').innerHTML = `<div style="padding:20px;color:var(--danger)">加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function showHitDetail(slug) {
+  showDetail(slug);
+}
+
+function renderDrawer(data) {
+  const meta = data.meta || {};
+  document.getElementById('drawerTitle').textContent = meta.original_name || '文档详情';
+  document.getElementById('ddFileName').textContent = meta.original_name || '-';
+  document.getElementById('ddType').textContent = (meta.source_type || '') + (meta.is_paper ? ' 📄 论文' : '');
+
+  if (meta.is_paper && (meta.title || meta.authors)) {
+    document.getElementById('ddPaperGroup').style.display = 'block';
+    document.getElementById('ddTitle').textContent = meta.title || '(无标题)';
+    document.getElementById('ddAuthors').textContent = (meta.authors||[]).join(', ') || '(无作者)';
+    document.getElementById('ddAbstract').textContent = meta.abstract ? (meta.abstract.length > 300 ? meta.abstract.slice(0,300)+'…' : meta.abstract) : '';
+  } else {
+    document.getElementById('ddPaperGroup').style.display = 'none';
+  }
+
+  document.getElementById('ddSize').textContent = `${meta.chunk_count || 0} 分块 · ${formatSize(meta.total_chars || 0)}`;
+  document.getElementById('ddTime').textContent = formatTime(meta.added_at || '');
+
+  if (meta.tags && meta.tags.length) {
+    document.getElementById('ddTagsGroup').style.display = 'block';
+    document.getElementById('ddTags').textContent = meta.tags.join(', ');
+  } else {
+    document.getElementById('ddTagsGroup').style.display = 'none';
+  }
+
+}
+
+function openDrawer() {
+  document.getElementById('drawerOverlay').classList.add('show');
+  document.getElementById('drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('show');
+  document.getElementById('drawer').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// === Upload ===
+function setupDragDrop() {
+  const dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('dragover');
+    if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  });
+}
+
+function onFilesSelected(files) {
+  if (files.length) uploadFiles(files);
+  document.getElementById('fileInput').value = '';
+}
+
+async function uploadFiles(fileList) {
+  const files = Array.from(fileList);
+  const progressEl = document.getElementById('uploadProgress');
+  progressEl.innerHTML = '';
+  progressEl.classList.add('active');
+
+  for (const file of files) {
+    const item = document.createElement('div');
+    item.className = 'upload-item';
+    item.innerHTML = `<div class="spinner"></div><span class="name">${escHtml(file.name)}</span><span class="status">上传中…</span>`;
+    progressEl.appendChild(item);
+
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+      await api('/api/upload', { method: 'POST', body: formData });
+      item.className = 'upload-item done';
+      item.querySelector('.status').textContent = '✅ 完成';
+    } catch (e) {
+      item.className = 'upload-item fail';
+      item.querySelector('.status').textContent = `❌ ${e.message}`;
+    }
+  }
+
+  setTimeout(() => { progressEl.classList.remove('active'); }, 3000);
+  loadDocs();
+}
+
+// === Delete ===
+function confirmDelete(slug, name) {
+  pendingDelete = slug;
+  document.getElementById('confirmText').textContent = `确定要删除 "${name}" 吗？此操作不可撤销。`;
+  document.getElementById('confirmOverlay').classList.add('show');
+}
+
+function closeConfirm() {
+  pendingDelete = null;
+  document.getElementById('confirmOverlay').classList.remove('show');
+}
+
+async function doDelete() {
+  if (!pendingDelete) return;
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true; btn.textContent = '删除中…';
+  try {
+    await api('/api/documents/' + encodeURIComponent(pendingDelete), { method: 'DELETE' });
+    closeConfirm();
+    showToast('删除成功', 'success');
+    loadDocs();
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '删除';
+    pendingDelete = null;
+  }
+}
+
+// === Tag filter ===
+function filterByTag(tag) {
+  // Set search input to tag and apply filter
+  document.getElementById('searchInput').value = '';
+  document.getElementById('typeFilter').value = '';
+  // Tags filter not directly in search, so we note it
+  showToast('点击标签: ' + tag + '（标签过滤功能）', 'success');
+}
+
+// === Toast ===
+function showToast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast ' + type + ' show';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// === Utils ===
+function escHtml(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatSize(chars) {
+  if (!chars) return '0B';
+  return chars > 1024 ? (chars/1024).toFixed(1)+'KB' : chars+'B';
+}
+
+function typeIcon(type) {
+  const map = { pdf:'📄', docx:'📝', md:'📝', txt:'📄', epub:'📖', html:'🌐', xlsx:'📊', pptx:'📽️' };
+  return map[type] || '📄';
+}
+</script>
+</body>
+</html>

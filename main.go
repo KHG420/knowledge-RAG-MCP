@@ -18,9 +18,14 @@ import (
 
 func main() {
 	dataDir := os.Getenv("KNOWLEDGE_MCP_DATA_DIR")
+	defaultKB := os.Getenv("KNOWLEDGE_MCP_DEFAULT_KB")
 	store := knowledge.NewStore(".")
 	if dataDir != "" {
 		store.WithDataDir(dataDir)
+	}
+	if defaultKB != "" {
+		store = store.WithKB(defaultKB)
+		log.Printf("[knowledge-mcp] default KB: %s", defaultKB)
 	}
 	if err := store.EnsureDir(); err != nil {
 		log.Fatalf("failed to init data dir: %v", err)
@@ -66,6 +71,18 @@ func main() {
 			log.Printf("[knowledge-mcp] rerank candidate limit: %d", n)
 		}
 	}
+
+	// --- Web management UI (default: http://localhost:8084) ---
+	managePort := os.Getenv("MANAGE_PORT")
+	if managePort == "" {
+		managePort = "8084"
+	}
+	go func() {
+		log.Printf("[knowledge-mcp] management UI → http://localhost:%s (default KB: %s)", managePort, defaultKB)
+		if err := store.StartManageServer(managePort); err != nil {
+			log.Printf("[knowledge-mcp] management UI error: %v", err)
+		}
+	}()
 
 	s := server.NewMCPServer(
 		"knowledge-mcp",
@@ -134,6 +151,9 @@ Examples of required rewriting:
 		mcp.WithBoolean("coarse",
 			mcp.Description("Enable coarse-to-fine 2-phase search: first score sections, then only search within top-3 sections."),
 		),
+		mcp.WithString("kbName",
+			mcp.Description("Optional knowledge base name. When set, search only within that KB. When omitted, search all KBs."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -163,13 +183,28 @@ Examples of required rewriting:
 			Coarse:      getBool(req, "coarse"),
 		}
 
+		kbName := getString(req, "kbName")
+		searchStore := store
+		if kbName != "" {
+			searchStore = store.WithKB(kbName)
+		}
+
 		var hits []knowledge.SearchHit
 		var err error
 		switch strings.ToLower(getString(req, "mode")) {
 		case "hybrid":
-			hits, err = store.HybridSearch(searchKW, limit, filter)
+			if kbName != "" {
+				hits, err = searchStore.HybridSearch(searchKW, limit, filter)
+			} else {
+				// HybridSearchAll not implemented; fallback to SearchAll
+				hits, err = searchStore.SearchAll(searchKW, limit, filter)
+			}
 		default:
-			hits, err = store.Search(searchKW, limit, filter)
+			if kbName != "" {
+				hits, err = searchStore.Search(searchKW, limit, filter)
+			} else {
+				hits, err = searchStore.SearchAll(searchKW, limit, filter)
+			}
 		}
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
@@ -202,6 +237,9 @@ If search results show multiple hits from the same section (SectionHint field is
 			mcp.Description("Read granularity: 'chunk' (default) or 'section'."),
 			mcp.Enum("chunk", "section"),
 		),
+		mcp.WithString("kbName",
+			mcp.Description("Optional knowledge base name. Required when the document slug is not unique across KBs."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -209,6 +247,12 @@ If search results show multiple hits from the same section (SectionHint field is
 		chunkID := getString(req, "chunkID")
 		if docSlug == "" || chunkID == "" {
 			return mcp.NewToolResultError("docSlug and chunkID are required"), nil
+		}
+
+		kbName := getString(req, "kbName")
+		readStore := store
+		if kbName != "" {
+			readStore = store.WithKB(kbName)
 		}
 
 		ctxCount := 0
@@ -223,14 +267,14 @@ If search results show multiple hits from the same section (SectionHint field is
 		}
 
 		if strings.ToLower(getString(req, "level")) == "section" {
-			text, err := readSection(store, docSlug, chunkID)
+			text, err := readSection(readStore, docSlug, chunkID)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return mcp.NewToolResultText(text), nil
 		}
 
-		text, err := store.ReadChunkContext(docSlug, chunkID, ctxCount)
+		text, err := readStore.ReadChunkContext(docSlug, chunkID, ctxCount)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -254,10 +298,20 @@ func readSection(store *knowledge.Store, docSlug, chunkID string) (string, error
 func registerList(s *server.MCPServer, store *knowledge.Store) {
 	tool := mcp.NewTool("knowledge_list",
 		mcp.WithDescription(`List all uploaded documents in the knowledge base.`),
+		mcp.WithString("kbName",
+			mcp.Description("Optional knowledge base name. When set, list only documents in that KB. When omitted, list all KBs."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		display, full, err := store.ListPreview(10)
+		kbName := getString(req, "kbName")
+		var display, full []knowledge.DocumentMeta
+		var err error
+		if kbName != "" {
+			display, full, err = store.WithKB(kbName).ListPreview(10)
+		} else {
+			display, full, err = store.ListPreviewAll(10)
+		}
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -291,6 +345,9 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		mcp.WithString("tags",
 			mcp.Description("Comma-separated tags to assign to the uploaded document(s)."),
 		),
+		mcp.WithString("kbName",
+			mcp.Description("Optional knowledge base name. When set, upload to that KB. When omitted, upload to the default KB."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -302,11 +359,17 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 			recursive = v
 		}
 
+		kbName := getString(req, "kbName")
+		uploadStore := store
+		if kbName != "" {
+			uploadStore = store.WithKB(kbName)
+		}
+
 		if directory != "" {
 			if filePath != "" {
 				return mcp.NewToolResultError("filePath and directory are mutually exclusive"), nil
 			}
-			summary, err := store.UploadDirectory(directory, recursive, tags...)
+			summary, err := uploadStore.UploadDirectory(directory, recursive, tags...)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("batch upload failed: %v", err)), nil
 			}
@@ -316,7 +379,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		if filePath == "" {
 			return mcp.NewToolResultError("filePath or directory is required for upload"), nil
 		}
-		meta, err := store.UploadDocument(filePath, tags...)
+		meta, err := uploadStore.UploadDocument(filePath, tags...)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("upload failed: %v", err)), nil
 		}
@@ -334,6 +397,9 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 			mcp.Required(),
 			mcp.Description("Document slug to remove (from list results)."),
 		),
+		mcp.WithString("kbName",
+			mcp.Description("Optional knowledge base name. When set, remove from that KB. When omitted, remove from all KBs."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -341,8 +407,28 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 		if docSlug == "" {
 			return mcp.NewToolResultError("docSlug is required for remove"), nil
 		}
-		if err := store.RemoveDocument(docSlug); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("remove failed: %v", err)), nil
+
+		kbName := getString(req, "kbName")
+		if kbName != "" {
+			if err := store.WithKB(kbName).RemoveDocument(docSlug); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("remove failed: %v", err)), nil
+			}
+		} else {
+			// Try to remove from all KBs
+			kbs, err := store.ListKBs()
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("list KBs failed: %v", err)), nil
+			}
+			removed := false
+			for _, kb := range kbs {
+				if err := store.WithKB(kb).RemoveDocument(docSlug); err == nil {
+					removed = true
+					break
+				}
+			}
+			if !removed {
+				return mcp.NewToolResultError(fmt.Sprintf("document %q not found in any KB", docSlug)), nil
+			}
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Document %q removed.", docSlug)), nil
 	})

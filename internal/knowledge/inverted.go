@@ -26,7 +26,7 @@ func NewInvertedIndex() *InvertedIndex {
 }
 
 func (s *Store) invertedIndexPath() string {
-	return filepath.Join(s.knowledgeDir(), "INVERTED.gob")
+	return filepath.Join(s.kbDir(), "INVERTED.gob")
 }
 
 // loadInvertedIndex reads the gob-encoded inverted index from disk.

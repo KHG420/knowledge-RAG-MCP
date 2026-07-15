@@ -28,6 +28,7 @@ const boundaryMergeM = 5 // G12: number of new head chunks for incremental bound
 type Store struct {
 	root    string // workspace root (contains .reasonix/)
 	dataDir string // if set, overrides the default knowledge dir path (.reasonix/knowledge/)
+	kbName  string // knowledge base name; empty defaults to "default"
 	rewriter           QueryRewriter
 	embedder           Embedder
 	reranker           Reranker
@@ -49,6 +50,83 @@ func (s *Store) WithDataDir(dir string) *Store {
 	return s
 }
 
+// WithKB returns a Store view scoped to the named knowledge base.
+// When name is empty, the default KB ("default") is used.
+// The returned Store shares the same embedder, reranker, and other
+// configuration but reads/writes from a KB-scoped subdirectory.
+func (s *Store) WithKB(name string) *Store {
+	cp := *s
+	cp.kbName = name
+	return &cp
+}
+
+// kbDir returns the KB-scoped data directory.
+// When kbName is empty, it defaults to "default" under the base knowledge dir.
+func (s *Store) kbDir() string {
+	kb := s.kbName
+	if kb == "" {
+		kb = "default"
+	}
+	return filepath.Join(s.knowledgeDir(), kb)
+}
+
+// ListKBs returns knowledge base names found under the knowledge directory.
+// Each subdirectory containing an INDEX.md is considered a KB.
+// If no KB subdirectories exist (legacy flat structure), returns ["default"].
+func (s *Store) ListKBs() ([]string, error) {
+	kd := s.knowledgeDir()
+	entries, err := os.ReadDir(kd)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{"default"}, nil
+		}
+		return nil, fmt.Errorf("read knowledge dir: %w", err)
+	}
+	var kbs []string
+	hasSubDirs := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Check if this directory has INDEX.md to confirm it's a KB.
+		indexPath := filepath.Join(kd, e.Name(), "INDEX.md")
+		if _, err := os.Stat(indexPath); err == nil {
+			kbs = append(kbs, e.Name())
+			hasSubDirs = true
+		}
+	}
+	if !hasSubDirs {
+		// Legacy flat structure: no KB subdirectories yet.
+		return []string{"default"}, nil
+	}
+	return kbs, nil
+}
+
+// CreateKB creates a new empty knowledge base directory with an INDEX.md.
+func (s *Store) CreateKB(name string) error {
+	kbDir := filepath.Join(s.knowledgeDir(), name)
+	if err := os.MkdirAll(kbDir, 0o755); err != nil {
+		return fmt.Errorf("create KB dir: %w", err)
+	}
+	indexPath := filepath.Join(kbDir, "INDEX.md")
+	if err := os.WriteFile(indexPath, []byte("# "+name+"\n"), 0o644); err != nil {
+		return fmt.Errorf("create INDEX.md: %w", err)
+	}
+	return nil
+}
+
+// DeleteKB removes an entire knowledge base directory.
+func (s *Store) DeleteKB(name string) error {
+	if name == "" || name == "default" {
+		return fmt.Errorf("cannot delete the default knowledge base")
+	}
+	kbDir := filepath.Join(s.knowledgeDir(), name)
+	if err := os.RemoveAll(kbDir); err != nil {
+		return fmt.Errorf("delete KB dir: %w", err)
+	}
+	return nil
+}
+
 // knowledgeDir returns the data directory path. When dataDir is set it is used
 // directly; otherwise it falls back to <root>/.reasonix/knowledge/.
 func (s *Store) knowledgeDir() string {
@@ -60,12 +138,16 @@ func (s *Store) knowledgeDir() string {
 
 // EnsureDir creates the knowledge directory tree if it doesn't exist.
 func (s *Store) EnsureDir() error {
-	return os.MkdirAll(s.knowledgeDir(), 0o755)
+	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
+		return err
+	}
+	// Ensure the default KB subdirectory also exists.
+	return os.MkdirAll(s.kbDir(), 0o755)
 }
 
 // IndexPath returns the path to INDEX.md.
 func (s *Store) IndexPath() string {
-	return filepath.Join(s.knowledgeDir(), "INDEX.md")
+	return filepath.Join(s.kbDir(), "INDEX.md")
 }
 
 // ReadIndex returns the raw content of INDEX.md. It returns an empty string
@@ -83,7 +165,7 @@ func (s *Store) ReadIndex() (string, error) {
 
 // WriteIndex overwrites INDEX.md with the given content.
 func (s *Store) WriteIndex(content string) error {
-	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.kbDir(), 0o755); err != nil {
 		return fmt.Errorf("ensure knowledge dir: %w", err)
 	}
 	if err := os.WriteFile(s.IndexPath(), []byte(content), 0o644); err != nil {
@@ -94,7 +176,7 @@ func (s *Store) WriteIndex(content string) error {
 
 // DocDir returns the path for a document's directory.
 func (s *Store) DocDir(slug string) string {
-	return filepath.Join(s.knowledgeDir(), slug)
+	return filepath.Join(s.kbDir(), slug)
 }
 
 // MetaPath returns the path to a document's meta.json.
@@ -564,7 +646,7 @@ func SlugFromPath(path string) string {
 
 // ListDocuments returns metadata for all documents in the knowledge base.
 func (s *Store) ListDocuments() ([]DocumentMeta, error) {
-	kd := s.knowledgeDir()
+	kd := s.kbDir()
 	entries, err := os.ReadDir(kd)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -587,9 +669,49 @@ func (s *Store) ListDocuments() ([]DocumentMeta, error) {
 	return docs, nil
 }
 
+// ListDocumentsAll returns metadata for all documents across all knowledge
+// bases. When no kbName is set, it traverses every KB subdirectory and
+// merges the results. Documents from the current/named KB come first,
+// followed by docs from other KBs tagged with their KB name.
+func (s *Store) ListDocumentsAll() ([]DocumentMeta, error) {
+	kbs, err := s.ListKBs()
+	if err != nil {
+		return nil, err
+	}
+	var all []DocumentMeta
+	for _, kb := range kbs {
+		kbStore := s.WithKB(kb)
+		docs, err := kbStore.ListDocuments()
+		if err != nil {
+			continue
+		}
+		// Tag each document with its KB name for display.
+		for i := range docs {
+			docs[i].Tags = append(docs[i].Tags, "kb:"+kb)
+		}
+		all = append(all, docs...)
+	}
+	return all, nil
+}
+
+// ListPreviewAll returns up to n documents across all knowledge bases for
+// display, merging results from every KB. The display slice is capped at n.
+func (s *Store) ListPreviewAll(n int) (display []DocumentMeta, full []DocumentMeta, err error) {
+	full, err = s.ListDocumentsAll()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(full) > n {
+		display = full[:n]
+	} else {
+		display = full
+	}
+	return display, full, nil
+}
+
 // SnapshotPath returns the path to the list snapshot file.
 func (s *Store) SnapshotPath() string {
-	return filepath.Join(s.knowledgeDir(), "LIST_SNAPSHOT.json")
+	return filepath.Join(s.kbDir(), "LIST_SNAPSHOT.json")
 }
 
 // ListChecksum computes a SHA256 checksum over the full list of DocumentMeta
