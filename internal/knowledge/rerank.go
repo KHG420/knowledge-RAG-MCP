@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"knowledge-mcp/internal/logging"
 )
 
 // InfinityReranker calls an Infinity or Cohere-compatible /rerank API for
@@ -26,6 +28,7 @@ type InfinityReranker struct {
 	apiKey  string
 	model   string
 	client  *http.Client
+	logger  *logging.Logger
 }
 
 // InfinityRerankerOption configures an InfinityReranker.
@@ -52,6 +55,21 @@ func WithRerankModel(model string) InfinityRerankerOption {
 	}
 }
 
+// WithRerankLogger sets the logger on the reranker.
+func WithRerankLogger(l *logging.Logger) InfinityRerankerOption {
+	return func(r *InfinityReranker) {
+		r.logger = l
+	}
+}
+
+// WithRerankTimeout sets the HTTP client timeout for reranker requests.
+// Default is 30 seconds. Use Go duration strings like "10s", "30s", "1m".
+func WithRerankTimeout(d time.Duration) InfinityRerankerOption {
+	return func(r *InfinityReranker) {
+		r.client.Timeout = d
+	}
+}
+
 // NewInfinityReranker returns an InfinityReranker. Defaults are target a local
 // Infinity instance at http://localhost:7997.
 func NewInfinityReranker(opts ...InfinityRerankerOption) *InfinityReranker {
@@ -61,6 +79,7 @@ func NewInfinityReranker(opts ...InfinityRerankerOption) *InfinityReranker {
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		logger: logging.NewNopLogger(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -106,6 +125,8 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 	if err != nil {
 		return nil, fmt.Errorf("rerank url: %w", err)
 	}
+	start := time.Now()
+	r.logger.Debugf("[rerank] POST %s model=%s query_len=%d docs=%d", u, r.model, len(query), len(documents))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("rerank request: %w", err)
@@ -123,6 +144,7 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 
 	if resp.StatusCode != http.StatusOK {
 		rbody, _ := io.ReadAll(resp.Body)
+		r.logger.Errorf("[rerank] FAIL model=%s status=%d body=%s", r.model, resp.StatusCode, strings.TrimSpace(string(rbody)))
 		return nil, fmt.Errorf("rerank api status %d: %s", resp.StatusCode, strings.TrimSpace(string(rbody)))
 	}
 
@@ -138,5 +160,6 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 			scores[rr.Index] = rr.RelevanceScore
 		}
 	}
+	r.logger.Debugf("[rerank] OK model=%s docs=%d elapsed=%s", r.model, len(documents), time.Since(start))
 	return scores, nil
 }

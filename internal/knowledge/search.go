@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -223,6 +224,13 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 // surviving candidates (for reranker and snippet), then the optional reranker
 // re-scores the top candidates before the final cap.
 func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	start := time.Now()
+	log := s.logger.WithModule("search")
+	log.Debugf("Search: query=%q limit=%d kb=%q", query, limit, s.kbName)
+	defer func() {
+		log.Debugf("Search done in %v", time.Since(start))
+	}()
+
 	if limit <= 0 {
 		limit = 8
 	}
@@ -396,6 +404,7 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 // When no kbName is set, it traverses every KB and combines hits sorted
 // by score descending, capped at limit.
 func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	s.logger.WithModule("search").Debugf("SearchAll: query=%q limit=%d", query, limit)
 	kbs, err := s.ListKBs()
 	if err != nil {
 		return nil, err
@@ -911,10 +920,16 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 		texts[i] = entries[i].text
 	}
 
-	rerankScores, rerankErr := s.reranker.Rerank(nil, query, texts)
+	s.logger.Debugf("[rerank] rerankTop query=%q candidates=%d candLimit=%d", query, len(entries), candLimit)
+	rerankCtx, rerankCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer rerankCancel()
+	rerankScores, rerankErr := s.reranker.Rerank(rerankCtx, query, texts)
 	if rerankErr != nil || len(rerankScores) != n {
+		s.logger.Warnf("[rerank] rerankTop failed: %v (scores=%d, expected=%d), using BM25 fallback", rerankErr, len(rerankScores), n)
 		return entries[:n], scores[:n]
 	}
+
+	s.logger.Debugf("[rerank] rerankTop done candidates=%d → top=%d", n, n)
 
 	// Sort candidates by reranker score descending.
 	type reranked struct {

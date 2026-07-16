@@ -61,6 +61,8 @@ start_reranker_nohup() {
     nohup "$INFINITY_BIN" v2 \
         --model-id Alibaba-NLP/gte-multilingual-reranker-base \
         --port 7997 \
+        --device cpu \
+        --batch-size 8 \
         > "$INFINITY_LOG" 2> "$INFINITY_ERR" &
     echo "  → PID $! | log: $INFINITY_LOG"
 }

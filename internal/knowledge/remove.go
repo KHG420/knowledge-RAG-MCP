@@ -10,11 +10,14 @@ import (
 // removes its entry from INDEX.md. It is a no-op (no error) if the document
 // does not exist.
 func (s *Store) RemoveDocument(slug string) error {
+	log := s.logger.WithModule("remove")
+	log.Infof("RemoveDocument slug=%q kb=%q", slug, s.kbName)
 	// Read current metadata for the INDEX.md update message.
 	meta, metaErr := s.ReadMeta(slug)
 
 	// Remove the directory.
 	if err := s.removeDir(slug); err != nil {
+		log.Errorf("RemoveDocument %q failed: %v", slug, err)
 		return err
 	}
 
@@ -22,6 +25,7 @@ func (s *Store) RemoveDocument(slug string) error {
 	if metaErr == nil {
 		s.removeFromIndex(slug, meta)
 	}
+	log.Infof("RemoveDocument %q done", slug)
 	return nil
 }
 

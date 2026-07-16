@@ -20,5 +20,6 @@ func (s *Store) ListPreview(n int) (display []DocumentMeta, full []DocumentMeta,
 	} else {
 		display = full
 	}
+	s.logger.WithModule("list").Debugf("ListPreview kb=%q returned %d/%d docs", s.kbName, len(display), len(full))
 	return display, full, nil
 }

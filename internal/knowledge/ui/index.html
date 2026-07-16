@@ -61,6 +61,34 @@
   .stat-card .label { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
   .stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 
+  /* Model info cards */
+  .model-card {
+    background: var(--card); border-radius: var(--radius); padding: 14px 16px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+  }
+  .model-card .model-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .model-card .model-badge {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--success); flex-shrink: 0;
+  }
+  .model-card .model-badge.off { background: var(--text-muted); }
+  .model-card .model-label { font-size: 12px; color: var(--text-secondary); }
+  .model-card .model-name {
+    font-family: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 13px; color: var(--text); font-weight: 600;
+    line-height: 1.3; word-break: break-all;
+  }
+  .model-card .model-detail { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+  .model-card .model-detail span {
+    display: inline-block; background: var(--primary-light); color: var(--primary);
+    padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-top: 2px;
+  }
+  .model-card .model-detail .url {
+    background: none; color: var(--text-muted);
+    font-family: SFMono-Regular, Consolas, monospace; font-size: 11px; word-break: break-all;
+    padding: 0;
+  }
+
   /* Upload zone */
   .dropzone {
     border: 2px dashed var(--border); border-radius: var(--radius);
@@ -432,6 +460,28 @@
       <div class="stat-card"><div class="num" id="statChunks">-</div><div class="label">总分块数</div></div>
       <div class="stat-card"><div class="num" id="statPapers">-</div><div class="label">学术论文</div></div>
       <div class="stat-card"><div class="num" id="statTypes">-</div><div class="label">文件类型</div></div>
+      <div class="model-card" id="statEmbedder">
+        <div class="model-header">
+          <span class="model-badge" id="embedderBadge"></span>
+          <span class="model-label">🔌 嵌入模型</span>
+        </div>
+        <div class="model-name" id="embedderModel">—</div>
+        <div class="model-detail">
+          <span class="url" id="embedderUrl"></span>
+          <span id="embedderDim"></span>
+        </div>
+      </div>
+      <div class="model-card" id="statReranker">
+        <div class="model-header">
+          <span class="model-badge" id="rerankerBadge"></span>
+          <span class="model-label">🔄 重排序模型</span>
+        </div>
+        <div class="model-name" id="rerankerModel">—</div>
+        <div class="model-detail">
+          <span class="url" id="rerankerUrl"></span>
+          <span id="rerankerLimit"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Upload zone -->
@@ -580,6 +630,7 @@ let currentView = 'card';
 let fulltextMode = false;
 let fulltextHits = [];
 let fulltextQuery = '';
+let currentTag = ''; // tag filter; empty means no tag filter
 
 // === Init ===
 document.addEventListener('DOMContentLoaded', async () => {
@@ -617,10 +668,10 @@ function enterKB(name) {
   fulltextHits = [];
   document.getElementById('searchBar').classList.remove('show');
   loadDocs();
+  loadModelInfo();
 }
 
 function goHome() {
-  currentKB = '';
   document.getElementById('header').style.display = 'none';
   document.getElementById('mainContent').style.display = 'none';
   document.getElementById('kbHome').style.display = 'flex';
@@ -674,9 +725,7 @@ async function createKB() {
 async function deleteKB(name) {
   if (!confirm('确定要删除知识库 "' + name + '" 吗？\n\n此操作不可撤销，所有文档和数据将被永久删除。')) return;
   try {
-    const res = await fetch('/api/knowledge-bases/' + encodeURIComponent(name), { method: 'DELETE' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '删除失败');
+    await api('/api/knowledge-bases/' + encodeURIComponent(name), { method: 'DELETE' });
     showToast('知识库 "' + name + '" 已删除', 'success');
     if (currentKB === name) {
       currentKB = '';
@@ -704,7 +753,9 @@ async function api(path, opts = {}) {
   return data;
 }
 
-// Like api() but returns raw JSON regardless of HTTP status
+// Like api() but returns raw JSON regardless of HTTP status —
+// does NOT throw on !res.ok so the caller can inspect the response body
+// (used by uploadFiles to check per-file errors in the results array).
 async function apiRaw(path, opts = {}) {
   let url = path;
   if (currentKB) {
@@ -713,8 +764,7 @@ async function apiRaw(path, opts = {}) {
   }
   const res = await fetch(url, opts);
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'request failed');
-  return data;
+  return data; // always return raw JSON, caller checks errors
 }
 
 // === Load docs ===
@@ -820,6 +870,7 @@ function render() {
     displayDocs = allDocs.filter(d => {
       if (type && d.sourceType !== type) return false;
       if (search && !d.name.toLowerCase().includes(search)) return false;
+      if (currentTag && !(d.tags||[]).includes(currentTag)) return false;
       return true;
     });
     // Sort
@@ -838,9 +889,10 @@ function render() {
   }
 
   const total = fulltextMode ? displayHits.length : displayDocs.length;
-  document.getElementById('resultCount').textContent = fulltextMode
+  const tagInfo = currentTag ? ` · 标签: ${currentTag} <a href="#" onclick="event.preventDefault();filterByTag('${escHtml(currentTag)}')" style="color:var(--danger);text-decoration:none;font-weight:600">✕</a>` : '';
+  document.getElementById('resultCount').innerHTML = fulltextMode
     ? `🔍 搜索结果 ${total} 条`
-    : `共 ${total} 个文档`;
+    : `共 ${total} 个文档${tagInfo}`;
 
   // Stats
   updateStats(displayDocs);
@@ -878,6 +930,43 @@ function updateStats(docs) {
   document.getElementById('statTypes').textContent = types.size;
 }
 
+// === Model info ===
+async function loadModelInfo() {
+  try {
+    const data = await api('/api/models');
+    const emb = data.embedder;
+    const rer = data.reranker;
+
+    if (emb) {
+      document.getElementById('embedderBadge').className = 'model-badge';
+      document.getElementById('embedderModel').textContent = emb.model || '未知';
+      document.getElementById('embedderUrl').textContent = emb.baseURL || '';
+      document.getElementById('embedderDim').textContent = emb.dim ? emb.dim + ' 维' : '';
+    } else {
+      document.getElementById('embedderBadge').className = 'model-badge off';
+      document.getElementById('embedderModel').textContent = '未启用';
+      document.getElementById('embedderUrl').textContent = '';
+      document.getElementById('embedderDim').textContent = '纯 BM25';
+    }
+
+    if (rer) {
+      document.getElementById('rerankerBadge').className = 'model-badge';
+      document.getElementById('rerankerModel').textContent = rer.model || '未知';
+      document.getElementById('rerankerUrl').textContent = rer.baseURL || '';
+      document.getElementById('rerankerLimit').textContent = data.rerankCandidateLimit > 0
+        ? '候选上限 ' + data.rerankCandidateLimit
+        : '';
+    } else {
+      document.getElementById('rerankerBadge').className = 'model-badge off';
+      document.getElementById('rerankerModel').textContent = '未启用';
+      document.getElementById('rerankerUrl').textContent = '';
+      document.getElementById('rerankerLimit').textContent = '跳过重排序';
+    }
+  } catch (e) {
+    // silently ignore; model info is non-critical
+  }
+}
+
 // === Cards ===
 function renderCards(items, isHits) {
   const grid = document.getElementById('cardGrid');
@@ -908,7 +997,7 @@ function renderCards(items, isHits) {
   grid.innerHTML = items.map(d => {
     const icon = typeIcon(d.sourceType);
     const paperTag = d.isPaper ? '<span class="badge badge-paper">📄 论文</span>' : '';
-    const tags = (d.tags||[]).map(t => `<span class="badge">${escHtml(t)}</span>`).join('');
+    const tags = (d.tags||[]).map(t => `<span class="badge" onclick="event.stopPropagation();filterByTag('${escHtml(t)}')" style="cursor:pointer">${escHtml(t)}</span>`).join('');
     const sizeStr = formatSize(d.totalChars);
     return `<div class="doc-card">
       <div class="card-top">
@@ -1115,6 +1204,7 @@ async function doDelete() {
     closeConfirm();
     showToast('删除成功', 'success');
     loadDocs();
+    loadModelInfo();
   } catch (e) {
     showToast(e.message, 'error');
   } finally {
@@ -1125,11 +1215,18 @@ async function doDelete() {
 
 // === Tag filter ===
 function filterByTag(tag) {
-  // Set search input to tag and apply filter
+  currentTag = currentTag === tag ? '' : tag; // toggle: clicking the same tag clears the filter
   document.getElementById('searchInput').value = '';
   document.getElementById('typeFilter').value = '';
-  // Tags filter not directly in search, so we note it
-  showToast('点击标签: ' + tag + '（标签过滤功能）', 'success');
+  fulltextMode = false;
+  fulltextHits = [];
+  fulltextQuery = '';
+  document.getElementById('searchBar').classList.remove('show');
+  currentPage = 0;
+  render();
+  if (currentTag) {
+    showToast('标签过滤: ' + currentTag, 'success');
+  }
 }
 
 // === Toast ===

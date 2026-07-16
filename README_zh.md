@@ -75,7 +75,7 @@ MANAGE_PORT=8080 knowledge-mcp
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `KNOWLEDGE_MCP_DATA_DIR` | `.reasonix/knowledge/` | 知识库存储目录 |
+| `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | 知识库存储目录 |
 | `KNOWLEDGE_MCP_DEFAULT_KB` | — | 默认知识库名称。设置后工具默认使用该 KB（除非指定 `kbName`）；未设置时上传需显式指定 `kbName` |
 
 ### 管理页面

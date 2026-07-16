@@ -12,7 +12,7 @@ import (
 // UploadDocument ingests a file into the knowledge base:
 //  1. ParseFile extracts the full text.
 //  2. ChunkText splits it into paragraph-level chunks with position metadata.
-//  3. Chunks are written as NNN.md under .reasonix/knowledge/<slug>/chunks/.
+//  3. Chunks are written as NNN.md under ~/knowledge_base/<slug>/chunks/.
 //  4. Metadata is written to meta.json.
 //  5. CHUNKS.toml search index is written with position metadata.
 //  6. INDEX.md is updated with a link to the new document.
@@ -21,17 +21,24 @@ import (
 // caller is responsible for preserving source.<ext> if desired. Returns the
 // generated slug and the metadata written.
 func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
+	log := s.logger.WithModule("upload")
+	log.Infof("UploadDocument path=%q kb=%q", path, s.kbName)
+	start := time.Now()
+
 	// Step 1: parse.
 	text, err := ParseFile(path)
 	if err != nil {
+		log.Errorf("UploadDocument %q: parse failed: %v", path, err)
 		return DocumentMeta{}, fmt.Errorf("upload: parse: %w", err)
 	}
 
 	// Step 2: hierarchical chunking (fine + coarse section-level chunks).
 	fineChunks, coarseChunks := ChunkTextHierarchical(text)
 	if len(fineChunks) == 0 {
+		log.Errorf("UploadDocument %q: no chunks produced", path)
 		return DocumentMeta{}, fmt.Errorf("upload: document produced no chunks (empty after parsing)")
 	}
+	log.Debugf("chunked %d chars → %d fine + %d coarse chunks", len(text), len(fineChunks), len(coarseChunks))
 
 	// Step 2a: optional semantic merging to combine topically adjacent chunks.
 	if s.embedder != nil {
@@ -86,8 +93,7 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 
 	// Step 5: write CHUNKS.toml search index with section chunk links.
 	if err := s.writeChunksIndexFromMetaWithSections(slug, fineChunks, coarseChunks); err != nil {
-		// Non-fatal: the index can be rebuilt from chunk files.
-		_ = err
+		log.Warnf("writeChunksIndexFromMetaWithSections for %q: %v", slug, err)
 	}
 
 	// Step 6: optionally copy source file for traceability.
@@ -102,6 +108,7 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		_ = err
 	}
 
+	log.Infof("UploadDocument %q done: slug=%q chunks=%d chars=%d in %v", path, slug, meta.ChunkCount, meta.TotalChars, time.Since(start))
 	return meta, nil
 }
 
@@ -129,8 +136,9 @@ func (s *Store) updateIndex(slug string, meta DocumentMeta) error {
 
 // UploadDirectory ingests all supported document files under dir. When recursive
 // is true it walks subdirectories; otherwise it scans only the top level.
-// Returns a summary string for the caller (e.g. "Uploaded 5 documents (3 pdf, 2 md), 0 failures").
+// Returns a summary string for the caller.
 func (s *Store) UploadDirectory(dir string, recursive bool, tags ...string) (string, error) {
+	s.logger.WithModule("upload").Infof("UploadDirectory dir=%q recursive=%v kb=%q", dir, recursive, s.kbName)
 	info, err := os.Stat(dir)
 	if err != nil {
 		return "", fmt.Errorf("access directory %q: %w", dir, err)

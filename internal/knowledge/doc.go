@@ -3,13 +3,13 @@
 // text search. It sits alongside the memory subsystem but is independent: memory
 // stores discrete facts as frontmatter .md files indexed by MEMORY.md (which
 // loads into the system-prompt prefix), while knowledge stores full documents in
-// .reasonix/knowledge/<slug>/chunks/*.md and is queried at runtime via a tool —
+// ~/knowledge_base/<slug>/chunks/*.md and is queried at runtime via a tool —
 // its content NEVER enters the system-prompt prefix, keeping the DeepSeek
 // prefix-cache warm regardless of knowledge-base size.
 //
 // Layout:
 //
-//	.reasonix/knowledge/
+//	~/knowledge_base/<kb-name>/
 //	├── INDEX.md                   ← document-level index (runtime, not prefix)
 //	└── <document-slug>/
 //	    ├── meta.json              ← {original_name, source_type, added_at, chunk_count, total_chars}

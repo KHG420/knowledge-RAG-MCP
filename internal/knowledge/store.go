@@ -15,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/retrieval"
 )
 
@@ -24,10 +25,9 @@ const boundaryMergeN = 5 // G12: number of old tail chunks for incremental bound
 const boundaryMergeM = 5 // G12: number of new head chunks for incremental boundary merge
 
 // Store manages the on-disk knowledge base. By default data is stored under
-// <root>/.reasonix/knowledge/; call WithDataDir to use a custom directory.
+// ~/knowledge_base/; call WithDataDir to use a custom directory.
 type Store struct {
-	root    string // workspace root (contains .reasonix/)
-	dataDir string // if set, overrides the default knowledge dir path (.reasonix/knowledge/)
+	dataDir string // if set, overrides the default knowledge dir path (~/knowledge_base/)
 	kbName  string // knowledge base name; empty means flat legacy mode (no subdirectory)
 	rewriter           QueryRewriter
 	embedder           Embedder
@@ -35,16 +35,17 @@ type Store struct {
 	rerankCandidateLimit int   // max candidates fed to reranker (default 100)
 	searchLogger       SearchLogger
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
+	logger *logging.Logger
 }
 
-// NewStore returns a Store rooted at workspaceRoot. The data directory defaults
-// to <root>/.reasonix/knowledge/; call WithDataDir to override.
-func NewStore(workspaceRoot string) *Store {
-	return &Store{root: workspaceRoot, AbstractBoost: 1.1}
+// NewStore returns a Store. The data directory defaults to ~/knowledge_base/;
+// call WithDataDir to override.
+func NewStore() *Store {
+	return &Store{AbstractBoost: 1.1, logger: logging.NewNopLogger()}
 }
 
 // WithDataDir sets an explicit data directory for the knowledge base,
-// overriding the default <root>/.reasonix/knowledge/ path.
+// overriding the default ~/knowledge_base/ path.
 func (s *Store) WithDataDir(dir string) *Store {
 	s.dataDir = dir
 	return s
@@ -52,12 +53,17 @@ func (s *Store) WithDataDir(dir string) *Store {
 
 // WithKB returns a Store view scoped to the named knowledge base.
 // When name is empty, the store operates on the flat knowledge directory (legacy mode).
-// The returned Store shares the same embedder, reranker, and other
+// The returned Store shares the same embedder, reranker, logger, and other
 // configuration but reads/writes from a KB-scoped subdirectory.
 func (s *Store) WithKB(name string) *Store {
 	cp := *s
 	cp.kbName = name
 	return &cp
+}
+
+// SetLogger sets the logger on the Store.
+func (s *Store) SetLogger(l *logging.Logger) {
+	s.logger = l
 }
 
 // kbDir returns the KB-scoped data directory.
@@ -94,33 +100,55 @@ func (s *Store) ListKBs() ([]string, error) {
 
 // CreateKB creates a new empty knowledge base directory with an INDEX.md.
 func (s *Store) CreateKB(name string) error {
+	s.logger.Infof("KB %q: creating", name)
 	kbDir := filepath.Join(s.knowledgeDir(), name)
 	if err := os.MkdirAll(kbDir, 0o755); err != nil {
+		s.logger.Errorf("KB %q: create dir failed: %v", name, err)
 		return fmt.Errorf("create KB dir: %w", err)
 	}
 	indexPath := filepath.Join(kbDir, "INDEX.md")
 	if err := os.WriteFile(indexPath, []byte("# "+name+"\n"), 0o644); err != nil {
+		s.logger.Errorf("KB %q: write INDEX.md failed: %v", name, err)
 		return fmt.Errorf("create INDEX.md: %w", err)
 	}
+	s.logger.Infof("KB %q: created", name)
 	return nil
 }
 
 // DeleteKB removes an entire knowledge base directory.
 func (s *Store) DeleteKB(name string) error {
+	s.logger.Infof("KB %q: deleting", name)
 	kbDir := filepath.Join(s.knowledgeDir(), name)
 	if err := os.RemoveAll(kbDir); err != nil {
+		s.logger.Errorf("KB %q: delete failed: %v", name, err)
 		return fmt.Errorf("delete KB dir: %w", err)
 	}
+	s.logger.Infof("KB %q: deleted", name)
 	return nil
 }
 
 // knowledgeDir returns the data directory path. When dataDir is set it is used
-// directly; otherwise it falls back to <root>/.reasonix/knowledge/.
+// directly; otherwise it falls back to ~/knowledge_base/.
+// The returned path is always absolute with ~ expanded (Go does not expand
+// ~ natively), so the knowledge base location stays stable regardless of
+// the current working directory.
 func (s *Store) knowledgeDir() string {
 	if s.dataDir != "" {
-		return s.dataDir
+		dir := s.dataDir
+		// Expand ~/ to the user's home directory.
+		if strings.HasPrefix(dir, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				dir = filepath.Join(home, dir[2:])
+			}
+		}
+		// Resolve to an absolute path.
+		if abs, err := filepath.Abs(dir); err == nil {
+			return abs
+		}
+		return dir
 	}
-	return filepath.Join(s.root, ".reasonix", "knowledge")
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, "knowledge_base")
 }
 
 // EnsureDir creates the knowledge directory tree if it doesn't exist.
@@ -859,6 +887,7 @@ func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
 				}
 			}
 		}
+
 		return &index, nil
 	}
 
@@ -938,7 +967,9 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 	}
 
 	hasEmbedder := s.embedder != nil
+	s.logger.Debugf("embed: slug=%q hasEmbedder=%v", slug, hasEmbedder)
 	if hasEmbedder {
+		s.logger.Debugf("embed: Dim()=%d embedder=%T", s.embedder.Dim(), s.embedder)
 		index.VectorDim = s.embedder.Dim()
 		index.HasVectors = true
 	}
@@ -954,6 +985,7 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 		vectors, err = s.embedder.Embed(context.Background(), contents)
 		if err != nil {
 			// Non-fatal: continue without vectors.
+			s.logger.Warnf("embed: embedding failed for %q: %v", slug, err)
 			hasEmbedder = false
 			index.VectorDim = 0
 			index.HasVectors = false
@@ -1204,6 +1236,32 @@ func rebuildIndexFromChunks(s *Store, slug string) (*ChunksIndex, error) {
 		index.Chunks[i] = entry
 	}
 
+	// Only compute vectors when the old index lacks them (lazy fill-in).
+	if s.embedder != nil && (oldIndex == nil || !oldIndex.HasVectors) {
+		contents := make([]string, len(ids))
+		for i, id := range ids {
+			if data, err := os.ReadFile(s.ChunkPath(slug, id)); err == nil {
+				contents[i] = string(data)
+			}
+		}
+		vectors, err := s.embedder.Embed(context.Background(), contents)
+		if err != nil {
+			s.logger.Warnf("rebuilding vectors for %q failed: %v", slug, err)
+		} else {
+			index.VectorDim = s.embedder.Dim()
+			index.HasVectors = true
+			for i := range index.Chunks {
+				if i < len(vectors) && vectors[i] != nil {
+					vec64 := make([]float64, len(vectors[i]))
+					for j, v := range vectors[i] {
+						vec64[j] = float64(v)
+					}
+					index.Chunks[i].Vector = vec64
+				}
+			}
+		}
+	}
+
 	cs, csErr := s.computeChunksChecksum(slug)
 	if csErr == nil {
 		index.Checksum = cs
@@ -1213,4 +1271,33 @@ func rebuildIndexFromChunks(s *Store, slug string) (*ChunksIndex, error) {
 		return nil, fmt.Errorf("write rebuilt index: %w", writeErr)
 	}
 	return index, nil
+}
+
+// RebuildMissingVectors iterates all documents in the current (or default) KB
+// and rebuilds CHUNKS.toml for any that lack vectors. After one successful run
+// all documents have HasVectors=true, so subsequent calls are no-ops.
+// Safe to call at startup when an embedder is configured.
+func (s *Store) RebuildMissingVectors() {
+	if s.embedder == nil {
+		return
+	}
+	docs, err := s.ListDocuments()
+	if err != nil {
+		s.logger.Errorf("RebuildMissingVectors: list documents: %v", err)
+		return
+	}
+	for _, doc := range docs {
+		slug := doc.Slug
+		idx, err := s.ReadChunksIndex(slug)
+		if err != nil || idx == nil || idx.HasVectors {
+			continue
+		}
+		rebuilt, rebuildErr := rebuildIndexFromChunks(s, slug)
+		if rebuildErr != nil {
+			s.logger.Errorf("RebuildMissingVectors: %q failed: %v", slug, rebuildErr)
+		} else {
+			s.logger.Infof("RebuildMissingVectors: %q → %d chunks, dim=%d",
+				slug, rebuilt.ChunkCount, rebuilt.VectorDim)
+		}
+	}
 }

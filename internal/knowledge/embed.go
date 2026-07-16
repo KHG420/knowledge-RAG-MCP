@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"knowledge-mcp/internal/logging"
+	"knowledge-mcp/internal/retrieval"
 )
 
 // Embedder generates dense vector representations for text passages.
@@ -28,6 +31,7 @@ type OpenAIEmbedder struct {
 	model   string
 	dim     int
 	client  *http.Client
+	logger  *logging.Logger
 }
 
 // OpenAIEmbedderOption configures an OpenAIEmbedder.
@@ -62,15 +66,23 @@ func WithDim(dim int) OpenAIEmbedderOption {
 	}
 }
 
+// WithEmbedLogger sets the logger on the embedder.
+func WithEmbedLogger(l *logging.Logger) OpenAIEmbedderOption {
+	return func(e *OpenAIEmbedder) {
+		e.logger = l
+	}
+}
+
 // NewOpenAIEmbedder returns an OpenAI-compatible Embedder.
-// Defaults: baseURL "https://api.openai.com/v1", model "text-embedding-ada-002".
+// Defaults: baseURL "https://api.openai.com/v1", model "bge-m3".
 func NewOpenAIEmbedder(opts ...OpenAIEmbedderOption) *OpenAIEmbedder {
 	e := &OpenAIEmbedder{
 		baseURL: "https://api.openai.com/v1",
-		model:   "text-embedding-ada-002",
+		model:   "bge-m3",
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		logger: logging.NewNopLogger(),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -88,13 +100,65 @@ type embedResponse struct {
 		Embedding []float64 `json:"embedding"` // API returns float64 in JSON
 		Index     int       `json:"index"`
 	} `json:"data"`
+	APIError *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
 	Usage struct {
 		TotalTokens int `json:"total_tokens"`
 	} `json:"usage"`
 }
 
+// maxTokensPerBatch is the approximate token limit per embedding API request.
+// bge-m3 supports up to 8192 tokens per request; we leave headroom for safety.
+const maxTokensPerBatch = 6000
+
 // Embed sends texts to the embedding API and returns vectors as float32 slices.
+// When the total token count across all texts exceeds maxTokensPerBatch, texts
+// are split into multiple API requests and the results are merged in order.
 func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	// Single text optimization: no batching needed.
+	if len(texts) == 1 {
+		return e.embedBatch(ctx, texts)
+	}
+
+	var allVectors [][]float32
+	var batch []string
+	batchTokens := 0
+
+	for _, text := range texts {
+		tokens := len(retrieval.Tokens(text))
+		if batchTokens+tokens > maxTokensPerBatch && len(batch) > 0 {
+			vectors, err := e.embedBatch(ctx, batch)
+			if err != nil {
+				return nil, fmt.Errorf("embed batch (%d texts): %w", len(batch), err)
+			}
+			allVectors = append(allVectors, vectors...)
+			batch = nil
+			batchTokens = 0
+		}
+		batch = append(batch, text)
+		batchTokens += tokens
+	}
+
+	// Flush remaining batch.
+	if len(batch) > 0 {
+		vectors, err := e.embedBatch(ctx, batch)
+		if err != nil {
+			return nil, fmt.Errorf("embed batch (%d texts): %w", len(batch), err)
+		}
+		allVectors = append(allVectors, vectors...)
+	}
+
+	return allVectors, nil
+}
+
+// embedBatch sends a single batch of texts to the embedding API.
+func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -108,10 +172,12 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		return nil, fmt.Errorf("embed marshal: %w", err)
 	}
 
-	u, err := url.JoinPath(e.baseURL, "/embeddings")
+	u, err := url.JoinPath(e.baseURL, "embeddings")
 	if err != nil {
 		return nil, fmt.Errorf("embed url: %w", err)
 	}
+	start := time.Now()
+	e.logger.Debugf("[embed] POST %s model=%s texts=%d", u, e.model, len(texts))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("embed request: %w", err)
@@ -129,12 +195,20 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 
 	if resp.StatusCode != http.StatusOK {
 		rbody, _ := io.ReadAll(resp.Body)
+		e.logger.Errorf("[embed] FAIL status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rbody)))
 		return nil, fmt.Errorf("embed api status %d: %s", resp.StatusCode, strings.TrimSpace(string(rbody)))
 	}
+
+	e.logger.Debugf("[embed] OK model=%s texts=%d elapsed=%s", e.model, len(texts), time.Since(start))
 
 	var result embedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("embed decode: %w", err)
+	}
+
+	// Check for API-level errors (e.g. Ollama returns 200 + {"error": {...}}).
+	if result.APIError != nil && result.APIError.Message != "" {
+		return nil, fmt.Errorf("embed api error: %s (%s)", result.APIError.Message, result.APIError.Type)
 	}
 
 	// Map by index to preserve order.
@@ -287,4 +361,38 @@ func (s *Store) SetEmbedder(e Embedder) {
 // logger is silently ignored.
 func (s *Store) SetSearchLogger(l SearchLogger) {
 	s.searchLogger = l
+}
+
+// EmbedderInfo returns information about the configured embedder, or nil if none.
+func (s *Store) EmbedderInfo() map[string]any {
+	if s.embedder == nil {
+		return nil
+	}
+	info := map[string]any{
+		"dim": s.embedder.Dim(),
+	}
+	if oe, ok := s.embedder.(*OpenAIEmbedder); ok {
+		info["baseURL"] = oe.baseURL
+		info["model"] = oe.model
+	}
+	return info
+}
+
+// RerankerInfo returns information about the configured reranker, or nil if none.
+func (s *Store) RerankerInfo() map[string]any {
+	if s.reranker == nil {
+		return nil
+	}
+	if ir, ok := s.reranker.(*InfinityReranker); ok {
+		return map[string]any{
+			"baseURL": ir.baseURL,
+			"model":   ir.model,
+		}
+	}
+	return map[string]any{"type": "custom"}
+}
+
+// RerankCandidateLimit returns the configured reranker candidate limit.
+func (s *Store) RerankCandidateLimit() int {
+	return s.rerankCandidateLimit
 }

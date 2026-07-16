@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,33 +13,56 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/knowledge"
 )
 
 func main() {
 	dataDir := os.Getenv("KNOWLEDGE_MCP_DATA_DIR")
 	defaultKB := os.Getenv("KNOWLEDGE_MCP_DEFAULT_KB")
-	store := knowledge.NewStore(".")
-	if dataDir != "" {
-		store.WithDataDir(dataDir)
+
+	// Set up structured logger: KNOWLEDGE_MCP_LOG_FILE env var, or <exe-dir>/knowledge-mcp.log.
+	// Level: KNOWLEDGE_MCP_LOG_LEVEL env var ("debug" or "info"; defaults to "info").
+	logPath := os.Getenv("KNOWLEDGE_MCP_LOG_FILE")
+	if logPath == "" {
+		exe, _ := os.Executable()
+		logPath = filepath.Join(filepath.Dir(exe), "knowledge-mcp.log")
 	}
+	logLevel := logging.ParseLevel(os.Getenv("KNOWLEDGE_MCP_LOG_LEVEL"))
+	logger, err := logging.NewLogger(logPath, logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create logger at %s: %v\n", logPath, err)
+		os.Exit(1)
+	}
+	defer logger.Close()
+	log := logger.WithModule("startup")
+	log.Infof("log file: %s level=%s", logPath, []string{"debug","info"}[logLevel])
+
+	store := knowledge.NewStore()
+	if dataDir != "" {
+		store = store.WithDataDir(dataDir)
+	}
+	store.SetLogger(logger.WithModule("store"))
 	if defaultKB != "" {
 		store = store.WithKB(defaultKB)
-		log.Printf("[knowledge-mcp] default KB: %s", defaultKB)
+		log.Infof("default KB: %s", defaultKB)
 	}
 	if err := store.EnsureDir(); err != nil {
-		log.Fatalf("failed to init data dir: %v", err)
+		log.Errorf("failed to init data dir: %v", err)
+		os.Exit(1)
 	}
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
 	if baseURL := os.Getenv("EMBED_API_BASE_URL"); baseURL != "" {
+		log.Infof("EMBED_API_BASE_URL=%q EMBED_MODEL=%q EMBED_DIM=%q",
+			baseURL, os.Getenv("EMBED_MODEL"), os.Getenv("EMBED_DIM"))
 		opts := []knowledge.OpenAIEmbedderOption{knowledge.WithBaseURL(baseURL)}
 		if key := os.Getenv("EMBED_API_KEY"); key != "" {
 			opts = append(opts, knowledge.WithAPIKey(key))
 		}
 		model := os.Getenv("EMBED_MODEL")
 		if model == "" {
-			model = "text-embedding-ada-002"
+			model = "bge-m3" // Ollama-compatible default
 		}
 		opts = append(opts, knowledge.WithModel(model))
 		if dimStr := os.Getenv("EMBED_DIM"); dimStr != "" {
@@ -47,8 +70,13 @@ func main() {
 				opts = append(opts, knowledge.WithDim(dim))
 			}
 		}
+		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
-		log.Printf("[knowledge-mcp] embedder: %s (model=%s)", baseURL, model)
+		log.Infof("embedder: %s (model=%s)", baseURL, model)
+		// One-time: fill in missing vectors for existing documents that lack them.
+		// After the first run, HasVectors=true on all docs so subsequent restarts
+		// skip this step entirely.
+		store.RebuildMissingVectors()
 	}
 
 	// --- Optional: cross-encoder reranker (Infinity/Cohere-compatible API) ---
@@ -60,31 +88,38 @@ func main() {
 		if model := os.Getenv("RERANK_MODEL"); model != "" {
 			opts = append(opts, knowledge.WithRerankModel(model))
 		}
+		if s := os.Getenv("RERANK_TIMEOUT"); s != "" {
+			if d, err := time.ParseDuration(s); err == nil {
+				opts = append(opts, knowledge.WithRerankTimeout(d))
+				log.Infof("rerank timeout: %s", d)
+			}
+		}
+		opts = append(opts, knowledge.WithRerankLogger(logger.WithModule("rerank")))
 		store.SetReranker(knowledge.NewInfinityReranker(opts...))
-		log.Printf("[knowledge-mcp] reranker: %s", baseURL)
+		log.Infof("reranker: %s", baseURL)
 	}
 
 	// --- Optional: rerank candidate limit (default 100) ---
 	if s := os.Getenv("RERANK_CANDIDATE_LIMIT"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			store.SetRerankCandidateLimit(n)
-			log.Printf("[knowledge-mcp] rerank candidate limit: %d", n)
+			log.Infof("rerank candidate limit: %d", n)
 		}
 	}
 
-	// --- Web management UI (default: http://localhost:8084) ---
+	// --- Web management UI (default: http://localhost:8085) ---
 	managePort := os.Getenv("MANAGE_PORT")
 	if managePort == "" {
-		managePort = "8084"
+		managePort = "8085"
 	}
 	go func() {
 		kbInfo := defaultKB
 		if kbInfo == "" {
 			kbInfo = "(none)"
 		}
-		log.Printf("[knowledge-mcp] management UI → http://localhost:%s (default KB: %s)", managePort, kbInfo)
+		log.Infof("management UI starting on http://localhost:%s (default KB: %s)", managePort, kbInfo)
 		if err := store.StartManageServer(managePort); err != nil {
-			log.Printf("[knowledge-mcp] management UI error: %v", err)
+			log.Errorf("management UI failed to start on port %s: %v", managePort, err)
 		}
 	}()
 
@@ -94,20 +129,20 @@ func main() {
 		server.WithToolCapabilities(true),
 	)
 
-	registerSearch(s, store)
-	registerRead(s, store)
-	registerList(s, store)
-	registerUpload(s, store)
-	registerRemove(s, store)
+	registerSearch(s, store, logger)
+	registerRead(s, store, logger)
+	registerList(s, store, logger)
+	registerUpload(s, store, logger)
+	registerRemove(s, store, logger)
 
 	if err := server.ServeStdio(s); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
-}
+		log.Errorf("server error: %v", err)
+		os.Exit(1)
+	}}
 
 // --- Tool registration ---
 
-func registerSearch(s *server.MCPServer, store *knowledge.Store) {
+func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_search",
 		mcp.WithDescription(`BM25/hybrid keyword search across all documents in the knowledge base.
 
@@ -213,6 +248,8 @@ Examples of required rewriting:
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
 		}
+		tlog := logger.WithModule("tool")
+		tlog.Debugf("knowledge_search: query=%q limit=%d kb=%q mode=%q hits=%d", searchKW, limit, kbName, getString(req, "mode"), len(hits))
 		if len(hits) == 0 {
 			return mcp.NewToolResultText("No matching chunks found."), nil
 		}
@@ -221,7 +258,7 @@ Examples of required rewriting:
 	})
 }
 
-func registerRead(s *server.MCPServer, store *knowledge.Store) {
+func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_read",
 		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
 
@@ -271,6 +308,7 @@ If search results show multiple hits from the same section (SectionHint field is
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+			logger.WithModule("tool").Debugf("knowledge_read: section slug=%q chunk=%q kb=%q ok", docSlug, chunkID, kbName)
 			return mcp.NewToolResultText(text), nil
 		}
 
@@ -278,6 +316,7 @@ If search results show multiple hits from the same section (SectionHint field is
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		logger.WithModule("tool").Debugf("knowledge_read: chunk slug=%q chunk=%q ctx=%d kb=%q textlen=%d", docSlug, chunkID, ctxCount, kbName, len(text))
 		return mcp.NewToolResultText(text), nil
 	})
 }
@@ -333,7 +372,7 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 	return "", fmt.Errorf("document %q not found in any KB", docSlug)
 }
 
-func registerList(s *server.MCPServer, store *knowledge.Store) {
+func registerList(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_list",
 		mcp.WithDescription(`List all uploaded documents in the knowledge base.`),
 		mcp.WithString("kbName",
@@ -356,6 +395,7 @@ func registerList(s *server.MCPServer, store *knowledge.Store) {
 		if len(display) == 0 {
 			return mcp.NewToolResultText("Knowledge base is empty."), nil
 		}
+		logger.WithModule("tool").Debugf("knowledge_list: kb=%q total=%d displayed=%d", kbName, len(full), len(display))
 
 		// Notify the user if there are more docs than shown.
 		var msg string
@@ -368,7 +408,7 @@ func registerList(s *server.MCPServer, store *knowledge.Store) {
 	})
 }
 
-func registerUpload(s *server.MCPServer, store *knowledge.Store) {
+func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_upload",
 		mcp.WithDescription(`Upload a document file or batch-upload a directory into the knowledge base. Supports PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT.`),
 		mcp.WithString("filePath",
@@ -409,11 +449,13 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 			return mcp.NewToolResultError("kbName is required when no default KB is configured. Specify which knowledge base to upload to."), nil
 		}
 		uploadStore := store.WithKB(kbName)
+		tlog := logger.WithModule("tool")
 
 		if directory != "" {
 			if filePath != "" {
 				return mcp.NewToolResultError("filePath and directory are mutually exclusive"), nil
 			}
+			tlog.Debugf("knowledge_upload: directory=%q recursive=%v kb=%q", directory, recursive, kbName)
 			summary, err := uploadStore.UploadDirectory(directory, recursive, tags...)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("batch upload failed: %v", err)), nil
@@ -426,8 +468,10 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		}
 		meta, err := uploadStore.UploadDocument(filePath, tags...)
 		if err != nil {
+			tlog.Errorf("knowledge_upload: file=%q failed: %v", filePath, err)
 			return mcp.NewToolResultError(fmt.Sprintf("upload failed: %v", err)), nil
 		}
+		tlog.Debugf("knowledge_upload: file=%q slug=%q chunks=%d chars=%d", filePath, meta.Slug, meta.ChunkCount, meta.TotalChars)
 		return mcp.NewToolResultText(
 			fmt.Sprintf("Document uploaded: %s (%d chunks, %d chars)",
 				meta.OriginalName, meta.ChunkCount, meta.TotalChars),
@@ -435,7 +479,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 	})
 }
 
-func registerRemove(s *server.MCPServer, store *knowledge.Store) {
+func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_remove",
 		mcp.WithDescription(`Remove a document and all its chunks from the knowledge base.`),
 		mcp.WithString("docSlug",
@@ -454,14 +498,18 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 		}
 
 		kbName := getString(req, "kbName")
+		tlog := logger.WithModule("tool")
+		tlog.Debugf("knowledge_remove: slug=%q kb=%q", docSlug, kbName)
 		if kbName != "" {
 			if err := store.WithKB(kbName).RemoveDocument(docSlug); err != nil {
+				tlog.Errorf("knowledge_remove: slug=%q kb=%q failed: %v", docSlug, kbName, err)
 				return mcp.NewToolResultError(fmt.Sprintf("remove failed: %v", err)), nil
 			}
 		} else {
 			// Try to remove from all KBs
 			kbs, err := store.ListKBs()
 			if err != nil {
+				tlog.Errorf("knowledge_remove: list KBs failed: %v", err)
 				return mcp.NewToolResultError(fmt.Sprintf("list KBs failed: %v", err)), nil
 			}
 			removed := false
@@ -475,6 +523,7 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store) {
 				return mcp.NewToolResultError(fmt.Sprintf("document %q not found in any KB", docSlug)), nil
 			}
 		}
+		tlog.Debugf("knowledge_remove: slug=%q done", docSlug)
 		return mcp.NewToolResultText(fmt.Sprintf("Document %q removed.", docSlug)), nil
 	})
 }

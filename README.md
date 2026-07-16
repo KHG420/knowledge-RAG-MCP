@@ -76,7 +76,7 @@ web UI are immediately searchable through `knowledge_search`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KNOWLEDGE_MCP_DATA_DIR` | `.reasonix/knowledge/` | Knowledge base storage directory |
+| `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | Knowledge base storage directory |
 | `KNOWLEDGE_MCP_DEFAULT_KB` | — | Default KB name. When set, tools use this KB unless `kbName` is specified. Uploads require `kbName` when not set. |
 
 ### Management

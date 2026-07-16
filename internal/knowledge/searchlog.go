@@ -14,10 +14,11 @@ type FileSearchLogger struct {
 }
 
 // NewFileSearchLogger creates a FileSearchLogger that writes to
-// <workspaceRoot>/.reasonix/knowledge/.searchlog.jsonl.
+// ~/knowledge_base/.searchlog.jsonl.
 func NewFileSearchLogger(workspaceRoot string) *FileSearchLogger {
+	homeDir, _ := os.UserHomeDir()
 	return &FileSearchLogger{
-		path: filepath.Join(workspaceRoot, ".reasonix", "knowledge", ".searchlog.jsonl"),
+		path: filepath.Join(homeDir, "knowledge_base", ".searchlog.jsonl"),
 	}
 }
 

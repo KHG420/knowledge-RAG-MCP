@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -93,7 +94,35 @@ func (s *Store) StartManageServer(port string) error {
 		writeManageJSON(w, http.StatusOK, map[string]string{"message": "deleted", "name": name})
 	})
 
-	return http.ListenAndServe(":"+port, mux)
+	// API: model info (embedder + reranker)
+	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
+		writeManageJSON(w, http.StatusOK, map[string]any{
+			"embedder":            s.EmbedderInfo(),
+			"reranker":            s.RerankerInfo(),
+			"rerankCandidateLimit": s.RerankCandidateLimit(),
+		})
+	})
+
+	// Listen on the port with per-family fallback.
+	// On macOS, Go's net.Listen("tcp", ":port") can return EADDRINUSE even when
+	// binding succeeds on one address family. This happens because getaddrinfo
+	// returns both IPv4 and IPv6 addresses for ":port", and Go tries each in
+	// sequence — the IPv6 socket (with IPV6_V6ONLY=0 on macOS) already covers
+	// all addresses, making the subsequent IPv4 bind appear as "address already
+	// in use". We try each family independently so the first success is used.
+	var ln net.Listener
+	var err error
+	for _, network := range []string{"tcp6", "tcp4"} {
+		ln, err = net.Listen(network, ":"+port)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("listen on :%s (tried tcp6, tcp4): %w", port, err)
+	}
+	defer ln.Close()
+	return http.Serve(ln, mux)
 }
 
 // --- API handlers ---
