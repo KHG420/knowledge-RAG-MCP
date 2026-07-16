@@ -17,6 +17,7 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 - **Paragraph-level chunking** — semantic-boundary splitting, overlap, hierarchical fine + coarse sections, section-role classification
 - **Parent-child retrieval** — read a chunk's full parent section for richer context
 - **Paper metadata extraction** — title, authors, abstract, section-role detection for academic papers
+- **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
 
 ## Installation
 
@@ -56,15 +57,18 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 
 ## Web Management UI
 
-Start a standalone web interface to upload, browse, and delete documents:
+A management web interface is **built in** — it starts automatically alongside the MCP server.
+Open [http://localhost:8084](http://localhost:8084) (default port) in your browser to upload,
+browse, search, and delete documents, and manage multiple knowledge bases.
+
+Override the port with the `MANAGE_PORT` environment variable:
 
 ```bash
-MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
+MANAGE_PORT=8080 knowledge-mcp
 ```
 
-Open [http://localhost:8080](http://localhost:8080) in your browser.
-
-The manager shares the same data directory as the MCP server, so any document you upload via the web UI is immediately searchable via `knowledge_search`.
+The UI shares the same data directory as the MCP server, so documents uploaded via the
+web UI are immediately searchable through `knowledge_search`.
 
 ## Environment Variables
 
@@ -73,6 +77,13 @@ The manager shares the same data directory as the MCP server, so any document yo
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KNOWLEDGE_MCP_DATA_DIR` | `.reasonix/knowledge/` | Knowledge base storage directory |
+| `KNOWLEDGE_MCP_DEFAULT_KB` | — | Default KB name. When set, tools use this KB unless `kbName` is specified. Uploads require `kbName` when not set. |
+
+### Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MANAGE_PORT` | `8084` | Web management UI port |
 
 ### Embedding (hybrid search)
 
@@ -111,10 +122,15 @@ BM25/RRF recall → Cross-Encoder re-rank → final top-K.
 | `search_keywords` | **yes** | Rewritten keyword string (space-separated). Do NOT pass the user's raw question — fix typos, expand context, add synonyms first |
 | `original_question` | no | User's original question verbatim (for logging) |
 | `query` | no | **Deprecated** — use `search_keywords` |
+| `kbName` | no | KB name. When set, search only that KB; when omitted, search all KBs |
 | `limit` | no | Max results (default 8, max 20) |
 | `mode` | no | `bm25` or `hybrid` (auto-picks hybrid if embedder available) |
 | `sourceType` | no | Filter by file extension: `pdf`, `md`, `txt`, etc. |
 | `section` | no | Filter chunks whose section heading contains this substring |
+| `tags` | no | Comma-separated tags. Only documents matching at least one tag |
+| `addedAfter` | no | ISO 8601 date. Only docs added at or after this time |
+| `addedBefore` | no | ISO 8601 date. Only docs added at or before this time |
+| `coarse` | no | Enable coarse-to-fine 2-phase search |
 
 ### `knowledge_read`
 
@@ -124,12 +140,17 @@ Read a specific chunk or its full parent section.
 |-----------|----------|-------------|
 | `docSlug` | **yes** | Document slug (from search/list results) |
 | `chunkID` | **yes** | Chunk identifier, e.g. `005` |
+| `kbName` | no | KB name. When omitted, the document is looked up across all KBs |
 | `context` | no | Adjacent chunks to include before/after (default 0, max 5) |
 | `level` | no | `chunk` (default) or `section` — reads the full parent section |
 
 ### `knowledge_list`
 
 List all uploaded documents with metadata.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `kbName` | no | KB name. When set, list only that KB; when omitted, list all KBs |
 
 ### `knowledge_upload`
 
@@ -140,6 +161,8 @@ Upload a single file or batch-upload a directory.
 | `filePath` | * | Path to a single file |
 | `directory` | * | Directory path for batch upload |
 | `recursive` | no | Recurse into subdirectories (for batch) |
+| `kbName` | **conditional** | Target KB. **Required** unless `KNOWLEDGE_MCP_DEFAULT_KB` is set |
+| `tags` | no | Comma-separated tags to assign to uploaded documents |
 
 \* Exactly one of `filePath` or `directory` is required.
 
@@ -150,6 +173,7 @@ Remove a document and all its chunks.
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `docSlug` | **yes** | Document slug to remove (from list results) |
+| `kbName` | no | KB name. When set, remove from that KB; when omitted, remove from all KBs |
 
 ## Search Pipeline
 
@@ -173,18 +197,23 @@ Without a reranker, the pipeline skips Phase 2 and returns RRF/BM25 results dire
 
 ```
 <data-dir>/
-├── INDEX.md
-├── .searchlog.jsonl
-└── <document-slug>/
-    ├── meta.json          # OriginalName, SourceType, AddedAt, Title, Authors, Abstract
-    ├── CHUNKS.toml        # Per-chunk: terms, vector, section, offset, sectionRole
-    ├── source.<ext>       # Original file copy
-    └── chunks/
-        ├── 000.md         # Fine-grained chunks
-        ├── 001.md
-        └── sections/
-            ├── S00.md     # Coarse section-level chunks
-            └── S01.md
+├── <kb-name>/
+│   ├── INDEX.md
+│   ├── LIST_SNAPSHOT.json
+│   ├── .searchlog.jsonl
+│   └── <document-slug>/
+│       ├── meta.json          # OriginalName, SourceType, AddedAt, Title, Authors, Abstract
+│       ├── CHUNKS.toml        # Per-chunk: terms, vector, section, offset, sectionRole
+│       ├── source.<ext>       # Original file copy
+│       └── chunks/
+│           ├── 000.md         # Fine-grained chunks
+│           ├── 001.md
+│           └── sections/
+│               ├── S00.md     # Coarse section-level chunks
+│               └── S01.md
+├── <another-kb>/
+│   └── ...
+└── (legacy flat documents live at the root level)
 ```
 
 ## Architecture

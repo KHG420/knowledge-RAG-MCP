@@ -263,6 +263,16 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	successCount := 0
+	for _, r := range results {
+		if r.Error == "" {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		writeManageError(w, http.StatusInternalServerError, "all files failed to upload")
+		return
+	}
 	writeManageJSON(w, http.StatusOK, map[string]any{
 		"message": "upload complete",
 		"results": results,

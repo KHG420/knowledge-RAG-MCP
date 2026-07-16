@@ -28,7 +28,7 @@ const boundaryMergeM = 5 // G12: number of new head chunks for incremental bound
 type Store struct {
 	root    string // workspace root (contains .reasonix/)
 	dataDir string // if set, overrides the default knowledge dir path (.reasonix/knowledge/)
-	kbName  string // knowledge base name; empty defaults to "default"
+	kbName  string // knowledge base name; empty means flat legacy mode (no subdirectory)
 	rewriter           QueryRewriter
 	embedder           Embedder
 	reranker           Reranker
@@ -51,7 +51,7 @@ func (s *Store) WithDataDir(dir string) *Store {
 }
 
 // WithKB returns a Store view scoped to the named knowledge base.
-// When name is empty, the default KB ("default") is used.
+// When name is empty, the store operates on the flat knowledge directory (legacy mode).
 // The returned Store shares the same embedder, reranker, and other
 // configuration but reads/writes from a KB-scoped subdirectory.
 func (s *Store) WithKB(name string) *Store {
@@ -61,29 +61,24 @@ func (s *Store) WithKB(name string) *Store {
 }
 
 // kbDir returns the KB-scoped data directory.
-// When kbName is empty, it defaults to "default" under the base knowledge dir.
+// When kbName is empty, it returns the base knowledge dir (legacy flat mode).
 func (s *Store) kbDir() string {
-	kb := s.kbName
-	if kb == "" {
-		kb = "default"
-	}
-	return filepath.Join(s.knowledgeDir(), kb)
+	return filepath.Join(s.knowledgeDir(), s.kbName)
 }
 
 // ListKBs returns knowledge base names found under the knowledge directory.
 // Each subdirectory containing an INDEX.md is considered a KB.
-// If no KB subdirectories exist (legacy flat structure), returns ["default"].
+// If no KB subdirectories exist (legacy flat structure), returns an empty list.
 func (s *Store) ListKBs() ([]string, error) {
 	kd := s.knowledgeDir()
 	entries, err := os.ReadDir(kd)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{"default"}, nil
+			return []string{}, nil
 		}
 		return nil, fmt.Errorf("read knowledge dir: %w", err)
 	}
 	var kbs []string
-	hasSubDirs := false
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -92,12 +87,7 @@ func (s *Store) ListKBs() ([]string, error) {
 		indexPath := filepath.Join(kd, e.Name(), "INDEX.md")
 		if _, err := os.Stat(indexPath); err == nil {
 			kbs = append(kbs, e.Name())
-			hasSubDirs = true
 		}
-	}
-	if !hasSubDirs {
-		// Legacy flat structure: no KB subdirectories yet.
-		return []string{"default"}, nil
 	}
 	return kbs, nil
 }
@@ -117,9 +107,6 @@ func (s *Store) CreateKB(name string) error {
 
 // DeleteKB removes an entire knowledge base directory.
 func (s *Store) DeleteKB(name string) error {
-	if name == "" || name == "default" {
-		return fmt.Errorf("cannot delete the default knowledge base")
-	}
 	kbDir := filepath.Join(s.knowledgeDir(), name)
 	if err := os.RemoveAll(kbDir); err != nil {
 		return fmt.Errorf("delete KB dir: %w", err)
@@ -138,11 +125,7 @@ func (s *Store) knowledgeDir() string {
 
 // EnsureDir creates the knowledge directory tree if it doesn't exist.
 func (s *Store) EnsureDir() error {
-	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
-		return err
-	}
-	// Ensure the default KB subdirectory also exists.
-	return os.MkdirAll(s.kbDir(), 0o755)
+	return os.MkdirAll(s.knowledgeDir(), 0o755)
 }
 
 // IndexPath returns the path to INDEX.md.

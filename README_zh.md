@@ -17,6 +17,7 @@
 - **段落级分块** — 语义边界切分、重叠、层级化细粒度 + 粗粒度章节分块、章节角色分类
 - **父子检索** — 可读取分块所属的完整父章节，获取更丰富的上下文
 - **论文元数据提取** — 自动提取标题、作者、摘要，识别章节角色
+- **多知识库** — 将文档组织到独立的知识库中；跨知识库搜索和列表；通过管理页面创建/删除知识库
 
 ## 安装
 
@@ -56,13 +57,15 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 
 ## Web 管理页面
 
-启动独立 Web 界面，通过浏览器上传、浏览和删除文档：
+管理页面已**内嵌**在 MCP server 中 —— 启动知识库服务时自动运行。
+打开浏览器访问 [http://localhost:8084](http://localhost:8084)（默认端口）即可上传、
+浏览、搜索和删除文档，以及管理多个知识库。
+
+可通过 `MANAGE_PORT` 环境变量修改端口：
 
 ```bash
-MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
+MANAGE_PORT=8080 knowledge-mcp
 ```
-
-打开 [http://localhost:8080](http://localhost:8080) 即可使用。
 
 管理页面与 MCP server 共享同一数据目录，通过网页上传的文档立即可通过 `knowledge_search` 搜索。
 
@@ -73,6 +76,13 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `KNOWLEDGE_MCP_DATA_DIR` | `.reasonix/knowledge/` | 知识库存储目录 |
+| `KNOWLEDGE_MCP_DEFAULT_KB` | — | 默认知识库名称。设置后工具默认使用该 KB（除非指定 `kbName`）；未设置时上传需显式指定 `kbName` |
+
+### 管理页面
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `MANAGE_PORT` | `8084` | Web 管理页面端口 |
 
 ### 嵌入（混合搜索）
 
@@ -110,10 +120,15 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 | `search_keywords` | **是** | 重写后的关键词（空格分隔）。不要直接传用户原始问题——先修正拼写、扩展上下文、添加同义词 |
 | `original_question` | 否 | 用户原始问题原文（用于日志记录） |
 | `query` | 否 | **已废弃** — 请使用 `search_keywords` |
+| `kbName` | 否 | 知识库名称。设置后只搜索该 KB；不传则搜索全部 KB |
 | `limit` | 否 | 最大结果数（默认 8，上限 20） |
 | `mode` | 否 | `bm25` 或 `hybrid`（有嵌入服务时自动选择 hybrid） |
 | `sourceType` | 否 | 按文件类型过滤：`pdf`、`md`、`txt` 等 |
 | `section` | 否 | 按章节标题过滤（子串匹配） |
+| `tags` | 否 | 逗号分隔的标签。仅返回匹配至少一个标签的文档 |
+| `addedAfter` | 否 | ISO 8601 日期。仅返回此时间之后添加的文档 |
+| `addedBefore` | 否 | ISO 8601 日期。仅返回此时间之前添加的文档 |
+| `coarse` | 否 | 启用粗粒度到细粒度的两阶段搜索 |
 
 ### `knowledge_read`
 
@@ -123,12 +138,17 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 |-----------|----------|-------------|
 | `docSlug` | **是** | 文档标识符（来自搜索/列表结果） |
 | `chunkID` | **是** | 分块标识符，如 `005` |
+| `kbName` | 否 | 知识库名称。不传则遍历所有 KB 查找文档 |
 | `context` | 否 | 包含前后相邻分块数（默认 0，上限 5） |
 | `level` | 否 | `chunk`（默认）或 `section`——读取完整父章节 |
 
 ### `knowledge_list`
 
 列出所有已上传文档及其元数据。
+
+| 参数 | 必填 | 说明 |
+|-----------|----------|-------------|
+| `kbName` | 否 | 知识库名称。设置后只列出该 KB 的文档；不传则列出全部 KB |
 
 ### `knowledge_upload`
 
@@ -139,6 +159,8 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 | `filePath` | * | 单个文件路径 |
 | `directory` | * | 批量导入的目录路径 |
 | `recursive` | 否 | 是否递归子目录（批量导入时） |
+| `kbName` | **条件必填** | 目标知识库。未设置 `KNOWLEDGE_MCP_DEFAULT_KB` 时必需 |
+| `tags` | 否 | 逗号分隔的标签，分配给上传的文档 |
 
 \* `filePath` 和 `directory` 二选一。
 
@@ -149,6 +171,7 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 | 参数 | 必填 | 说明 |
 |-----------|----------|-------------|
 | `docSlug` | **是** | 要删除的文档标识符（来自列表结果） |
+| `kbName` | 否 | 知识库名称。设置后从该 KB 删除；不传则遍历所有 KB |
 
 ## 搜索流程
 
@@ -171,18 +194,23 @@ MANAGE_PORT=8080 KNOWLEDGE_MCP_DATA_DIR=./kb-data go run ./cmd/manager/
 
 ```
 <data-dir>/
-├── INDEX.md
-├── .searchlog.jsonl
-└── <document-slug>/
-    ├── meta.json          # 原始文件名、来源类型、添加时间、标题、作者、摘要
-    ├── CHUNKS.toml        # 每块：词项、向量、章节、偏移、章节角色
-    ├── source.<ext>       # 原始文件副本
-    └── chunks/
-        ├── 000.md         # 细粒度分块
-        ├── 001.md
-        └── sections/
-            ├── S00.md     # 粗粒度章节级分块
-            └── S01.md
+├── <kb-name>/
+│   ├── INDEX.md
+│   ├── LIST_SNAPSHOT.json
+│   ├── .searchlog.jsonl
+│   └── <document-slug>/
+│       ├── meta.json          # 原始文件名、来源类型、添加时间、标题、作者、摘要
+│       ├── CHUNKS.toml        # 每块：词项、向量、章节、偏移、章节角色
+│       ├── source.<ext>       # 原始文件副本
+│       └── chunks/
+│           ├── 000.md         # 细粒度分块
+│           ├── 001.md
+│           └── sections/
+│               ├── S00.md     # 粗粒度章节级分块
+│               └── S01.md
+├── <another-kb>/
+│   └── ...
+└── (旧版扁平文档位于根目录)
 ```
 
 ## 架构

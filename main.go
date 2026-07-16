@@ -78,7 +78,11 @@ func main() {
 		managePort = "8084"
 	}
 	go func() {
-		log.Printf("[knowledge-mcp] management UI → http://localhost:%s (default KB: %s)", managePort, defaultKB)
+		kbInfo := defaultKB
+		if kbInfo == "" {
+			kbInfo = "(none)"
+		}
+		log.Printf("[knowledge-mcp] management UI → http://localhost:%s (default KB: %s)", managePort, kbInfo)
 		if err := store.StartManageServer(managePort); err != nil {
 			log.Printf("[knowledge-mcp] management UI error: %v", err)
 		}
@@ -250,10 +254,6 @@ If search results show multiple hits from the same section (SectionHint field is
 		}
 
 		kbName := getString(req, "kbName")
-		readStore := store
-		if kbName != "" {
-			readStore = store.WithKB(kbName)
-		}
 
 		ctxCount := 0
 		if v, ok := req.Params.Arguments["context"].(float64); ok {
@@ -267,14 +267,14 @@ If search results show multiple hits from the same section (SectionHint field is
 		}
 
 		if strings.ToLower(getString(req, "level")) == "section" {
-			text, err := readSection(readStore, docSlug, chunkID)
+			text, err := tryReadSection(store, kbName, docSlug, chunkID)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return mcp.NewToolResultText(text), nil
 		}
 
-		text, err := readStore.ReadChunkContext(docSlug, chunkID, ctxCount)
+		text, err := tryReadChunk(store, kbName, docSlug, chunkID, ctxCount)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -293,6 +293,44 @@ func readSection(store *knowledge.Store, docSlug, chunkID string) (string, error
 		}
 	}
 	return store.ReadChunk(docSlug, chunkID)
+}
+
+// tryReadChunk reads a chunk from a specific KB, or searches across all KBs
+// when kbName is empty.
+func tryReadChunk(store *knowledge.Store, kbName, docSlug, chunkID string, ctxCount int) (string, error) {
+	if kbName != "" {
+		return store.WithKB(kbName).ReadChunkContext(docSlug, chunkID, ctxCount)
+	}
+	kbs, err := store.ListKBs()
+	if err != nil {
+		return "", err
+	}
+	for _, kb := range kbs {
+		text, err := store.WithKB(kb).ReadChunkContext(docSlug, chunkID, ctxCount)
+		if err == nil {
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("document %q not found in any KB", docSlug)
+}
+
+// tryReadSection reads a section chunk from a specific KB, or searches across
+// all KBs when kbName is empty.
+func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (string, error) {
+	if kbName != "" {
+		return readSection(store.WithKB(kbName), docSlug, chunkID)
+	}
+	kbs, err := store.ListKBs()
+	if err != nil {
+		return "", err
+	}
+	for _, kb := range kbs {
+		text, err := readSection(store.WithKB(kb), docSlug, chunkID)
+		if err == nil {
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("document %q not found in any KB", docSlug)
 }
 
 func registerList(s *server.MCPServer, store *knowledge.Store) {
@@ -345,8 +383,8 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		mcp.WithString("tags",
 			mcp.Description("Comma-separated tags to assign to the uploaded document(s)."),
 		),
-		mcp.WithString("kbName",
-			mcp.Description("Optional knowledge base name. When set, upload to that KB. When omitted, upload to the default KB."),
+	mcp.WithString("kbName",
+			mcp.Description("Knowledge base name. Required when no default KB is configured via KNOWLEDGE_MCP_DEFAULT_KB."),
 		),
 	)
 
@@ -360,10 +398,17 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store) {
 		}
 
 		kbName := getString(req, "kbName")
-		uploadStore := store
-		if kbName != "" {
-			uploadStore = store.WithKB(kbName)
+		if kbName == "" {
+			kbs, listErr := store.ListKBs()
+			if listErr != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("list KBs failed: %v", listErr)), nil
+			}
+			if len(kbs) == 0 {
+				return mcp.NewToolResultError("No knowledge base exists. Create one first via the management UI."), nil
+			}
+			return mcp.NewToolResultError("kbName is required when no default KB is configured. Specify which knowledge base to upload to."), nil
 		}
+		uploadStore := store.WithKB(kbName)
 
 		if directory != "" {
 			if filePath != "" {

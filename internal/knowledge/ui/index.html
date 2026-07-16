@@ -328,6 +328,62 @@
     font-size: 13px; opacity: 0.9; margin-top: 6px;
   }
   .kb-badge span { font-weight: 600; }
+  .kb-badge .home-btn {
+    margin-left: 10px; padding: 2px 8px; font-size: 13px;
+    border: 1px solid rgba(255,255,255,0.4); border-radius: 4px;
+    background: transparent; color: #fff; cursor: pointer;
+    transition: background var(--transition);
+  }
+  .kb-badge .home-btn:hover { background: rgba(255,255,255,0.15); }
+
+  /* Home page */
+  .kb-home {
+    display: none; align-items: center; justify-content: center;
+    min-height: 80vh; padding: 40px 20px;
+  }
+  .kb-home.active { display: flex; }
+  .kb-home-card {
+    background: var(--card); border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+    max-width: 580px; width: 100%; padding: 40px 36px;
+    text-align: center;
+  }
+  .kb-home-card .welcome-icon { font-size: 52px; margin-bottom: 12px; }
+  .kb-home-card h1 { font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .kb-home-card .subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 28px; }
+  .kb-home-card .kb-list { text-align: left; margin-bottom: 20px; }
+  .kb-home-card .kb-list-item {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px; border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer;
+    transition: all var(--transition); margin-bottom: 8px;
+  }
+  .kb-home-card .kb-list-item:hover {
+    border-color: var(--primary); background: var(--primary-light);
+    box-shadow: var(--shadow-md); transform: translateY(-1px);
+  }
+  .kb-home-card .kb-list-item .kb-icon { font-size: 28px; flex-shrink: 0; }
+  .kb-home-card .kb-list-item .kb-info { flex: 1; min-width: 0; }
+  .kb-home-card .kb-list-item .kb-name { font-weight: 600; font-size: 15px; }
+  .kb-home-card .kb-list-item .kb-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .kb-home-card .kb-list-item .kb-arrow { font-size: 18px; color: var(--text-muted); }
+  .kb-home-card .kb-list-item:hover .kb-arrow { color: var(--primary); }
+  .kb-home-card .kb-list-item .kb-del-btn {
+    font-size: 15px; opacity: 0; cursor: pointer; transition: opacity var(--transition);
+    padding: 4px; border-radius: 4px; line-height: 1; margin-left: 4px;
+  }
+  .kb-home-card .kb-list-item:hover .kb-del-btn { opacity: 0.5; }
+  .kb-home-card .kb-list-item .kb-del-btn:hover { opacity: 1 !important; background: #fef2f2; }
+  .kb-home-card .kb-empty { padding: 30px 0; color: var(--text-muted); }
+  .kb-home-card .kb-empty .empty-icon { font-size: 40px; margin-bottom: 8px; }
+  .kb-home-card .kb-empty p { font-size: 14px; }
+  .kb-home-card .kb-create-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 24px; background: var(--primary); color: #fff;
+    border: none; border-radius: var(--radius-sm); font-size: 14px;
+    cursor: pointer; transition: background var(--transition);
+  }
+  .kb-home-card .kb-create-btn:hover { background: var(--primary-hover); }
 
   /* Responsive */
   @media (max-width: 640px) {
@@ -338,22 +394,37 @@
     .card-grid { grid-template-columns: 1fr; }
     .drawer { width: 100vw; max-width: 100vw; right: -100vw; }
     .toolbar .search-box { min-width: 120px; }
+    .kb-home-card { padding: 28px 20px; }
+    .kb-home-card .welcome-icon { font-size: 40px; }
+    .kb-home-card h1 { font-size: 20px; }
   }
 </style>
 </head>
 <body>
+
+<!-- Home page -->
+<div class="kb-home active" id="kbHome">
+  <div class="kb-home-card">
+    <div class="welcome-icon">📚</div>
+    <h1>欢迎使用知识库</h1>
+    <p class="subtitle">选择一个知识库进入，或创建一个新的</p>
+    <div class="kb-list" id="kbHomeList"></div>
+    <button class="kb-create-btn" onclick="createKB()">➕ 创建新知识库</button>
+  </div>
+</div>
+
 <div id="app">
 
   <!-- Header -->
-  <div class="header">
+  <div class="header" id="header" style="display:none">
     <div class="header-inner">
       <h1><span>📚</span> Knowledge Base Manager</h1>
       <p>管理你的本地知识库 · 上传、浏览、搜索和删除文档</p>
-      <div class="kb-badge">🏷️ 知识库：<span id="currentKBLabel">默认</span></div>
+      <div class="kb-badge">🏷️ 知识库：<span id="currentKBLabel"></span> <button class="home-btn" onclick="goHome()">🏠 主页</button></div>
     </div>
   </div>
 
-  <div class="container">
+  <div class="container" id="mainContent" style="display:none">
 
     <!-- Stats -->
     <div class="stats-row" id="statsRow">
@@ -514,35 +585,73 @@ let fulltextQuery = '';
 document.addEventListener('DOMContentLoaded', async () => {
   setupDragDrop();
   await loadKBs();
-  loadDocs();
+  // Show home page; user selects a KB to enter
+  renderKBHome();
 });
 
 // === Knowledge Bases ===
 async function loadKBs() {
   try {
     const data = await api('/api/knowledge-bases');
-    const kbs = data.knowledgeBases || ['default'];
-    const current = data.currentKB || '';
-    const sel = document.getElementById('kbSelect');
-    sel.innerHTML = kbs.map(kb =>
-      `<option value="${escHtml(kb)}" ${(kb === current || (!current && kb === 'default')) ? 'selected' : ''}>${escHtml(kb)}</option>`
+    const kbs = data.knowledgeBases || [];
+    document.getElementById('kbSelect').innerHTML = kbs.map(kb =>
+      `<option value="${escHtml(kb)}">${escHtml(kb)}</option>`
     ).join('');
-    currentKB = current || 'default';
-    document.getElementById('currentKBLabel').textContent = currentKB;
+    currentKB = '';
+    window._kbList = kbs;
   } catch (e) {
-    currentKB = 'default';
-    document.getElementById('currentKBLabel').textContent = 'default';
+    currentKB = '';
+    window._kbList = [];
   }
 }
 
-function switchKB(name) {
+function enterKB(name) {
   currentKB = name;
   document.getElementById('currentKBLabel').textContent = name;
+  document.getElementById('kbSelect').value = name;
+  document.getElementById('kbHome').style.display = 'none';
+  document.getElementById('header').style.display = 'block';
+  document.getElementById('mainContent').style.display = 'block';
   currentPage = 0;
   fulltextMode = false;
   fulltextHits = [];
   document.getElementById('searchBar').classList.remove('show');
   loadDocs();
+}
+
+function goHome() {
+  currentKB = '';
+  document.getElementById('header').style.display = 'none';
+  document.getElementById('mainContent').style.display = 'none';
+  document.getElementById('kbHome').style.display = 'flex';
+  renderKBHome();
+}
+
+function renderKBHome() {
+  var kbs = window._kbList || [];
+  var list = document.getElementById('kbHomeList');
+  if (!kbs || kbs.length === 0) {
+    list.innerHTML = '<div class="kb-empty"><div class="empty-icon">📭</div><p>还没有知识库，点击上方按钮创建一个吧</p></div>';
+    return;
+  }
+  list.innerHTML = kbs.map(function(kb) {
+    var delBtn = '<span class="kb-del-btn" onclick="event.stopPropagation();deleteKB(\'' + escHtml(kb) + '\')" title="删除知识库">🗑️</span>';
+    return '<div class="kb-list-item" onclick="enterKB(\'' + escHtml(kb) + '\')">' +
+      '<div class="kb-icon">📂</div>' +
+      '<div class="kb-info">' +
+      '<div class="kb-name">' + escHtml(kb) + '</div>' +
+      '<div class="kb-desc">点击进入该知识库</div>' +
+      '</div>' +
+      '<div class="kb-arrow">➜</div>' +
+      delBtn +
+      '</div>';
+  }).join('');
+}
+
+function switchKB(name) {
+  if (name) {
+    enterKB(name);
+  }
 }
 
 async function createKB() {
@@ -562,10 +671,46 @@ async function createKB() {
   }
 }
 
+async function deleteKB(name) {
+  if (!confirm('确定要删除知识库 "' + name + '" 吗？\n\n此操作不可撤销，所有文档和数据将被永久删除。')) return;
+  try {
+    const res = await fetch('/api/knowledge-bases/' + encodeURIComponent(name), { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '删除失败');
+    showToast('知识库 "' + name + '" 已删除', 'success');
+    if (currentKB === name) {
+      currentKB = '';
+      document.getElementById('header').style.display = 'none';
+      document.getElementById('mainContent').style.display = 'none';
+      document.getElementById('kbHome').style.display = 'flex';
+    }
+    await loadKBs();
+    renderKBHome();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
 // === API ===
 async function api(path, opts = {}) {
-  const sep = path.includes('?') ? '&' : '?';
-  const url = path + sep + 'kb=' + encodeURIComponent(currentKB);
+  let url = path;
+  if (currentKB) {
+    const sep = path.includes('?') ? '&' : '?';
+    url = path + sep + 'kb=' + encodeURIComponent(currentKB);
+  }
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'request failed');
+  return data;
+}
+
+// Like api() but returns raw JSON regardless of HTTP status
+async function apiRaw(path, opts = {}) {
+  let url = path;
+  if (currentKB) {
+    const sep = path.includes('?') ? '&' : '?';
+    url = path + sep + 'kb=' + encodeURIComponent(currentKB);
+  }
   const res = await fetch(url, opts);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'request failed');
@@ -930,7 +1075,13 @@ async function uploadFiles(fileList) {
     try {
       const formData = new FormData();
       formData.append('files', file);
-      await api('/api/upload', { method: 'POST', body: formData });
+      const resp = await apiRaw('/api/upload', { method: 'POST', body: formData });
+      // Check individual result error (backend may return 200 with per-file errors)
+      const results = (resp.results || []);
+      const fileResult = results.find(r => r.name === file.name);
+      if (fileResult && fileResult.error) {
+        throw new Error(fileResult.error);
+      }
       item.className = 'upload-item done';
       item.querySelector('.status').textContent = '✅ 完成';
     } catch (e) {
