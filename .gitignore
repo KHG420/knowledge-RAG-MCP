@@ -34,4 +34,3 @@ node_modules/
 .infinity_cache/
 
 *.log
-logging/
