@@ -944,15 +944,11 @@ func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
 	// Try new format first ([]termFreq Terms).
 	var index ChunksIndex
 	if _, err := toml.Decode(string(data), &index); err == nil {
-		// G10: verify checksum if present and auto-rebuild on mismatch.
+		// G10: verify checksum if present; on mismatch, fall back to full scan.
 		if index.Checksum != "" {
 			actualCS, csErr := s.computeChunksChecksum(slug)
 			if csErr == nil && actualCS != index.Checksum {
-				// Checksum mismatch: rebuild index from chunk files.
-				rebuilt, rebuildErr := rebuildIndexFromChunks(s, slug)
-				if rebuildErr == nil {
-					return rebuilt, nil
-				}
+				return nil, nil // checksum drift → fall back to full scan
 			}
 		}
 
@@ -1037,8 +1033,7 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 	hasEmbedder := s.embedder != nil
 	s.logger.Debugf("embed: slug=%q hasEmbedder=%v", slug, hasEmbedder)
 	if hasEmbedder {
-		s.logger.Debugf("embed: Dim()=%d embedder=%T", s.embedder.Dim(), s.embedder)
-		index.VectorDim = s.embedder.Dim()
+		s.logger.Debugf("embed: embedder=%T", s.embedder)
 		index.HasVectors = true
 	}
 
@@ -1057,6 +1052,16 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 			hasEmbedder = false
 			index.VectorDim = 0
 			index.HasVectors = false
+		} else {
+			// Embed succeeded: set dimension from the embedder (which may have
+			// auto-detected it from the API response), then validate vectors.
+			index.VectorDim = s.embedder.Dim()
+			if index.VectorDim <= 0 {
+				s.logger.Warnf("embed: embedding returned zero-dimension vectors for %q — disabling vectors", slug)
+				hasEmbedder = false
+				index.VectorDim = 0
+				index.HasVectors = false
+			}
 		}
 	}
 
@@ -1247,133 +1252,5 @@ func (s *Store) computeChunksChecksum(slug string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// rebuildIndexFromChunks scans all chunk files for a document and rebuilds the
-// CHUNKS.toml index from scratch. Section/Offset/Vector metadata from the
-// existing index is preserved when available; otherwise those fields are left
-// empty.
-func rebuildIndexFromChunks(s *Store, slug string) (*ChunksIndex, error) {
-	ids, err := s.ListChunks(slug)
-	if err != nil {
-		return nil, fmt.Errorf("list chunks: %w", err)
-	}
-	sort.Strings(ids)
-
-	// Read existing CHUNKS.toml directly (not via ReadChunksIndex, to avoid
-	// recursive checksum verification).
-	oldIndex := (*ChunksIndex)(nil)
-	if data, readErr := os.ReadFile(s.ChunksIndexPath(slug)); readErr == nil {
-		var directIndex ChunksIndex
-		if _, decErr := toml.Decode(string(data), &directIndex); decErr == nil {
-			oldIndex = &directIndex
-		}
-	}
-	oldMeta := map[string]ChunkIndexEntry{}
-	if oldIndex != nil {
-		for _, e := range oldIndex.Chunks {
-			oldMeta[e.ID] = e
-		}
-	}
-
-	index := &ChunksIndex{
-		Slug:       slug,
-		ChunkCount: len(ids),
-		Chunks:     make([]ChunkIndexEntry, len(ids)),
-	}
-
-	for i, id := range ids {
-		data, readErr := os.ReadFile(s.ChunkPath(slug, id))
-		if readErr != nil {
-			continue
-		}
-		content := string(data)
-		tokens := retrieval.Tokens(content)
-		tc := retrieval.Counts(tokens)
-
-		entry := ChunkIndexEntry{
-			ID:        id,
-			TermCount: len(tokens),
-			Terms:     trimTopTerms(tc, maxTermsPerChunk),
-		}
-		if old, ok := oldMeta[id]; ok {
-			entry.Section = old.Section
-			entry.Offset = old.Offset
-			entry.Vector = old.Vector
-			entry.SectionChunkID = old.SectionChunkID
-			entry.SectionRole = old.SectionRole
-		}
-		index.Chunks[i] = entry
-	}
-
-	// Only compute vectors when the old index lacks them (lazy fill-in).
-	if s.embedder != nil && (oldIndex == nil || !oldIndex.HasVectors) {
-		contents := make([]string, len(ids))
-		for i, id := range ids {
-			if data, err := os.ReadFile(s.ChunkPath(slug, id)); err == nil {
-				contents[i] = string(data)
-			}
-		}
-		vectors, err := s.embedder.Embed(context.Background(), contents)
-		if err != nil {
-			s.logger.Warnf("rebuilding vectors for %q failed: %v", slug, err)
-		} else {
-			index.VectorDim = s.embedder.Dim()
-			index.HasVectors = true
-			for i := range index.Chunks {
-				if i < len(vectors) && vectors[i] != nil {
-					vec64 := make([]float64, len(vectors[i]))
-					for j, v := range vectors[i] {
-						vec64[j] = float64(v)
-					}
-					index.Chunks[i].Vector = vec64
-				}
-			}
-		}
-	}
-
-	cs, csErr := s.computeChunksChecksum(slug)
-	if csErr == nil {
-		index.Checksum = cs
-	}
-
-	if writeErr := s.WriteChunksIndex(slug, index); writeErr != nil {
-		return nil, fmt.Errorf("write rebuilt index: %w", writeErr)
-	}
-	return index, nil
-}
-
-// RebuildMissingVectors iterates all documents in the current (or default) KB
-// and rebuilds CHUNKS.toml for any that lack vectors. After one successful run
-// all documents have HasVectors=true, so subsequent calls are no-ops.
-// Safe to call at startup when an embedder is configured.
-func (s *Store) RebuildMissingVectors() {
-	if s.embedder == nil {
-		return
-	}
-	docs, err := s.ListDocuments()
-	if err != nil {
-		s.logger.Errorf("RebuildMissingVectors: list documents: %v", err)
-		return
-	}
-	// Coordinate GPU: switch to embedding mode for batch vector building.
-	var restoreEmbed func()
-	if s.gpuScheduler != nil {
-		restoreEmbed = s.gpuScheduler.PrepareForEmbedding()
-	}
-	for _, doc := range docs {
-		slug := doc.Slug
-		idx, err := s.ReadChunksIndex(slug)
-		if err != nil || idx == nil || idx.HasVectors {
-			continue
-		}
-		rebuilt, rebuildErr := rebuildIndexFromChunks(s, slug)
-		if rebuildErr != nil {
-			s.logger.Errorf("RebuildMissingVectors: %q failed: %v", slug, rebuildErr)
-		} else {
-			s.logger.Infof("RebuildMissingVectors: %q → %d chunks, dim=%d",
-				slug, rebuilt.ChunkCount, rebuilt.VectorDim)
-		}
-	}
-	if restoreEmbed != nil {
-		restoreEmbed()
-	}
-}
+// computeChunksChecksum computes a SHA256 checksum over all chunk files for a
+// document, sorted by chunk ID. Returns the hex-encoded hash.

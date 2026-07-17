@@ -73,10 +73,6 @@ func main() {
 		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
 		log.Infof("embedder: %s (model=%s)", endpointURL, model)
-		// One-time: fill in missing vectors for existing documents that lack them.
-		// After the first run, HasVectors=true on all docs so subsequent restarts
-		// skip this step entirely.
-		store.RebuildMissingVectors()
 	}
 
 	// --- Optional: cross-encoder reranker (Infinity/Cohere-compatible API) ---

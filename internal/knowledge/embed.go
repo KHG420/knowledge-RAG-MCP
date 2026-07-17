@@ -98,6 +98,11 @@ type embedResponse struct {
 		Embedding []float64 `json:"embedding"` // API returns float64 in JSON
 		Index     int       `json:"index"`
 	} `json:"data"`
+
+	// Embeddings supports the Ollama /api/embed response format where
+	// vectors are returned as a flat 2D array keyed by "embeddings".
+	Embeddings [][]float64 `json:"embeddings"`
+
 	APIError *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -216,6 +221,25 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 			}
 			vectors[d.Index] = vec
 		}
+	}
+
+	// Fallback: Ollama /api/embed returns vectors as a flat 2D array
+	// under the "embeddings" key rather than OpenAI's "data" format.
+	if len(result.Data) == 0 && len(result.Embeddings) > 0 {
+		for i, emb := range result.Embeddings {
+			if i < len(texts) && len(emb) > 0 {
+				vec := make([]float32, len(emb))
+				for j, v := range emb {
+					vec[j] = float32(v)
+				}
+				vectors[i] = vec
+			}
+		}
+	}
+
+	// Validate: server returned 200 OK but no data in any format.
+	if len(result.Data) == 0 && len(result.Embeddings) == 0 && len(texts) > 0 {
+		return nil, fmt.Errorf("embed: server returned 200 OK with no embedding data (%d texts sent)", len(texts))
 	}
 
 	// Detect dimension from first response.
