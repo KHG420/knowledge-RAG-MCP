@@ -49,7 +49,7 @@ func (s *Store) loadInvertedIndex() (*InvertedIndex, error) {
 
 // saveInvertedIndex persists the inverted index as gob.
 func (s *Store) saveInvertedIndex(idx *InvertedIndex) error {
-	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.kbDir(), 0o755); err != nil {
 		return fmt.Errorf("ensure knowledge dir: %w", err)
 	}
 	f, err := os.Create(s.invertedIndexPath())
@@ -107,7 +107,7 @@ func (s *Store) updateInvertedIndex(slug string, entries []ChunkIndexEntry) erro
 // rebuildInvertedIndex scans all CHUNKS.toml files and rebuilds the global
 // inverted index from scratch.
 func (s *Store) rebuildInvertedIndex() error {
-	kd := s.knowledgeDir()
+	kd := s.kbDir()
 	docDirs, err := listDocDirs(kd)
 	if err != nil {
 		return fmt.Errorf("list documents: %w", err)

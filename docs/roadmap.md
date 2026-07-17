@@ -1,91 +1,92 @@
-# RAG 优化路线图
+# RAG Optimization Roadmap
 
-> 2026-07-13 审计 knowledge-mcp 项目后制定。基于 9 项 RAG 高级用法的逐条评估，
-> 按价值/阻力比排序，标记为"已有 / 计划中 / 后续 / 跳过"。
+> Established on 2026-07-13 after auditing the knowledge-mcp project. Based on an item-by-item
+> evaluation of 9 advanced RAG techniques, sorted by value/resistance ratio,
+> tagged as "Done / Planned / Later / Skip".
 
-## 一、已有 ✓（无需改动）
+## 1. Done ✓ (No Changes Needed)
 
-### 智能分块 (`internal/knowledge/chunker.go`)
-- 按 `\n\n` 段落边界切分 → 短块合并(<200字符) → 长块按句子边界再切(>2000字符) → 碎片合并(<60字符)
-- 块间重叠 ~200 字符（句子对齐）
-- Markdown 标题追踪 + section 角色分类 (abstract/introduction/methodology 等)
-- Embedding 余弦相似度合并相邻同义块 (阈值 0.75)
-- Fine chunk + Coarse section chunk 两层结构
+### Intelligent Chunking (`internal/knowledge/chunker.go`)
+- Split at `\n\n` paragraph boundaries → merge short chunks (<200 chars) → split long chunks at sentence boundaries (>2000 chars) → merge fragments (<60 chars)
+- ~200 char overlap between chunks (sentence-aligned)
+- Markdown heading tracking + section role classification (abstract/introduction/methodology, etc.)
+- Embedding cosine similarity merge of adjacent synonymous chunks (threshold 0.75)
+- Two-layer structure: Fine chunk + Coarse section chunk
 
-### 父子块索引 (`internal/knowledge/doc.go:58, store.go:870-930`)
+### Parent-Child Chunk Indexing (`internal/knowledge/doc.go:58, store.go:870-930`)
 - `ChunkWithMeta.SectionID` → `CHUNKS.toml.SectionChunkID` → `chunks/sections/S00.md`
-- `knowledge_read` 支持 `level: "section"` 读取子块所属的完整 section
-- `context` 参数可读取相邻 chunk 窗口 (前后各 0-5 个)
+- `knowledge_read` supports `level: "section"` to read the full parent section of a child chunk
+- `context` parameter reads a window of adjacent chunks (0-5 before and after)
 
-### 分层检索 (`internal/knowledge/search.go:666-768`)
-- `coarseToFineFilter`: BM25 评分 section-level chunks → 选 top-3 → 只在匹配 section 内做精细检索
-- 启用方式: `SearchFilter.Coarse = true`
-
----
-
-## 二、计划中 → 下一步实施
-
-### 1. 元数据过滤增强
-
-**现状**: `SearchFilter` 仅有 `SourceType` / `Section` / `DocSlug` / `Coarse` 四个字段。
-`meta.json` 无自定义标签、无文档日期过滤。
-
-**计划**:
-
-- [x] `SearchFilter` 新增字段:
-  - `Tags []string` — 标签白名单（文档必须有至少一个匹配标签）
-  - `AddedAfter` / `AddedBefore` — 上传时间范围 (`meta.json` 已有 `AddedAt`)
-- [x] `meta.json` 结构新增 `Tags []string`
-- [x] `knowledge_upload` 工具新增可选 `tags` 参数 (逗号分隔)
-- [x] `knowledge_search` 工具新增可选 `tags` / `addedAfter` / `addedBefore` 参数
-- [x] `collectEntries` / `collectEntriesFromCandidates` 增加标签和时间过滤逻辑
-
-### 2. Coarse 模式暴露到 MCP 工具
-
-**现状**: `SearchFilter.Coarse` 只在 Go 代码层可用，MCP 调用方无法触发。
-
-**计划**:
-
-- [x] `knowledge_search` 工具新增 `coarse` boolean 参数
-- [x] 当 `coarse=true` 时，handler 设置 `filter.Coarse = true`
-
-### 3. 父块命中自动提示
-
-**现状**: 搜索结果中同一 section 下的多个 chunk 分别返回，调用方不知道它们属于同一个 section。
-
-**计划**:
-
-- [x] `SearchHit` 新增 `SectionHint` 字段: 当同一 section 被 ≥2 个 chunk 命中时，
-  返回 `"Multiple hits in section 'XXX'. Consider reading with level=section for full context."`
-- [x] 实现逻辑: 在 `Search` / `HybridSearch` 的 Phase 9 后统计 sectionChunkID 频率，
-  给命中 ≥2 次的 section 的 chunk 添加 section hint
-- [x] 或者: 让 `knowledge_read` 的描述明确建议"如果搜索结果来自同一 section，使用 level=section"
+### Hierarchical Retrieval (`internal/knowledge/search.go:666-768`)
+- `coarseToFineFilter`: BM25-scored section-level chunks → pick top-3 → refine search within matching sections only
+- Enabled via: `SearchFilter.Coarse = true`
 
 ---
 
-## 三、后续考虑 → 有了前置条件再做
+## 2. Planned → Next to Implement
 
-### 4. 评估体系
+### 1. Metadata Filter Enhancement
 
-**现状**: `SearchLogger` 接口已存在，输出 `.searchlog.jsonl`（Query / HitCount / HitIDs / TopScores / Filter / Timestamp）。
-`SearchLogEntry` 已新增 `JudgedHits` 字段用于人工标注。评测脚本 `scripts/eval.go` 已完成，
-可读取 `.searchlog.jsonl` + 人工标注 JSON 并计算 NDCG@5 / MRR / Recall@10。
+**Current state**: `SearchFilter` has only four fields: `SourceType` / `Section` / `DocSlug` / `Coarse`.
+No custom tags, no document date filtering in `meta.json`.
 
-**前置条件**: 需要先积累人工标注的 query→relevant_chunk 映射。
+**Plan**:
 
-**已完成**:
+- [x] New fields for `SearchFilter`:
+  - `Tags []string` — tag whitelist (document must match at least one tag)
+  - `AddedAfter` / `AddedBefore` — upload time range (`meta.json` already has `AddedAt`)
+- [x] New `Tags []string` field in `meta.json` structure
+- [x] Optional `tags` parameter for `knowledge_upload` tool (comma-separated)
+- [x] Optional `tags` / `addedAfter` / `addedBefore` parameters for `knowledge_search` tool
+- [x] Tag and time filter logic added to `collectEntries` / `collectEntriesFromCandidates`
 
-- [x] 编写评测脚本 `scripts/eval.go`：读取 `.searchlog.jsonl` + 人工标注 JSON → 计算 NDCG@5 / MRR / Recall@10
-- [x] `SearchLogEntry` 新增 `JudgedHits []string`（人工标注的 relevant chunk IDs）字段
-- [x] 提供一个交互式标注 CLI（可选）
+### 2. Expose Coarse Mode to MCP Tools
+
+**Current state**: `SearchFilter.Coarse` is only available at the Go code layer; MCP callers cannot trigger it.
+
+**Plan**:
+
+- [x] New `coarse` boolean parameter for `knowledge_search` tool
+- [x] When `coarse=true`, handler sets `filter.Coarse = true`
+
+### 3. Automatic Parent Chunk Hit Hint
+
+**Current state**: Multiple chunk hits from the same section are returned individually; callers don't know they belong to the same section.
+
+**Plan**:
+
+- [x] New `SectionHint` field on `SearchHit`: when a section has ≥2 chunk hits,
+  returns `"Multiple hits in section 'XXX'. Consider reading with level=section for full context."`
+- [x] Implementation: after Phase 9 of `Search` / `HybridSearch`, count sectionChunkID frequency,
+  add section hint to chunks from sections with ≥2 hits
+- [x] Alternative: make `knowledge_read` description explicitly suggest "if search results come from the same section, use level=section"
 
 ---
 
-## 四、跳过 ✗
+## 3. Later → Do When Prerequisites Are Met
 
-| 建议 | 跳过理由 |
-|------|---------|
-| **上下文压缩** | 需额外部署压缩模型；调用方 agent 可自行摘要。增加延迟和运维成本，收益不大 |
-| **GraphRAG** | 需引入图索引 + 实体提取 + 关系推理，是对当前 BM25/向量架构的根本性改造，复杂度爆炸 |
-| **Agentic RAG** | MCP 调用者（Claude/GPT）本身就是 agent，已有路由/反思/重试能力。在 MCP server 内重建一层 agent 是重复建设 |
-| **提示词工程** | `knowledge_search` 描述已有详细查询重写规则；调用方 system prompt 不在本项目控制范围内 |
+### 4. Evaluation Framework
+
+**Current state**: `SearchLogger` interface already exists, outputs `.searchlog.jsonl` (Query / HitCount / HitIDs / TopScores / Filter / Timestamp).
+`SearchLogEntry` already has a `JudgedHits` field for human annotations. The evaluation script `scripts/eval.go` is complete,
+reading `.searchlog.jsonl` + human annotation JSON and computing NDCG@5 / MRR / Recall@10.
+
+**Prerequisite**: Needs accumulated human-annotated query→relevant_chunk mappings first.
+
+**Done**:
+
+- [x] Evaluation script `scripts/eval.go`: read `.searchlog.jsonl` + human annotation JSON → compute NDCG@5 / MRR / Recall@10
+- [x] New `JudgedHits []string` field on `SearchLogEntry` (human-annotated relevant chunk IDs)
+- [x] An interactive annotation CLI (optional)
+
+---
+
+## 4. Skipped ✗
+
+| Suggestion | Reason for Skipping |
+|------------|---------------------|
+| **Context Compression** | Requires deploying an additional compression model; the calling agent can already summarize. Adds latency and operational cost with marginal benefit |
+| **GraphRAG** | Requires graph index + entity extraction + relationship reasoning, a fundamental overhaul of the current BM25/vector architecture with unsustainable complexity |
+| **Agentic RAG** | The MCP caller (Claude/GPT) is itself an agent with routing, reflection, and retry capabilities. Rebuilding an agent layer inside the MCP server is redundant |
+| **Prompt Engineering** | `knowledge_search` description already has detailed query rewriting rules; the caller's system prompt is outside this project's control |

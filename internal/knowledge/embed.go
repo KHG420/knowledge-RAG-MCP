@@ -349,6 +349,13 @@ func (s *Store) SetRerankCandidateLimit(n int) {
 	s.rerankCandidateLimit = n
 }
 
+// SetRerankBatchSize sets the maximum number of documents per reranker request.
+// When candidates exceed this threshold, they are split into batches to avoid
+// timeouts on slow reranker models. Default is 20. Set to 0 to disable batching.
+func (s *Store) SetRerankBatchSize(n int) {
+	s.rerankBatchSize = n
+}
+
 // SetEmbedder configures the vector embedder on the store. When set, uploaded
 // documents will have their chunk vectors pre-computed and stored in the index,
 // enabling hybrid (BM25 + dense) search.

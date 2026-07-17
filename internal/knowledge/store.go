@@ -32,7 +32,9 @@ type Store struct {
 	rewriter           QueryRewriter
 	embedder           Embedder
 	reranker           Reranker
+	gpuScheduler       *GPUScheduler
 	rerankCandidateLimit int   // max candidates fed to reranker (default 100)
+	rerankBatchSize     int   // max documents per reranker request (default 20)
 	searchLogger       SearchLogger
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
 	logger *logging.Logger
@@ -64,6 +66,12 @@ func (s *Store) WithKB(name string) *Store {
 // SetLogger sets the logger on the Store.
 func (s *Store) SetLogger(l *logging.Logger) {
 	s.logger = l
+}
+
+// SetGPUScheduler configures a GPU scheduler for managing model sleep/wake.
+// When set, embedding and reranker operations coordinate to share GPU memory.
+func (s *Store) SetGPUScheduler(g *GPUScheduler) {
+	s.gpuScheduler = g
 }
 
 // kbDir returns the KB-scoped data directory.
@@ -98,8 +106,53 @@ func (s *Store) ListKBs() ([]string, error) {
 	return kbs, nil
 }
 
-// CreateKB creates a new empty knowledge base directory with an INDEX.md.
-func (s *Store) CreateKB(name string) error {
+// KBInfo holds metadata about a knowledge base.
+type KBInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// ListKBsInfo returns knowledge base names with descriptions.
+// Each KB's description is read from kb.json; if the file does not exist
+// (legacy KB), the description is empty.
+func (s *Store) ListKBsInfo() ([]KBInfo, error) {
+	kd := s.knowledgeDir()
+	entries, err := os.ReadDir(kd)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []KBInfo{}, nil
+		}
+		return nil, fmt.Errorf("read knowledge dir: %w", err)
+	}
+	var infos []KBInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Check if this directory has INDEX.md to confirm it's a KB.
+		indexPath := filepath.Join(kd, e.Name(), "INDEX.md")
+		if _, err := os.Stat(indexPath); err != nil {
+			continue
+		}
+		info := KBInfo{Name: e.Name()}
+		// Read description from kb.json if it exists.
+		kbJSONPath := filepath.Join(kd, e.Name(), "kb.json")
+		if data, readErr := os.ReadFile(kbJSONPath); readErr == nil {
+			var kbMeta struct {
+				Description string `json:"description"`
+			}
+			if json.Unmarshal(data, &kbMeta) == nil {
+				info.Description = kbMeta.Description
+			}
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// CreateKB creates a new empty knowledge base directory with an INDEX.md
+// and a kb.json file containing the KB metadata.
+func (s *Store) CreateKB(name, description string) error {
 	s.logger.Infof("KB %q: creating", name)
 	kbDir := filepath.Join(s.knowledgeDir(), name)
 	if err := os.MkdirAll(kbDir, 0o755); err != nil {
@@ -111,7 +164,22 @@ func (s *Store) CreateKB(name string) error {
 		s.logger.Errorf("KB %q: write INDEX.md failed: %v", name, err)
 		return fmt.Errorf("create INDEX.md: %w", err)
 	}
-	s.logger.Infof("KB %q: created", name)
+	// Write kb.json with the description.
+	kbMeta := struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}{Name: name, Description: description}
+	metaData, err := json.MarshalIndent(kbMeta, "", "  ")
+	if err != nil {
+		s.logger.Errorf("KB %q: marshal kb.json failed: %v", name, err)
+		return fmt.Errorf("marshal kb.json: %w", err)
+	}
+	kbJSONPath := filepath.Join(kbDir, "kb.json")
+	if err := os.WriteFile(kbJSONPath, metaData, 0o644); err != nil {
+		s.logger.Errorf("KB %q: write kb.json failed: %v", name, err)
+		return fmt.Errorf("create kb.json: %w", err)
+	}
+	s.logger.Infof("KB %q: created (description=%q)", name, description)
 	return nil
 }
 
@@ -1286,6 +1354,11 @@ func (s *Store) RebuildMissingVectors() {
 		s.logger.Errorf("RebuildMissingVectors: list documents: %v", err)
 		return
 	}
+	// Coordinate GPU: switch to embedding mode for batch vector building.
+	var restoreEmbed func()
+	if s.gpuScheduler != nil {
+		restoreEmbed = s.gpuScheduler.PrepareForEmbedding()
+	}
 	for _, doc := range docs {
 		slug := doc.Slug
 		idx, err := s.ReadChunksIndex(slug)
@@ -1299,5 +1372,8 @@ func (s *Store) RebuildMissingVectors() {
 			s.logger.Infof("RebuildMissingVectors: %q → %d chunks, dim=%d",
 				slug, rebuilt.ChunkCount, rebuilt.VectorDim)
 		}
+	}
+	if restoreEmbed != nil {
+		restoreEmbed()
 	}
 }

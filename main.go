@@ -107,6 +107,26 @@ func main() {
 		}
 	}
 
+	// --- Optional: GPU scheduler for model sleep/wake coordination ---
+	if os.Getenv("GPU_SCHEDULER_ENABLED") == "true" || os.Getenv("GPU_SCHEDULER_ENABLED") == "1" {
+		scheduler := knowledge.NewGPUScheduler(
+			knowledge.WithSchedulerLogger(logger.WithModule("gpu-scheduler")),
+		)
+		store.SetGPUScheduler(scheduler)
+		log.Infof("GPU scheduler enabled: manager=%s timeout=%s wakeDelay=%s",
+			scheduler.ManagerURL(),
+			os.Getenv("GPU_SCHEDULER_TIMEOUT"),
+			os.Getenv("GPU_SCHEDULER_WAKE_DELAY"),
+		)
+		// Probe manager connectivity (non-fatal: warn and continue).
+		if status, err := scheduler.Status(context.Background()); err != nil {
+			log.Warnf("GPU scheduler: manager unreachable at %s: %v (continuing without GPU coordination)",
+				scheduler.ManagerURL(), err)
+		} else {
+			log.Infof("GPU scheduler: manager connected, services=%v", status.Services)
+		}
+	}
+
 	// --- Web management UI (default: http://localhost:8085) ---
 	managePort := os.Getenv("MANAGE_PORT")
 	if managePort == "" {
@@ -131,9 +151,7 @@ func main() {
 
 	registerSearch(s, store, logger)
 	registerRead(s, store, logger)
-	registerList(s, store, logger)
-	registerUpload(s, store, logger)
-	registerRemove(s, store, logger)
+	registerListKBs(s, store, logger)
 
 	if err := server.ServeStdio(s); err != nil {
 		log.Errorf("server error: %v", err)
@@ -145,6 +163,8 @@ func main() {
 func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_search",
 		mcp.WithDescription(`BM25/hybrid keyword search across all documents in the knowledge base.
+
+**IMPORTANT — kbName (knowledge base selection)**: Before calling, THINK about which knowledge base (KB) the user's question refers to. Infer the most likely KB from the user's context, workspace, or project context — then pass that KB name in the "kbName" parameter to scope the search and get accurate results. Only omit "kbName" when the user explicitly asks to search across ALL knowledge bases, or when absolutely no single KB can be reasonably inferred.
 
 BEFORE CALLING: you MUST rewrite the user's question into a space-separated string of distinctive keywords and phrases. Do NOT pass the raw question verbatim. Fix typos, resolve pronouns from conversation context, add synonyms and related terms (Chinese + English where applicable).
 
@@ -191,7 +211,7 @@ Examples of required rewriting:
 			mcp.Description("Enable coarse-to-fine 2-phase search: first score sections, then only search within top-3 sections."),
 		),
 		mcp.WithString("kbName",
-			mcp.Description("Optional knowledge base name. When set, search only within that KB. When omitted, search all KBs."),
+			mcp.Description("REQUIRED when a specific knowledge base matches the user's question. Before calling, think: which KB does the user's context most likely refer to? Pass that KB name here to scope the search. Omit ONLY when the user explicitly asks to search across all KBs, or when absolutely no KB can be inferred from context."),
 		),
 	)
 
@@ -262,6 +282,8 @@ func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.L
 	tool := mcp.NewTool("knowledge_read",
 		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
 
+**kbName**: When you have search results, pass the same kbName from the search call to scope the read to the correct KB. If you don't know the KB, you may omit it — the system will search all KBs.
+
 If search results show multiple hits from the same section (SectionHint field is non-empty), consider reading with level=section to get the full section context instead of just the individual chunk.`),
 		mcp.WithString("docSlug",
 			mcp.Required(),
@@ -279,7 +301,7 @@ If search results show multiple hits from the same section (SectionHint field is
 			mcp.Enum("chunk", "section"),
 		),
 		mcp.WithString("kbName",
-			mcp.Description("Optional knowledge base name. Required when the document slug is not unique across KBs."),
+			mcp.Description("Pass the same kbName from the search call that produced these results. If you don't know the KB, you may omit it — the system searches all KBs."),
 		),
 	)
 
@@ -370,6 +392,42 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 		}
 	}
 	return "", fmt.Errorf("document %q not found in any KB", docSlug)
+}
+
+func registerListKBs(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
+	tool := mcp.NewTool("knowledge_list_kbs",
+		mcp.WithDescription(`List all knowledge bases with their descriptions.
+
+Returns the count of knowledge bases and each KB's name and description.
+The description is the brief summary provided when the KB was created.
+Knowledge bases without a description will show "(no description)".`),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		kbs, err := store.ListKBsInfo()
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("list KBs failed: %v", err)), nil
+		}
+		type kbEntry struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		entries := make([]kbEntry, len(kbs))
+		for i, kb := range kbs {
+			desc := kb.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			entries[i] = kbEntry{Name: kb.Name, Description: desc}
+		}
+		result := map[string]any{
+			"count":          len(entries),
+			"knowledgeBases": entries,
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		logger.WithModule("tool").Debugf("knowledge_list_kbs: count=%d", len(entries))
+		return mcp.NewToolResultText(string(data)), nil
+	})
 }
 
 func registerList(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {

@@ -18,6 +18,7 @@
 - **父子检索** — 可读取分块所属的完整父章节，获取更丰富的上下文
 - **论文元数据提取** — 自动提取标题、作者、摘要，识别章节角色
 - **多知识库** — 将文档组织到独立的知识库中；跨知识库搜索和列表；通过管理页面创建/删除知识库
+- **KB 描述** — 创建知识库时可填写简要描述；通过 `knowledge_list_kbs` 工具查看所有 KB 及其描述
 
 ## 安装
 
@@ -36,7 +37,7 @@ knowledge-mcp
 
 ### 完整配置（BM25 + 向量嵌入 + 重排序）
 
-详见 [docs/deployment-models.md](docs/deployment-models.md) 了解详细模型部署说明。
+详见 [docs/deployment-models_zh.md](docs/deployment-models_zh.md) 了解详细模型部署说明。
 
 ```bash
 # 嵌入服务 (Ollama + BGE-M3)
@@ -58,7 +59,7 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 ## Web 管理页面
 
 管理页面已**内嵌**在 MCP server 中 —— 启动知识库服务时自动运行。
-打开浏览器访问 [http://localhost:8084](http://localhost:8084)（默认端口）即可上传、
+打开浏览器访问 [http://localhost:8085](http://localhost:8085)（默认端口）即可上传、
 浏览、搜索和删除文档，以及管理多个知识库。
 
 可通过 `MANAGE_PORT` 环境变量修改端口：
@@ -76,20 +77,20 @@ MANAGE_PORT=8080 knowledge-mcp
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | 知识库存储目录 |
-| `KNOWLEDGE_MCP_DEFAULT_KB` | — | 默认知识库名称。设置后工具默认使用该 KB（除非指定 `kbName`）；未设置时上传需显式指定 `kbName` |
+| `KNOWLEDGE_MCP_DEFAULT_KB` | — | 默认知识库名称。设置后工具默认使用该 KB（除非指定 `kbName`）；未设置时搜索所有 KB。 |
 
 ### 管理页面
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `MANAGE_PORT` | `8084` | Web 管理页面端口 |
+| `MANAGE_PORT` | `8085` | Web 管理页面端口 |
 
 ### 嵌入（混合搜索）
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `EMBED_API_BASE_URL` | — | 兼容 OpenAI 的 `/v1/embeddings` 端点 |
-| `EMBED_MODEL` | `text-embedding-ada-002` | 模型名称 |
+| `EMBED_MODEL` | `bge-m3` | 模型名称 |
 | `EMBED_API_KEY` | — | API 密钥（Ollama 无需） |
 | `EMBED_DIM` | 自动检测 | 向量维度 |
 
@@ -101,12 +102,35 @@ MANAGE_PORT=8080 knowledge-mcp
 | `RERANK_MODEL` | `gte-multilingual-reranker-base` | 交叉编码器模型名称 |
 | `RERANK_API_KEY` | — | API 密钥（自部署无需） |
 | `RERANK_CANDIDATE_LIMIT` | `100` | 送入重排序的 BM25/RRF 候选数量 |
+| `RERANK_TIMEOUT` | `30s` | 重排序 HTTP 请求超时 |
+| `RERANK_BATCH_SIZE` | `20` | 每批送入重排序的文档数 |
+
+### 日志
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | 日志文件路径 |
+| `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | 日志级别：`debug` 或 `info` |
 
 ### 搜索行为
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `QUERY_REWRITE_SYNONYMS` | — | 自定义同义词对，格式：`词:同义词,词:同义词` |
+
+### GPU 调度器
+
+GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
+启用后，在上传文档（需要嵌入）和搜索（需要重排序）时自动切换模型，
+使得两个模型即使单独均无法放入 GPU 显存也能正常工作。
+需要远程 Manager 服务支持。
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `GPU_SCHEDULER_ENABLED` | `false` | 设为 `true` 或 `1` 开启 |
+| `GPU_SCHEDULER_MANAGER_URL` | `http://localhost:11436` | Manager API 地址，用于休眠/唤醒 |
+| `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
+| `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
 
 ## MCP 工具
 
@@ -142,36 +166,13 @@ MANAGE_PORT=8080 knowledge-mcp
 | `context` | 否 | 包含前后相邻分块数（默认 0，上限 5） |
 | `level` | 否 | `chunk`（默认）或 `section`——读取完整父章节 |
 
-### `knowledge_list`
+### `knowledge_list_kbs`
 
-列出所有已上传文档及其元数据。
-
-| 参数 | 必填 | 说明 |
-|-----------|----------|-------------|
-| `kbName` | 否 | 知识库名称。设置后只列出该 KB 的文档；不传则列出全部 KB |
-
-### `knowledge_upload`
-
-上传单个文件或批量导入目录。
+列出所有知识库及其描述。
 
 | 参数 | 必填 | 说明 |
 |-----------|----------|-------------|
-| `filePath` | * | 单个文件路径 |
-| `directory` | * | 批量导入的目录路径 |
-| `recursive` | 否 | 是否递归子目录（批量导入时） |
-| `kbName` | **条件必填** | 目标知识库。未设置 `KNOWLEDGE_MCP_DEFAULT_KB` 时必需 |
-| `tags` | 否 | 逗号分隔的标签，分配给上传的文档 |
-
-\* `filePath` 和 `directory` 二选一。
-
-### `knowledge_remove`
-
-删除指定文档及其所有分块。
-
-| 参数 | 必填 | 说明 |
-|-----------|----------|-------------|
-| `docSlug` | **是** | 要删除的文档标识符（来自列表结果） |
-| `kbName` | 否 | 知识库名称。设置后从该 KB 删除；不传则遍历所有 KB |
+| _(无)_ | — | 返回 KB 数量及每个 KB 的名称 + 描述 |
 
 ## 搜索流程
 
@@ -189,6 +190,7 @@ MANAGE_PORT=8080 knowledge-mcp
 ```
 
 **优雅降级**：无嵌入服务时，混合模式自动回退为纯 BM25。无重排序时，跳过阶段二直接返回 RRF/BM25 结果。
+当交叉编码器重排序不可用或失败时，自动回退到阶段一的向量余弦相似度排序。
 
 ## 存储布局
 
@@ -196,6 +198,7 @@ MANAGE_PORT=8080 knowledge-mcp
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
+│   ├── kb.json            # KB 描述（创建时填写）
 │   ├── LIST_SNAPSHOT.json
 │   ├── .searchlog.jsonl
 │   └── <document-slug>/
@@ -225,8 +228,10 @@ internal/
     doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit
     embed.go             — Embedder 接口、OpenAIEmbedder、Reranker 接口
     rerank.go            — InfinityReranker（兼容 Cohere/Infinity）
+    gpu_scheduler.go     — GPU 调度器，协调嵌入/重排序模型的休眠与唤醒
     rewrite.go           — QueryRewriter 接口、SynonymRewriter
     rewrite_llm.go       — LLMQueryRewriter（可选的 LLM 查询扩展）
+    manage.go            — Web 管理页面服务、知识库 CRUD、上传/删除处理器
     upload.go            — UploadDocument、UploadDirectory
     upload_doc.go        — 格式特定解析器（PDF、DOCX 等）
     parser.go            — 文档解析调度
@@ -239,8 +244,8 @@ internal/
   retrieval/
     bm25.go              — 分词器（CJK 双字感知）、BM25Score、MakeSnippet
 docs/
-  deployment-models.md   — 嵌入与重排序模型部署指南
-  roadmap.md             — RAG 优化路线图
+  deployment-models_zh.md   — 嵌入与重排序模型部署指南
+  roadmap_zh.md             — RAG 优化路线图
 ```
 
 ## 许可证

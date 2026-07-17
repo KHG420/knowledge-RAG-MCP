@@ -18,6 +18,7 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 - **Parent-child retrieval** — read a chunk's full parent section for richer context
 - **Paper metadata extraction** — title, authors, abstract, section-role detection for academic papers
 - **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
+- **KB descriptions** — assign a brief description when creating a KB; view all KBs and their descriptions via `knowledge_list_kbs` tool
 
 ## Installation
 
@@ -58,7 +59,7 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 ## Web Management UI
 
 A management web interface is **built in** — it starts automatically alongside the MCP server.
-Open [http://localhost:8084](http://localhost:8084) (default port) in your browser to upload,
+Open [http://localhost:8085](http://localhost:8085) (default port) in your browser to upload,
 browse, search, and delete documents, and manage multiple knowledge bases.
 
 Override the port with the `MANAGE_PORT` environment variable:
@@ -77,20 +78,20 @@ web UI are immediately searchable through `knowledge_search`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | Knowledge base storage directory |
-| `KNOWLEDGE_MCP_DEFAULT_KB` | — | Default KB name. When set, tools use this KB unless `kbName` is specified. Uploads require `kbName` when not set. |
+| `KNOWLEDGE_MCP_DEFAULT_KB` | — | Default KB name. When set, tools use this KB unless `kbName` is specified. When not set, tools search across all KBs. |
 
 ### Management
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MANAGE_PORT` | `8084` | Web management UI port |
+| `MANAGE_PORT` | `8085` | Web management UI port |
 
 ### Embedding (hybrid search)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBED_API_BASE_URL` | — | OpenAI-compatible `/v1/embeddings` endpoint |
-| `EMBED_MODEL` | `text-embedding-ada-002` | Model name |
+| `EMBED_MODEL` | `bge-m3` | Model name |
 | `EMBED_API_KEY` | — | API key (not needed for Ollama) |
 | `EMBED_DIM` | auto-detect | Vector dimension |
 
@@ -102,12 +103,35 @@ web UI are immediately searchable through `knowledge_search`.
 | `RERANK_MODEL` | `gte-multilingual-reranker-base` | Cross-Encoder model name |
 | `RERANK_API_KEY` | — | API key (not needed for self-hosted) |
 | `RERANK_CANDIDATE_LIMIT` | `100` | How many BM25/RRF candidates to feed the reranker |
+| `RERANK_TIMEOUT` | `30s` | Reranker HTTP request timeout |
+| `RERANK_BATCH_SIZE` | `20` | Documents per reranker batch request |
+
+### Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | Log file path |
+| `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | Log level: `debug` or `info` |
 
 ### Search behavior
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QUERY_REWRITE_SYNONYMS` | — | Custom synonym pairs, format: `term:syn,term:syn` |
+
+### GPU Scheduler
+
+GPU scheduler coordinates sleep/wake of embedding and reranker models sharing a single GPU.
+When enabled, it automatically switches models during upload (needs embedding) and
+search (needs reranker), so both models can work even when neither fits in GPU memory alone.
+Requires a remote Manager service.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GPU_SCHEDULER_ENABLED` | `false` | Set to `true` or `1` to enable |
+| `GPU_SCHEDULER_MANAGER_URL` | `http://localhost:11436` | Manager API URL for sleep/wake |
+| `GPU_SCHEDULER_TIMEOUT` | `30s` | HTTP timeout for sleep/wake requests |
+| `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake to wait for model to load into GPU |
 
 ## MCP Tools
 
@@ -144,36 +168,13 @@ Read a specific chunk or its full parent section.
 | `context` | no | Adjacent chunks to include before/after (default 0, max 5) |
 | `level` | no | `chunk` (default) or `section` — reads the full parent section |
 
-### `knowledge_list`
+### `knowledge_list_kbs`
 
-List all uploaded documents with metadata.
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `kbName` | no | KB name. When set, list only that KB; when omitted, list all KBs |
-
-### `knowledge_upload`
-
-Upload a single file or batch-upload a directory.
+List all knowledge bases with their descriptions.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `filePath` | * | Path to a single file |
-| `directory` | * | Directory path for batch upload |
-| `recursive` | no | Recurse into subdirectories (for batch) |
-| `kbName` | **conditional** | Target KB. **Required** unless `KNOWLEDGE_MCP_DEFAULT_KB` is set |
-| `tags` | no | Comma-separated tags to assign to uploaded documents |
-
-\* Exactly one of `filePath` or `directory` is required.
-
-### `knowledge_remove`
-
-Remove a document and all its chunks.
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `docSlug` | **yes** | Document slug to remove (from list results) |
-| `kbName` | no | KB name. When set, remove from that KB; when omitted, remove from all KBs |
+| _(none)_ | — | Returns count of KBs and each KB's name + description |
 
 ## Search Pipeline
 
@@ -192,6 +193,8 @@ query → query rewriting (synonyms) → tokenization
 
 **Graceful degradation**: Without an embedder, hybrid falls back to pure BM25.
 Without a reranker, the pipeline skips Phase 2 and returns RRF/BM25 results directly.
+When the cross-encoder reranker is unavailable or fails, it falls back to vector
+cosine similarity scores from Phase 1.
 
 ## Storage Layout
 
@@ -199,6 +202,7 @@ Without a reranker, the pipeline skips Phase 2 and returns RRF/BM25 results dire
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
+│   ├── kb.json            # KB description (set at creation time)
 │   ├── LIST_SNAPSHOT.json
 │   ├── .searchlog.jsonl
 │   └── <document-slug>/
@@ -228,8 +232,10 @@ internal/
     doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit
     embed.go             — Embedder interface, OpenAIEmbedder, Reranker interface
     rerank.go            — InfinityReranker (Cohere/Infinity-compatible)
+    gpu_scheduler.go     — GPU scheduler, coordinates embedding/reranker model sleep/wake
     rewrite.go           — QueryRewriter interface, SynonymRewriter
     rewrite_llm.go       — LLMQueryRewriter (optional LLM-based expansion)
+    manage.go            — Web management UI server, KB CRUD, upload/delete handlers
     upload.go            — UploadDocument, UploadDirectory
     upload_doc.go        — Format-specific parsers (PDF, DOCX, etc.)
     parser.go            — Document parser dispatch

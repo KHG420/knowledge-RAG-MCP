@@ -42,10 +42,18 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 
 	// Step 2a: optional semantic merging to combine topically adjacent chunks.
 	if s.embedder != nil {
+		// Coordinate GPU: sleep reranker, wake embedding.
+		var restoreEmbed func()
+		if s.gpuScheduler != nil {
+			restoreEmbed = s.gpuScheduler.PrepareForEmbedding()
+		}
 		if merged, err := MergeSemanticNeighbors(context.Background(), fineChunks, s.embedder, defaultSemanticThreshold); err == nil && len(merged) > 0 {
 			fineChunks = merged
 			// Regenerate coarse chunks to reflect the merged fine chunks.
 			_, coarseChunks = ChunkTextHierarchical(text)
+		}
+		if restoreEmbed != nil {
+			restoreEmbed()
 		}
 	}
 

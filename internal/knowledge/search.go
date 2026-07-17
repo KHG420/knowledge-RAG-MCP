@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ type searchEntry struct {
 // it uses an accelerated path that only reads CHUNKS.toml for candidate
 // documents (G7).
 func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]searchEntry, error) {
-	kd := s.knowledgeDir()
+	kd := s.kbDir()
 
 	// G7: try inverted-index fast path when query terms are available.
 	if len(queryTerms) > 0 {
@@ -327,6 +328,10 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	// Phase 7: reranker (optional). If a Reranker is configured, re-score the
 	// top results using a cross-encoder for improved precision.
 	if s.reranker != nil && len(results) > 0 {
+		// Coordinate GPU: switch to reranker mode (sleep embedding, wake reranker).
+		if s.gpuScheduler != nil {
+			s.gpuScheduler.PrepareForReranking()
+		}
 		entries := make([]searchEntry, len(results))
 		scores := make([]float64, len(results))
 		for i, r := range results {
@@ -536,6 +541,10 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 
 	// Phase 3: embedding scoring (if vectors are available).
 	if hasVectors && s.embedder != nil {
+		// Coordinate GPU: ensure embedding is loaded; sleep reranker to free memory.
+		if s.gpuScheduler != nil {
+			s.gpuScheduler.PrepareForEmbedding()
+		}
 		queryVec, embedErr := s.embedder.Embed(nil, []string{query})
 		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
 			qVec64 := make([]float64, len(queryVec[0]))
@@ -614,6 +623,10 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	// cross-encoder sees the full candidate pool (up to rerankCandidateLimit).
 	// When no reranker is configured, this is a no-op.
 	if s.reranker != nil && len(results) > 0 {
+		// Coordinate GPU: switch from embedding to reranker mode.
+		if s.gpuScheduler != nil {
+			s.gpuScheduler.PrepareForReranking()
+		}
 		entries := make([]searchEntry, len(results))
 		scores := make([]float64, len(results))
 		for i, r := range results {
@@ -921,15 +934,72 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 	}
 
 	s.logger.Debugf("[rerank] rerankTop query=%q candidates=%d candLimit=%d", query, len(entries), candLimit)
-	rerankCtx, rerankCancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	// Determine timeout from the reranker's HTTP client timeout, with 5s buffer
+	// to avoid context deadline racing with the HTTP client timeout.
+	rerankTimeout := 30 * time.Second
+	if ir, ok := s.reranker.(*InfinityReranker); ok {
+		rerankTimeout = ir.Timeout() + 5*time.Second
+	}
+	rerankCtx, rerankCancel := context.WithTimeout(context.Background(), rerankTimeout)
 	defer rerankCancel()
-	rerankScores, rerankErr := s.reranker.Rerank(rerankCtx, query, texts)
-	if rerankErr != nil || len(rerankScores) != n {
-		s.logger.Warnf("[rerank] rerankTop failed: %v (scores=%d, expected=%d), using BM25 fallback", rerankErr, len(rerankScores), n)
-		return entries[:n], scores[:n]
+
+	// Determine batch size: default 20, overridable via SetRerankBatchSize or RERANK_BATCH_SIZE env.
+	batchSize := s.rerankBatchSize
+	if batchSize <= 0 {
+		batchSize = 20
+	}
+	if envBatch := os.Getenv("RERANK_BATCH_SIZE"); envBatch != "" {
+		if v, err := strconv.Atoi(envBatch); err == nil && v > 0 {
+			batchSize = v
+		}
 	}
 
-	s.logger.Debugf("[rerank] rerankTop done candidates=%d → top=%d", n, n)
+	// Batch candidates to avoid timeouts on slow reranker models.
+	rerankScores := make([]float64, 0, n)
+	for batchStart := 0; batchStart < n; batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > n {
+			batchEnd = n
+		}
+		batchScores, batchErr := s.reranker.Rerank(rerankCtx, query, texts[batchStart:batchEnd])
+		if batchErr != nil || len(batchScores) != batchEnd-batchStart {
+			s.logger.Warnf("[rerank] rerankTop failed: %v (scores=%d, expected=%d), trying vector similarity fallback", batchErr, len(batchScores), batchEnd-batchStart)
+
+			// Vector similarity fallback: embed the query and score each candidate
+			// via cosine similarity. This gives semantic relevance even when the
+			// cross-encoder is unavailable.
+			if s.embedder != nil {
+				// Check if any candidate has a stored vector.
+				hasVec := false
+				for i := 0; i < n && !hasVec; i++ {
+					if len(entries[i].vector) > 0 {
+						hasVec = true
+					}
+				}
+				if hasVec {
+					qVec, embedErr := s.embedder.Embed(rerankCtx, []string{query})
+					if embedErr == nil && len(qVec) == 1 && len(qVec[0]) > 0 {
+						qVec64 := make([]float64, len(qVec[0]))
+						for i, v := range qVec[0] {
+							qVec64[i] = float64(v)
+						}
+						vecScores := make([]float64, n)
+						for i := 0; i < n; i++ {
+							vecScores[i] = cosineSimilarity(qVec64, entries[i].vector)
+						}
+						s.logger.Infof("[rerank] using vector similarity fallback for %d candidates", n)
+						return entries[:n], vecScores
+					}
+				}
+			}
+			s.logger.Warnf("[rerank] vector similarity fallback failed, using BM25 scores")
+			return entries[:n], scores[:n]
+		}
+		rerankScores = append(rerankScores, batchScores...)
+	}
+
+	s.logger.Debugf("[rerank] rerankTop done candidates=%d batchSize=%d batches=%d", n, batchSize, (n+batchSize-1)/batchSize)
 
 	// Sort candidates by reranker score descending.
 	type reranked struct {

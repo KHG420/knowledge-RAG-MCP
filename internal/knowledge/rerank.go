@@ -62,6 +62,11 @@ func WithRerankLogger(l *logging.Logger) InfinityRerankerOption {
 	}
 }
 
+// Timeout returns the HTTP client timeout for reranker requests.
+func (r *InfinityReranker) Timeout() time.Duration {
+	return r.client.Timeout
+}
+
 // WithRerankTimeout sets the HTTP client timeout for reranker requests.
 // Default is 30 seconds. Use Go duration strings like "10s", "30s", "1m".
 func WithRerankTimeout(d time.Duration) InfinityRerankerOption {

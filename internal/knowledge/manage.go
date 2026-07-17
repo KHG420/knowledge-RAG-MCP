@@ -57,7 +57,7 @@ func (s *Store) StartManageServer(port string) error {
 
 	// API: knowledge-bases management
 	mux.HandleFunc("GET /api/knowledge-bases", func(w http.ResponseWriter, r *http.Request) {
-		kbs, err := s.ListKBs()
+		kbs, err := s.ListKBsInfo()
 		if err != nil {
 			writeManageError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -69,7 +69,8 @@ func (s *Store) StartManageServer(port string) error {
 	})
 	mux.HandleFunc("POST /api/knowledge-bases", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name string `json:"name"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeManageError(w, http.StatusBadRequest, "invalid JSON")
@@ -79,7 +80,7 @@ func (s *Store) StartManageServer(port string) error {
 			writeManageError(w, http.StatusBadRequest, "name is required")
 			return
 		}
-		if err := s.CreateKB(body.Name); err != nil {
+		if err := s.CreateKB(body.Name, body.Description); err != nil {
 			writeManageError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
