@@ -387,8 +387,8 @@ func (s *Store) RerankerInfo() map[string]any {
 	}
 	if ir, ok := s.reranker.(*InfinityReranker); ok {
 		return map[string]any{
-			"baseURL": ir.baseURL,
-			"model":   ir.model,
+			"endpointURL": ir.endpointURL,
+			"model":       ir.model,
 		}
 	}
 	return map[string]any{"type": "custom"}

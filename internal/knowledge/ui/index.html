@@ -952,7 +952,7 @@ async function loadModelInfo() {
     if (rer) {
       document.getElementById('rerankerBadge').className = 'model-badge';
       document.getElementById('rerankerModel').textContent = rer.model || '未知';
-      document.getElementById('rerankerUrl').textContent = rer.baseURL || '';
+      document.getElementById('rerankerUrl').textContent = rer.endpointURL || '';
       document.getElementById('rerankerLimit').textContent = data.rerankCandidateLimit > 0
         ? '候选上限 ' + data.rerankCandidateLimit
         : '';

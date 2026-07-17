@@ -114,7 +114,7 @@ cd /Users/aq/knowledge-mcp
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 DO_NOT_TRACK=1 \
   ./knowledge-mcp
@@ -138,7 +138,7 @@ curl -X POST http://localhost:7997/rerank \
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | \
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings EMBED_MODEL=bge-m3 EMBED_DIM=1024 \
-RERANK_API_BASE_URL=http://localhost:7997 RERANK_CANDIDATE_LIMIT=100 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank RERANK_CANDIDATE_LIMIT=100 \
 ./knowledge-mcp 2>/dev/null
 ```
 

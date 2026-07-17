@@ -50,7 +50,7 @@ infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 799
 # knowledge-mcp
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
   knowledge-mcp
@@ -98,7 +98,7 @@ MANAGE_PORT=8080 knowledge-mcp
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
-| `RERANK_API_BASE_URL` | `http://localhost:7997` | 兼容 Infinity/Cohere 的 `/rerank` 端点 |
+| `RERANK_API_ENDPOINT` | `http://localhost:7997/rerank` | 完整的 Infinity/Cohere 兼容的 Reranker API 端点 |
 | `RERANK_MODEL` | `gte-multilingual-reranker-base` | 交叉编码器模型名称 |
 | `RERANK_API_KEY` | — | API 密钥（自部署无需） |
 | `RERANK_CANDIDATE_LIMIT` | `100` | 送入重排序的 BM25/RRF 候选数量 |

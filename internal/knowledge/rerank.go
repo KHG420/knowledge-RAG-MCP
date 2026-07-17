@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -24,20 +23,20 @@ import (
 //
 // Or any server exposing Cohere's /rerank format.
 type InfinityReranker struct {
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
-	logger  *logging.Logger
+	endpointURL string
+	apiKey      string
+	model       string
+	client      *http.Client
+	logger      *logging.Logger
 }
 
 // InfinityRerankerOption configures an InfinityReranker.
 type InfinityRerankerOption func(*InfinityReranker)
 
-// WithRerankBaseURL sets the reranker API base URL (default "http://localhost:7997").
-func WithRerankBaseURL(baseURL string) InfinityRerankerOption {
+// WithRerankEndpointURL sets the full reranker API endpoint URL.
+func WithRerankEndpointURL(endpointURL string) InfinityRerankerOption {
 	return func(r *InfinityReranker) {
-		r.baseURL = strings.TrimRight(baseURL, "/")
+		r.endpointURL = strings.TrimRight(endpointURL, "/")
 	}
 }
 
@@ -75,11 +74,10 @@ func WithRerankTimeout(d time.Duration) InfinityRerankerOption {
 	}
 }
 
-// NewInfinityReranker returns an InfinityReranker. Defaults are target a local
-// Infinity instance at http://localhost:7997.
+// NewInfinityReranker returns an InfinityReranker.
 func NewInfinityReranker(opts ...InfinityRerankerOption) *InfinityReranker {
 	r := &InfinityReranker{
-		baseURL: "http://localhost:7997",
+		endpointURL: "http://localhost:7997/rerank",
 		model:   "gte-multilingual-reranker-base",
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -126,10 +124,7 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 		return nil, fmt.Errorf("rerank marshal: %w", err)
 	}
 
-	u, err := url.JoinPath(r.baseURL, "/rerank")
-	if err != nil {
-		return nil, fmt.Errorf("rerank url: %w", err)
-	}
+	u := r.endpointURL
 	start := time.Now()
 	r.logger.Debugf("[rerank] POST %s model=%s query_len=%d docs=%d", u, r.model, len(query), len(documents))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))

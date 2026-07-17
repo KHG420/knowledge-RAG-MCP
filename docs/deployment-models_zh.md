@@ -16,7 +16,7 @@ knowledge_search (MCP tool)
 └────────────────────────────────────────────────────┘
   ↓ (100 candidates)
 ┌─ Phase 2: 精排 (Cross-Encoder Reranker) ───────────┐
-│  RERANK_API_BASE_URL → Reranker 模型                │
+│  RERANK_API_ENDPOINT → Reranker 模型                │
 │  对每个 (query, chunk) 对做深度语义打分              │
 │  按新分数重排 → 截断到 limit (如 8)                  │
 └────────────────────────────────────────────────────┘
@@ -101,7 +101,7 @@ curl -X POST http://localhost:7997/rerank \
 启动 knowledge-mcp 时注入环境变量：
 
 ```bash
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
   knowledge-mcp
 ```
 
@@ -117,7 +117,7 @@ RERANK_API_BASE_URL=http://localhost:7997 \
 
 | 变量 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `RERANK_API_BASE_URL` | 是 | `http://localhost:7997` | Reranker API 地址 |
+| `RERANK_API_ENDPOINT` | 是 | `http://localhost:7997/rerank` | 完整的 Reranker API 端点 |
 | `RERANK_MODEL` | 否 | `gte-multilingual-reranker-base` | 模型名称 |
 | `RERANK_API_KEY` | 否 | — | API Key（自建服务不需要） |
 | `RERANK_CANDIDATE_LIMIT` | 否 | `100` | 第一阶段召回多少候选给 reranker 精排 |
@@ -147,7 +147,7 @@ infinity_emb v2 \
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
   knowledge-mcp
 ```
@@ -157,7 +157,7 @@ RERANK_CANDIDATE_LIMIT=100 \
 | 场景 | 行为 |
 |------|------|
 | 未配置 `EMBED_API_ENDPOINT` | 退化为纯 BM25 关键词检索 |
-| 未配置 `RERANK_API_BASE_URL` | 跳过重排序，BM25/RRF 分数直接返回 |
+| 未配置 `RERANK_API_ENDPOINT` | 跳过重排序，BM25/RRF 分数直接返回 |
 | Reranker 调用超时/失败 | 优雅降级，返回 BM25 排序结果 |
 | 两者都未配置 | 纯 BM25，零外部依赖 |
 

@@ -80,8 +80,8 @@ func main() {
 	}
 
 	// --- Optional: cross-encoder reranker (Infinity/Cohere-compatible API) ---
-	if baseURL := os.Getenv("RERANK_API_BASE_URL"); baseURL != "" {
-		opts := []knowledge.InfinityRerankerOption{knowledge.WithRerankBaseURL(baseURL)}
+	if endpointURL := os.Getenv("RERANK_API_ENDPOINT"); endpointURL != "" {
+		opts := []knowledge.InfinityRerankerOption{knowledge.WithRerankEndpointURL(endpointURL)}
 		if key := os.Getenv("RERANK_API_KEY"); key != "" {
 			opts = append(opts, knowledge.WithRerankAPIKey(key))
 		}
@@ -96,7 +96,7 @@ func main() {
 		}
 		opts = append(opts, knowledge.WithRerankLogger(logger.WithModule("rerank")))
 		store.SetReranker(knowledge.NewInfinityReranker(opts...))
-		log.Infof("reranker: %s", baseURL)
+		log.Infof("reranker: %s", endpointURL)
 	}
 
 	// --- Optional: rerank candidate limit (default 100) ---

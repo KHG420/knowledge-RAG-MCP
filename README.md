@@ -50,7 +50,7 @@ infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 799
 # knowledge-mcp
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
   knowledge-mcp
@@ -99,7 +99,7 @@ web UI are immediately searchable through `knowledge_search`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RERANK_API_BASE_URL` | `http://localhost:7997` | Infinity/Cohere-compatible `/rerank` endpoint |
+| `RERANK_API_ENDPOINT` | `http://localhost:7997/rerank` | Full Infinity/Cohere-compatible reranker API endpoint |
 | `RERANK_MODEL` | `gte-multilingual-reranker-base` | Cross-Encoder model name |
 | `RERANK_API_KEY` | — | API key (not needed for self-hosted) |
 | `RERANK_CANDIDATE_LIMIT` | `100` | How many BM25/RRF candidates to feed the reranker |

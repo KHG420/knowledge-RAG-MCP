@@ -18,7 +18,7 @@ knowledge_search (MCP tool)
 └────────────────────────────────────────────────────┘
   ↓ (100 candidates)
 ┌─ Phase 2: Precision Re-rank (Cross-Encoder) ──────┐
-│  RERANK_API_BASE_URL → Reranker model              │
+│  RERANK_API_ENDPOINT → Reranker model              │
 │  Deep semantic scoring for each (query, chunk) pair│
 │  Re-sort by new score → truncate to limit (e.g. 8) │
 └────────────────────────────────────────────────────┘
@@ -103,7 +103,7 @@ curl -X POST http://localhost:7997/rerank \
 Inject environment variables when starting knowledge-mcp:
 
 ```bash
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
   knowledge-mcp
 ```
 
@@ -119,7 +119,7 @@ RERANK_API_BASE_URL=http://localhost:7997 \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `RERANK_API_BASE_URL` | Yes | `http://localhost:7997` | Reranker API endpoint |
+| `RERANK_API_ENDPOINT` | Yes | `http://localhost:7997/rerank` | Full reranker API endpoint |
 | `RERANK_MODEL` | No | `gte-multilingual-reranker-base` | Model name |
 | `RERANK_API_KEY` | No | — | API key (not needed for self-hosted) |
 | `RERANK_CANDIDATE_LIMIT` | No | `100` | How many Phase 1 candidates to feed the reranker |
@@ -149,7 +149,7 @@ infinity_emb v2 \
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
-RERANK_API_BASE_URL=http://localhost:7997 \
+RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
   knowledge-mcp
 ```
@@ -159,7 +159,7 @@ RERANK_CANDIDATE_LIMIT=100 \
 | Scenario | Behavior |
 |----------|----------|
 | `EMBED_API_ENDPOINT` not set | Falls back to pure BM25 keyword search |
-| `RERANK_API_BASE_URL` not set | Skips reranking, returns BM25/RRF scores directly |
+| `RERANK_API_ENDPOINT` not set | Skips reranking, returns BM25/RRF scores directly |
 | Reranker call timeout/failure | Graceful degradation, returns BM25-ranked results |
 | Neither configured | Pure BM25, zero external dependencies |
 
