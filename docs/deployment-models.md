@@ -10,7 +10,7 @@ User query
 knowledge_search (MCP tool)
   ↓
 ┌─ Phase 1: Fast Recall (BM25 + vector) ────────────┐
-│  EMBED_API_BASE_URL → Embedding model              │
+│  EMBED_API_ENDPOINT → Embedding model              │
 │  Converts query to vector, cosine similarity       │
 │  with chunk vectors                                │
 │  Combined with BM25 keyword matching, RRF fusion   │
@@ -49,7 +49,7 @@ ollama pull bge-m3
 Inject environment variables when starting knowledge-mcp:
 
 ```bash
-EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
   knowledge-mcp
@@ -61,13 +61,13 @@ EMBED_DIM=1024 \
 |----------|-------|-----------|---------|
 | Ollama | `nomic-embed-text` | 768 | `ollama pull nomic-embed-text` |
 | Ollama | `mxbai-embed-large` | 1024 | `ollama pull mxbai-embed-large` |
-| Remote API | `text-embedding-ada-002` | 1536 | Set `EMBED_API_BASE_URL` + `EMBED_API_KEY` |
+| Remote API | `text-embedding-ada-002` | 1536 | Set `EMBED_API_ENDPOINT` + `EMBED_API_KEY` |
 
 ### Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `EMBED_API_BASE_URL` | Yes | — | Embedding API endpoint, e.g. `http://localhost:11434/v1` for Ollama |
+| `EMBED_API_ENDPOINT` | Yes | — | Full embedding API endpoint, e.g. `http://localhost:11434/v1/embeddings` for Ollama |
 | `EMBED_MODEL` | No | `text-embedding-ada-002` | Model name |
 | `EMBED_API_KEY` | No | — | API key (not needed for Ollama) |
 | `EMBED_DIM` | No | auto-detect | Vector dimension |
@@ -146,7 +146,7 @@ infinity_emb v2 \
   --port 7997
 
 # Terminal 3: knowledge-mcp
-EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
 RERANK_API_BASE_URL=http://localhost:7997 \
@@ -158,7 +158,7 @@ RERANK_CANDIDATE_LIMIT=100 \
 
 | Scenario | Behavior |
 |----------|----------|
-| `EMBED_API_BASE_URL` not set | Falls back to pure BM25 keyword search |
+| `EMBED_API_ENDPOINT` not set | Falls back to pure BM25 keyword search |
 | `RERANK_API_BASE_URL` not set | Skips reranking, returns BM25/RRF scores directly |
 | Reranker call timeout/failure | Graceful degradation, returns BM25-ranked results |
 | Neither configured | Pure BM25, zero external dependencies |

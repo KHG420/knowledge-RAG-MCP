@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -26,21 +25,21 @@ type Embedder interface {
 
 // OpenAIEmbedder calls an OpenAI-compatible /v1/embeddings API.
 type OpenAIEmbedder struct {
-	baseURL string
-	apiKey  string
-	model   string
-	dim     int
-	client  *http.Client
-	logger  *logging.Logger
+	endpointURL string // full embedding API endpoint URL
+	apiKey      string
+	model       string
+	dim         int
+	client      *http.Client
+	logger      *logging.Logger
 }
 
 // OpenAIEmbedderOption configures an OpenAIEmbedder.
 type OpenAIEmbedderOption func(*OpenAIEmbedder)
 
-// WithBaseURL sets the API base URL (default "https://api.openai.com/v1").
-func WithBaseURL(baseURL string) OpenAIEmbedderOption {
+// WithEndpointURL sets the full embedding API endpoint URL.
+func WithEndpointURL(url string) OpenAIEmbedderOption {
 	return func(e *OpenAIEmbedder) {
-		e.baseURL = strings.TrimRight(baseURL, "/")
+		e.endpointURL = strings.TrimRight(url, "/")
 	}
 }
 
@@ -74,11 +73,10 @@ func WithEmbedLogger(l *logging.Logger) OpenAIEmbedderOption {
 }
 
 // NewOpenAIEmbedder returns an OpenAI-compatible Embedder.
-// Defaults: baseURL "https://api.openai.com/v1", model "bge-m3".
+// Defaults: model "bge-m3".
 func NewOpenAIEmbedder(opts ...OpenAIEmbedderOption) *OpenAIEmbedder {
 	e := &OpenAIEmbedder{
-		baseURL: "https://api.openai.com/v1",
-		model:   "bge-m3",
+		model: "bge-m3",
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -172,10 +170,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("embed marshal: %w", err)
 	}
 
-	u, err := url.JoinPath(e.baseURL, "embeddings")
-	if err != nil {
-		return nil, fmt.Errorf("embed url: %w", err)
-	}
+	u := e.endpointURL
 	start := time.Now()
 	e.logger.Debugf("[embed] POST %s model=%s texts=%d", u, e.model, len(texts))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
@@ -379,7 +374,7 @@ func (s *Store) EmbedderInfo() map[string]any {
 		"dim": s.embedder.Dim(),
 	}
 	if oe, ok := s.embedder.(*OpenAIEmbedder); ok {
-		info["baseURL"] = oe.baseURL
+		info["endpointURL"] = oe.endpointURL
 		info["model"] = oe.model
 	}
 	return info

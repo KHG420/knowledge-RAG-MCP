@@ -10,7 +10,7 @@ knowledge-mcp 依赖两个可选的外部模型服务来实现混合检索（BM2
 knowledge_search (MCP tool)
   ↓
 ┌─ Phase 1: 快速召回 (BM25 + 向量) ──────────────────┐
-│  EMBED_API_BASE_URL → Embedding 模型                │
+│  EMBED_API_ENDPOINT → Embedding 模型                │
 │  将 query 转为向量，与 chunk 向量做余弦相似度        │
 │  配合 BM25 关键词匹配，RRF 融合 → 召回 100 候选      │
 └────────────────────────────────────────────────────┘
@@ -47,7 +47,7 @@ ollama pull bge-m3
 启动 knowledge-mcp 时注入环境变量：
 
 ```bash
-EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
   knowledge-mcp
@@ -59,13 +59,13 @@ EMBED_DIM=1024 \
 |------|------|------|------|
 | Ollama | `nomic-embed-text` | 768 | `ollama pull nomic-embed-text` |
 | Ollama | `mxbai-embed-large` | 1024 | `ollama pull mxbai-embed-large` |
-| 远程 API | `text-embedding-ada-002` | 1536 | 设置 `EMBED_API_BASE_URL` + `EMBED_API_KEY` |
+| 远程 API | `text-embedding-ada-002` | 1536 | 设置 `EMBED_API_ENDPOINT` + `EMBED_API_KEY` |
 
 ### 环境变量
 
 | 变量 | 必需 | 默认值 | 说明 |
 |------|------|--------|------|
-| `EMBED_API_BASE_URL` | 是 | — | Embedding API 地址，Ollama 填 `http://localhost:11434/v1` |
+| `EMBED_API_ENDPOINT` | 是 | — | 完整的 Embedding API 端点，Ollama 填 `http://localhost:11434/v1/embeddings` |
 | `EMBED_MODEL` | 否 | `text-embedding-ada-002` | 模型名称 |
 | `EMBED_API_KEY` | 否 | — | API Key（Ollama 不需要） |
 | `EMBED_DIM` | 否 | 自动检测 | 向量维度 |
@@ -144,7 +144,7 @@ infinity_emb v2 \
   --port 7997
 
 # 终端 3：knowledge-mcp
-EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 EMBED_DIM=1024 \
 RERANK_API_BASE_URL=http://localhost:7997 \
@@ -156,7 +156,7 @@ RERANK_CANDIDATE_LIMIT=100 \
 
 | 场景 | 行为 |
 |------|------|
-| 未配置 `EMBED_API_BASE_URL` | 退化为纯 BM25 关键词检索 |
+| 未配置 `EMBED_API_ENDPOINT` | 退化为纯 BM25 关键词检索 |
 | 未配置 `RERANK_API_BASE_URL` | 跳过重排序，BM25/RRF 分数直接返回 |
 | Reranker 调用超时/失败 | 优雅降级，返回 BM25 排序结果 |
 | 两者都未配置 | 纯 BM25，零外部依赖 |

@@ -940,7 +940,7 @@ async function loadModelInfo() {
     if (emb) {
       document.getElementById('embedderBadge').className = 'model-badge';
       document.getElementById('embedderModel').textContent = emb.model || '未知';
-      document.getElementById('embedderUrl').textContent = emb.baseURL || '';
+      document.getElementById('embedderUrl').textContent = emb.endpointURL || '';
       document.getElementById('embedderDim').textContent = emb.dim ? emb.dim + ' 维' : '';
     } else {
       document.getElementById('embedderBadge').className = 'model-badge off';

@@ -53,10 +53,10 @@ func main() {
 	}
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
-	if baseURL := os.Getenv("EMBED_API_BASE_URL"); baseURL != "" {
-		log.Infof("EMBED_API_BASE_URL=%q EMBED_MODEL=%q EMBED_DIM=%q",
-			baseURL, os.Getenv("EMBED_MODEL"), os.Getenv("EMBED_DIM"))
-		opts := []knowledge.OpenAIEmbedderOption{knowledge.WithBaseURL(baseURL)}
+	if endpointURL := os.Getenv("EMBED_API_ENDPOINT"); endpointURL != "" {
+		log.Infof("EMBED_API_ENDPOINT=%q EMBED_MODEL=%q EMBED_DIM=%q",
+			endpointURL, os.Getenv("EMBED_MODEL"), os.Getenv("EMBED_DIM"))
+		opts := []knowledge.OpenAIEmbedderOption{knowledge.WithEndpointURL(endpointURL)}
 		if key := os.Getenv("EMBED_API_KEY"); key != "" {
 			opts = append(opts, knowledge.WithAPIKey(key))
 		}
@@ -72,7 +72,7 @@ func main() {
 		}
 		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
-		log.Infof("embedder: %s (model=%s)", baseURL, model)
+		log.Infof("embedder: %s (model=%s)", endpointURL, model)
 		// One-time: fill in missing vectors for existing documents that lack them.
 		// After the first run, HasVectors=true on all docs so subsequent restarts
 		// skip this step entirely.

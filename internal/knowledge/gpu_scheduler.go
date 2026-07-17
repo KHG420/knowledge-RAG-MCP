@@ -93,15 +93,15 @@ func WithSchedulerLogger(l *logging.Logger) GPUSchedulerOption {
 //	GPU_SCHEDULER_EMBEDDING_SLEEP_URL    — Embedding model sleep API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_EMBEDDING_WAKE_URL     — Embedding model wake API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_EMBEDDING_SLEEP_BODY   — JSON body for embedding sleep request (default: empty)
-//	GPU_SCHEDULER_RERANKER_SLEEP_URL     — Reranker model sleep API URL (default: http://localhost:11435/sleep)
-//	GPU_SCHEDULER_RERANKER_WAKE_URL      — Reranker model wake API URL (default: http://localhost:11435/wake_up)
+//	GPU_SCHEDULER_RERANKER_SLEEP_URL     — Reranker model sleep API URL (default: empty, must be set if enabled)
+//	GPU_SCHEDULER_RERANKER_WAKE_URL      — Reranker model wake API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_RERANKER_SLEEP_BODY    — JSON body for reranker sleep (default: {"level":2})
 //	GPU_SCHEDULER_TIMEOUT                — HTTP timeout (default: "30s")
 //	GPU_SCHEDULER_WAKE_DELAY             — delay after wake (default: "3s")
 func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	s := &GPUScheduler{
-		rerankerSleepURL: "http://localhost:11435/sleep",
-		rerankerWakeURL:  "http://localhost:11435/wake_up",
+		rerankerSleepURL: "",
+		rerankerWakeURL:  "",
 		rerankerSleepBody: `{"level":2}`,
 		timeout:          30 * time.Second,
 		wakeDelay:        3 * time.Second,
@@ -167,8 +167,12 @@ func (s *GPUScheduler) Summary() string {
 	if s.embeddingWakeURL != "" {
 		parts = append(parts, "embed-wake="+s.embeddingWakeURL)
 	}
-	parts = append(parts, "reranker-sleep="+s.rerankerSleepURL)
-	parts = append(parts, "reranker-wake="+s.rerankerWakeURL)
+	if s.rerankerSleepURL != "" {
+		parts = append(parts, "reranker-sleep="+s.rerankerSleepURL)
+	}
+	if s.rerankerWakeURL != "" {
+		parts = append(parts, "reranker-wake="+s.rerankerWakeURL)
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -176,7 +180,7 @@ func (s *GPUScheduler) Summary() string {
 // sent as the request body with Content-Type: application/json.
 func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 	if url == "" {
-		return fmt.Errorf("sleep URL is empty")
+		return nil
 	}
 	var reqBody io.Reader
 	if body != "" {
@@ -205,7 +209,7 @@ func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 // allow the model to load into GPU memory.
 func (s *GPUScheduler) doWake(ctx context.Context, url string) error {
 	if url == "" {
-		return fmt.Errorf("wake URL is empty")
+		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
@@ -249,7 +253,12 @@ func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 	if s.embeddingWakeURL != "" {
 		urls = append(urls, s.embeddingWakeURL)
 	}
-	urls = append(urls, s.rerankerSleepURL, s.rerankerWakeURL)
+	if s.rerankerSleepURL != "" {
+		urls = append(urls, s.rerankerSleepURL)
+	}
+	if s.rerankerWakeURL != "" {
+		urls = append(urls, s.rerankerWakeURL)
+	}
 
 	var results []ProbeResult
 	var lastErr error

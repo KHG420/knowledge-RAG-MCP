@@ -48,7 +48,7 @@ pip install infinity-emb[all]
 infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
 
 # knowledge-mcp
-EMBED_API_BASE_URL=http://localhost:11434/v1 \
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 RERANK_API_BASE_URL=http://localhost:7997 \
 RERANK_CANDIDATE_LIMIT=100 \
@@ -90,7 +90,7 @@ web UI are immediately searchable through `knowledge_search`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMBED_API_BASE_URL` | — | OpenAI-compatible `/v1/embeddings` endpoint |
+| `EMBED_API_ENDPOINT` | — | Full OpenAI-compatible embedding API endpoint |
 | `EMBED_MODEL` | `bge-m3` | Model name |
 | `EMBED_API_KEY` | — | API key (not needed for Ollama) |
 | `EMBED_DIM` | auto-detect | Vector dimension |
