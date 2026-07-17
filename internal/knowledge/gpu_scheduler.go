@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -15,22 +16,52 @@ import (
 // GPUScheduler manages the sleep/wake lifecycle of embedding and reranker
 // models on a shared GPU, ensuring only one model is loaded at a time.
 // This is useful when both models cannot fit simultaneously in GPU memory.
+//
+// Each model has its own sleep/wake API URLs since the two models may use
+// different endpoints or require different request bodies (e.g. reranker
+// sleep requires a JSON body with sleep level).
 type GPUScheduler struct {
-	managerURL string        // Manager API URL, e.g. "http://10.95.222.190:11436"
-	timeout    time.Duration // HTTP timeout for sleep/wake requests (default 30s)
-	wakeDelay  time.Duration // Delay after wake to let the model load into GPU (default 3s)
-	enabled    bool
-	client     *http.Client
-	logger     *logging.Logger
+	embeddingSleepURL  string        // URL to sleep the embedding model
+	embeddingWakeURL   string        // URL to wake the embedding model
+	embeddingSleepBody string        // Optional JSON body for embedding sleep request
+	rerankerSleepURL   string        // URL to sleep the reranker model
+	rerankerWakeURL    string        // URL to wake the reranker model
+	rerankerSleepBody  string        // Optional JSON body for reranker sleep request (default `{"level":2}`)
+	timeout            time.Duration // HTTP timeout for sleep/wake requests (default 30s)
+	wakeDelay          time.Duration // Delay after wake to let the model load into GPU (default 3s)
+	enabled            bool
+	client             *http.Client
+	logger             *logging.Logger
 }
 
 // GPUSchedulerOption configures a GPUScheduler.
 type GPUSchedulerOption func(*GPUScheduler)
 
-// WithSchedulerManagerURL sets the Manager API URL.
-func WithSchedulerManagerURL(url string) GPUSchedulerOption {
+// WithSchedulerEmbeddingSleepURL sets the URL to sleep the embedding model.
+func WithSchedulerEmbeddingSleepURL(url string) GPUSchedulerOption {
 	return func(s *GPUScheduler) {
-		s.managerURL = strings.TrimRight(url, "/")
+		s.embeddingSleepURL = url
+	}
+}
+
+// WithSchedulerEmbeddingWakeURL sets the URL to wake the embedding model.
+func WithSchedulerEmbeddingWakeURL(url string) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.embeddingWakeURL = url
+	}
+}
+
+// WithSchedulerRerankerSleepURL sets the URL to sleep the reranker model.
+func WithSchedulerRerankerSleepURL(url string) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.rerankerSleepURL = url
+	}
+}
+
+// WithSchedulerRerankerWakeURL sets the URL to wake the reranker model.
+func WithSchedulerRerankerWakeURL(url string) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.rerankerWakeURL = url
 	}
 }
 
@@ -58,16 +89,23 @@ func WithSchedulerLogger(l *logging.Logger) GPUSchedulerOption {
 // NewGPUScheduler creates a GPUScheduler from environment variables.
 // Environment variables (all optional):
 //
-//	GPU_SCHEDULER_ENABLED   — "true" or "1" to enable (default: false)
-//	GPU_SCHEDULER_MANAGER_URL — Manager API URL (default: "http://localhost:11436")
-//	GPU_SCHEDULER_TIMEOUT    — HTTP timeout (default: "30s")
-//	GPU_SCHEDULER_WAKE_DELAY — delay after wake (default: "3s")
+//	GPU_SCHEDULER_ENABLED                — "true" or "1" to enable (default: false)
+//	GPU_SCHEDULER_EMBEDDING_SLEEP_URL    — Embedding model sleep API URL (default: empty, must be set if enabled)
+//	GPU_SCHEDULER_EMBEDDING_WAKE_URL     — Embedding model wake API URL (default: empty, must be set if enabled)
+//	GPU_SCHEDULER_EMBEDDING_SLEEP_BODY   — JSON body for embedding sleep request (default: empty)
+//	GPU_SCHEDULER_RERANKER_SLEEP_URL     — Reranker model sleep API URL (default: http://localhost:11435/sleep)
+//	GPU_SCHEDULER_RERANKER_WAKE_URL      — Reranker model wake API URL (default: http://localhost:11435/wake_up)
+//	GPU_SCHEDULER_RERANKER_SLEEP_BODY    — JSON body for reranker sleep (default: {"level":2})
+//	GPU_SCHEDULER_TIMEOUT                — HTTP timeout (default: "30s")
+//	GPU_SCHEDULER_WAKE_DELAY             — delay after wake (default: "3s")
 func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	s := &GPUScheduler{
-		managerURL: "http://localhost:11436",
-		timeout:    30 * time.Second,
-		wakeDelay:  3 * time.Second,
-		enabled:    false,
+		rerankerSleepURL: "http://localhost:11435/sleep",
+		rerankerWakeURL:  "http://localhost:11435/wake_up",
+		rerankerSleepBody: `{"level":2}`,
+		timeout:          30 * time.Second,
+		wakeDelay:        3 * time.Second,
+		enabled:          false,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -78,8 +116,23 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	if v := os.Getenv("GPU_SCHEDULER_ENABLED"); v == "true" || v == "1" {
 		s.enabled = true
 	}
-	if v := os.Getenv("GPU_SCHEDULER_MANAGER_URL"); v != "" {
-		s.managerURL = strings.TrimRight(v, "/")
+	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_SLEEP_URL"); v != "" {
+		s.embeddingSleepURL = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_WAKE_URL"); v != "" {
+		s.embeddingWakeURL = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_SLEEP_BODY"); v != "" {
+		s.embeddingSleepBody = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_RERANKER_SLEEP_URL"); v != "" {
+		s.rerankerSleepURL = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_RERANKER_WAKE_URL"); v != "" {
+		s.rerankerWakeURL = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_RERANKER_SLEEP_BODY"); v != "" {
+		s.rerankerSleepBody = v
 	}
 	if v := os.Getenv("GPU_SCHEDULER_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -105,50 +158,71 @@ func (s *GPUScheduler) Enabled() bool {
 	return s.enabled
 }
 
-// ManagerURL returns the manager API URL.
-func (s *GPUScheduler) ManagerURL() string {
-	return s.managerURL
+// Summary returns a readable summary of the scheduler configuration for logging.
+func (s *GPUScheduler) Summary() string {
+	var parts []string
+	if s.embeddingSleepURL != "" {
+		parts = append(parts, "embed-sleep="+s.embeddingSleepURL)
+	}
+	if s.embeddingWakeURL != "" {
+		parts = append(parts, "embed-wake="+s.embeddingWakeURL)
+	}
+	parts = append(parts, "reranker-sleep="+s.rerankerSleepURL)
+	parts = append(parts, "reranker-wake="+s.rerankerWakeURL)
+	return strings.Join(parts, ", ")
 }
 
-// sleep sends a POST /sleep/{service} request to the manager API.
-func (s *GPUScheduler) sleep(ctx context.Context, service string) error {
-	url := s.managerURL + "/sleep/" + service
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+// doSleep sends a POST request to the given URL. If body is non-empty, it is
+// sent as the request body with Content-Type: application/json.
+func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
+	if url == "" {
+		return fmt.Errorf("sleep URL is empty")
+	}
+	var reqBody io.Reader
+	if body != "" {
+		reqBody = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, reqBody)
 	if err != nil {
-		return fmt.Errorf("create sleep request for %q: %w", service, err)
+		return fmt.Errorf("create sleep request for %q: %w", url, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("sleep %q request failed: %w", service, err)
+		return fmt.Errorf("sleep request to %q failed: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("sleep %q returned status %d", service, resp.StatusCode)
+		return fmt.Errorf("sleep %q returned status %d", url, resp.StatusCode)
 	}
-	s.logger.Debugf("gpu-scheduler: sleep %q → %s", service, resp.Status)
+	s.logger.Debugf("gpu-scheduler: sleep %q → %s", url, resp.Status)
 	return nil
 }
 
-// wake sends a POST /wake/{service} request to the manager API, then waits
-// for wakeDelay to allow the model to load into GPU memory.
-func (s *GPUScheduler) wake(ctx context.Context, service string) error {
-	url := s.managerURL + "/wake/" + service
+// doWake sends a POST request to the given URL, then waits for wakeDelay to
+// allow the model to load into GPU memory.
+func (s *GPUScheduler) doWake(ctx context.Context, url string) error {
+	if url == "" {
+		return fmt.Errorf("wake URL is empty")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return fmt.Errorf("create wake request for %q: %w", service, err)
+		return fmt.Errorf("create wake request for %q: %w", url, err)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("wake %q request failed: %w", service, err)
+		return fmt.Errorf("wake request to %q failed: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("wake %q returned status %d", service, resp.StatusCode)
+		return fmt.Errorf("wake %q returned status %d", url, resp.StatusCode)
 	}
-	s.logger.Debugf("gpu-scheduler: wake %q → %s", service, resp.Status)
+	s.logger.Debugf("gpu-scheduler: wake %q → %s", url, resp.Status)
 	// Wait for the model to load.
 	if s.wakeDelay > 0 {
-		s.logger.Debugf("gpu-scheduler: waiting %v for %q to load", s.wakeDelay, service)
+		s.logger.Debugf("gpu-scheduler: waiting %v for %q to load", s.wakeDelay, url)
 		select {
 		case <-time.After(s.wakeDelay):
 		case <-ctx.Done():
@@ -158,33 +232,56 @@ func (s *GPUScheduler) wake(ctx context.Context, service string) error {
 	return nil
 }
 
-// GPUSchedulerStatus represents the status response from the manager API.
-type GPUSchedulerStatus struct {
-	Services map[string]struct {
-		Status string `json:"status"`
-	} `json:"services"`
+// ProbeResult holds the probe result for a single endpoint.
+type ProbeResult struct {
+	URL    string
+	Status string
+	Err    string `json:",omitempty"`
 }
 
-// Status queries the manager API for current model states.
-func (s *GPUScheduler) Status(ctx context.Context) (*GPUSchedulerStatus, error) {
-	url := s.managerURL + "/status"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create status request: %w", err)
+// Probe checks connectivity to each configured sleep/wake endpoint by sending
+// a GET request. Returns a human-readable summary.
+func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
+	urls := []string{}
+	if s.embeddingSleepURL != "" {
+		urls = append(urls, s.embeddingSleepURL)
 	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("status request failed: %w", err)
+	if s.embeddingWakeURL != "" {
+		urls = append(urls, s.embeddingWakeURL)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("status returned %d", resp.StatusCode)
+	urls = append(urls, s.rerankerSleepURL, s.rerankerWakeURL)
+
+	var results []ProbeResult
+	var lastErr error
+	for _, u := range urls {
+		pr := ProbeResult{URL: u}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			pr.Err = err.Error()
+			lastErr = err
+		} else {
+			resp, reqErr := s.client.Do(req)
+			if reqErr != nil {
+				pr.Err = reqErr.Error()
+				lastErr = reqErr
+			} else {
+				pr.Status = resp.Status
+				resp.Body.Close()
+			}
+		}
+		results = append(results, pr)
 	}
-	var st GPUSchedulerStatus
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return nil, fmt.Errorf("decode status response: %w", err)
+
+	var lines []string
+	for _, r := range results {
+		if r.Err != "" {
+			lines = append(lines, fmt.Sprintf("%s: %s (error: %s)", r.URL, r.Status, r.Err))
+		} else {
+			lines = append(lines, fmt.Sprintf("%s: %s", r.URL, r.Status))
+		}
 	}
-	return &st, nil
+	summary := strings.Join(lines, "; ")
+	return summary, lastErr
 }
 
 // PrepareForEmbedding switches the GPU to embedding mode:
@@ -201,20 +298,20 @@ func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
 	log := s.logger.WithModule("gpu-scheduler")
 
 	// Sleep reranker first (releases GPU memory for embedding).
-	if err := s.sleep(context.Background(), "reranker"); err != nil {
+	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 		log.Warnf("sleep reranker failed (continuing): %v", err)
 	}
 	// Wake embedding model.
-	if err := s.wake(context.Background(), "embedding"); err != nil {
+	if err := s.doWake(context.Background(), s.embeddingWakeURL); err != nil {
 		log.Warnf("wake embedding failed (continuing): %v", err)
 	}
 
 	return func() {
 		// Restore: sleep embedding, wake reranker.
-		if err := s.sleep(context.Background(), "embedding"); err != nil {
+		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 			log.Warnf("sleep embedding (restore) failed: %v", err)
 		}
-		if err := s.wake(context.Background(), "reranker"); err != nil {
+		if err := s.doWake(context.Background(), s.rerankerWakeURL); err != nil {
 			log.Warnf("wake reranker (restore) failed: %v", err)
 		}
 	}
@@ -233,21 +330,24 @@ func (s *GPUScheduler) PrepareForReranking() (restore func()) {
 	log := s.logger.WithModule("gpu-scheduler")
 
 	// Sleep embedding first (releases GPU memory for reranker).
-	if err := s.sleep(context.Background(), "embedding"); err != nil {
+	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 		log.Warnf("sleep embedding failed (continuing): %v", err)
 	}
 	// Wake reranker model.
-	if err := s.wake(context.Background(), "reranker"); err != nil {
+	if err := s.doWake(context.Background(), s.rerankerWakeURL); err != nil {
 		log.Warnf("wake reranker failed (continuing): %v", err)
 	}
 
 	return func() {
 		// Restore: sleep reranker, wake embedding.
-		if err := s.sleep(context.Background(), "reranker"); err != nil {
+		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 			log.Warnf("sleep reranker (restore) failed: %v", err)
 		}
-		if err := s.wake(context.Background(), "embedding"); err != nil {
+		if err := s.doWake(context.Background(), s.embeddingWakeURL); err != nil {
 			log.Warnf("wake embedding (restore) failed: %v", err)
 		}
 	}
 }
+
+// ensure encoding/json is used (for ProbeResult struct tags)
+var _ = json.Marshal

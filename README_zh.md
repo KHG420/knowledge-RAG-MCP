@@ -123,12 +123,17 @@ MANAGE_PORT=8080 knowledge-mcp
 GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 启用后，在上传文档（需要嵌入）和搜索（需要重排序）时自动切换模型，
 使得两个模型即使单独均无法放入 GPU 显存也能正常工作。
-需要远程 Manager 服务支持。
+两个模型的休眠/唤醒 API 各自独立配置，因为它们使用不同的协议和端口。
 
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `GPU_SCHEDULER_ENABLED` | `false` | 设为 `true` 或 `1` 开启 |
-| `GPU_SCHEDULER_MANAGER_URL` | `http://localhost:11436` | Manager API 地址，用于休眠/唤醒 |
+| `GPU_SCHEDULER_EMBEDDING_SLEEP_URL` | — | 嵌入模型休眠 API 地址 |
+| `GPU_SCHEDULER_EMBEDDING_WAKE_URL` | — | 嵌入模型唤醒 API 地址 |
+| `GPU_SCHEDULER_EMBEDDING_SLEEP_BODY` | — | 嵌入模型休眠请求的可选 JSON body |
+| `GPU_SCHEDULER_RERANKER_SLEEP_URL` | `http://localhost:11435/sleep` | 重排序模型休眠 API 地址 |
+| `GPU_SCHEDULER_RERANKER_WAKE_URL` | `http://localhost:11435/wake_up` | 重排序模型唤醒 API 地址 |
+| `GPU_SCHEDULER_RERANKER_SLEEP_BODY` | `{"level":2}` | 重排序模型休眠请求的 JSON body |
 | `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
 | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
 

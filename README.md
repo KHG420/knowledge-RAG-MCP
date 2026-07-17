@@ -124,12 +124,17 @@ web UI are immediately searchable through `knowledge_search`.
 GPU scheduler coordinates sleep/wake of embedding and reranker models sharing a single GPU.
 When enabled, it automatically switches models during upload (needs embedding) and
 search (needs reranker), so both models can work even when neither fits in GPU memory alone.
-Requires a remote Manager service.
+Each model has its own sleep/wake API endpoints since they may use different protocols.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GPU_SCHEDULER_ENABLED` | `false` | Set to `true` or `1` to enable |
-| `GPU_SCHEDULER_MANAGER_URL` | `http://localhost:11436` | Manager API URL for sleep/wake |
+| `GPU_SCHEDULER_EMBEDDING_SLEEP_URL` | — | Embedding model sleep API URL |
+| `GPU_SCHEDULER_EMBEDDING_WAKE_URL` | — | Embedding model wake API URL |
+| `GPU_SCHEDULER_EMBEDDING_SLEEP_BODY` | — | Optional JSON body for embedding sleep request |
+| `GPU_SCHEDULER_RERANKER_SLEEP_URL` | `http://localhost:11435/sleep` | Reranker model sleep API URL |
+| `GPU_SCHEDULER_RERANKER_WAKE_URL` | `http://localhost:11435/wake_up` | Reranker model wake API URL |
+| `GPU_SCHEDULER_RERANKER_SLEEP_BODY` | `{"level":2}` | JSON body for reranker sleep request |
 | `GPU_SCHEDULER_TIMEOUT` | `30s` | HTTP timeout for sleep/wake requests |
 | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake to wait for model to load into GPU |
 

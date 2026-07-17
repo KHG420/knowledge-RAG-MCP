@@ -113,17 +113,16 @@ func main() {
 			knowledge.WithSchedulerLogger(logger.WithModule("gpu-scheduler")),
 		)
 		store.SetGPUScheduler(scheduler)
-		log.Infof("GPU scheduler enabled: manager=%s timeout=%s wakeDelay=%s",
-			scheduler.ManagerURL(),
+		log.Infof("GPU scheduler enabled: timeout=%s wakeDelay=%s [%s]",
 			os.Getenv("GPU_SCHEDULER_TIMEOUT"),
 			os.Getenv("GPU_SCHEDULER_WAKE_DELAY"),
+			scheduler.Summary(),
 		)
-		// Probe manager connectivity (non-fatal: warn and continue).
-		if status, err := scheduler.Status(context.Background()); err != nil {
-			log.Warnf("GPU scheduler: manager unreachable at %s: %v (continuing without GPU coordination)",
-				scheduler.ManagerURL(), err)
+		// Probe endpoint connectivity (non-fatal: warn and continue).
+		if summary, err := scheduler.Probe(context.Background()); err != nil {
+			log.Warnf("GPU scheduler: some endpoints unreachable: %s (continuing without GPU coordination)", summary)
 		} else {
-			log.Infof("GPU scheduler: manager connected, services=%v", status.Services)
+			log.Infof("GPU scheduler: endpoints reachable — %s", summary)
 		}
 	}
 
