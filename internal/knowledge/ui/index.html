@@ -646,7 +646,7 @@ async function loadKBs() {
     const data = await api('/api/knowledge-bases');
     const kbs = data.knowledgeBases || [];
     document.getElementById('kbSelect').innerHTML = kbs.map(kb =>
-      `<option value="${escHtml(kb)}">${escHtml(kb)}</option>`
+      `<option value="${escHtml(kb.name)}">${escHtml(kb.name)}</option>`
     ).join('');
     currentKB = '';
     window._kbList = kbs;
@@ -686,12 +686,12 @@ function renderKBHome() {
     return;
   }
   list.innerHTML = kbs.map(function(kb) {
-    var delBtn = '<span class="kb-del-btn" onclick="event.stopPropagation();deleteKB(\'' + escHtml(kb) + '\')" title="删除知识库">🗑️</span>';
-    return '<div class="kb-list-item" onclick="enterKB(\'' + escHtml(kb) + '\')">' +
+    var delBtn = '<span class="kb-del-btn" onclick="event.stopPropagation();deleteKB(\'' + escHtml(kb.name) + '\')" title="删除知识库">🗑️</span>';
+    return '<div class="kb-list-item" onclick="enterKB(\'' + escHtml(kb.name) + '\')">' +
       '<div class="kb-icon">📂</div>' +
       '<div class="kb-info">' +
-      '<div class="kb-name">' + escHtml(kb) + '</div>' +
-      '<div class="kb-desc">点击进入该知识库</div>' +
+      '<div class="kb-name">' + escHtml(kb.name) + '</div>' +
+      '<div class="kb-desc">' + (kb.description ? escHtml(kb.description) : '点击进入该知识库') + '</div>' +
       '</div>' +
       '<div class="kb-arrow">➜</div>' +
       delBtn +
