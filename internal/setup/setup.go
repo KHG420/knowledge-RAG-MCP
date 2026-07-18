@@ -29,10 +29,29 @@ type step struct {
 
 // Run starts the interactive setup wizard.
 func Run() {
+	// Language selection.
 	fmt.Println("===========================================")
-	fmt.Println("   knowledge-mcp 交互式配置向导")
+	fmt.Println("  knowledge-mcp Setup Wizard")
 	fmt.Println("===========================================")
-	fmt.Println("每步可输入 b 返回上一步，输入 q 退出")
+	fmt.Println()
+	fmt.Println("Select language / 选择语言:")
+	fmt.Println("  1) 中文")
+	fmt.Println("  2) English")
+	fmt.Print("Enter 1 or 2 [1]: ")
+	stdIn = bufio.NewScanner(os.Stdin)
+	if stdIn.Scan() {
+		ch := strings.TrimSpace(stdIn.Text())
+		if ch == "2" {
+			setLang(LangEN)
+		}
+	}
+	fmt.Println()
+
+	lt := T()
+	fmt.Println("===========================================")
+	fmt.Printf("   %s\n", lt.Title)
+	fmt.Println("===========================================")
+	fmt.Printf("%s （%s=%s %s=%s）\n", lt.NavHint, lt.BackCmd, lt.BackCmd, lt.QuitCmd, lt.QuitCmd)
 	fmt.Println()
 
 	cfg := config.DefaultConfig()
@@ -59,34 +78,34 @@ func Run() {
 		case result == errBack:
 			current--
 		case result == errQuit:
-			fmt.Println("\n配置已取消。")
+			fmt.Println(lt.CancelMsg)
 			return
 		default:
-			fmt.Printf("错误: %v\n", result)
-			fmt.Print("按 Enter 重试...")
+			fmt.Printf(lt.ErrorRetry, result)
 			stdIn.Scan()
 		}
 	}
 
 	// Summary and confirmation.
+	lt = T()
 	showSummary(cfg)
 	if !confirmSave() {
-		fmt.Println("配置已取消。")
+		fmt.Println(lt.CancelMsg)
 		return
 	}
 
 	// Determine save path.
 	savePath := findSetupConfigPath()
 	if err := config.Save(savePath, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "保存配置文件失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, lt.SaveFailed, err)
 		os.Exit(1)
 	}
-	fmt.Printf("✓ 配置已保存到 %s\n", savePath)
+	fmt.Printf(lt.SaveOK, savePath)
 
 	// Optionally update .mcp.json.
 	updateMCPJSON()
 
-	fmt.Println("\n✓ Setup complete. 知识库服务已配置完毕。")
+	fmt.Println(lt.CompleteMsg)
 }
 
 var errBack = fmt.Errorf("back")
@@ -152,8 +171,9 @@ func checkBackQuit(val string) error {
 // --- Step implementations ---
 
 func stepDataDir(cfg *config.Config) error {
-	fmt.Println("\n--- 数据目录 ---")
-	val := prompt("知识库数据存储目录", "~/knowledge_base/")
+	lt := T()
+	fmt.Println(lt.DataDirTitle)
+	val := prompt(lt.DataDirPrompt, "~/knowledge_base/")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -162,9 +182,10 @@ func stepDataDir(cfg *config.Config) error {
 }
 
 func stepDefaultKB(cfg *config.Config) error {
-	fmt.Println("\n--- 默认知识库 ---")
-	fmt.Println("(可选，回车跳过。如设置，AI 工具调用时默认使用此知识库)")
-	val := prompt("默认知识库名称", "")
+	lt := T()
+	fmt.Println(lt.DefaultKBTitle)
+	fmt.Println(lt.DefaultKBHelp)
+	val := prompt(lt.DefaultKBPrompt, "")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -173,10 +194,11 @@ func stepDefaultKB(cfg *config.Config) error {
 }
 
 func stepEmbedder(cfg *config.Config) error {
-	fmt.Println("\n--- Embedding 模型配置 ---")
-	fmt.Println("用于将文档转为向量，支持任何 OpenAI 兼容 API（如 Ollama）")
+	lt := T()
+	fmt.Println(lt.EmbedderTitle)
+	fmt.Println(lt.EmbedderDesc)
 
-	enable := promptYN("是否配置 embedding 模型", false)
+	enable := promptYN(lt.EmbedderEnable, false)
 	switch enable {
 	case "back":
 		return errBack
@@ -184,19 +206,19 @@ func stepEmbedder(cfg *config.Config) error {
 		return nil
 	}
 
-	val := prompt("Embedding API 地址", "http://localhost:11434/v1/embeddings")
+	val := prompt(lt.EmbedderURL, "http://localhost:11434/v1/embeddings")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.EmbedEndpoint = val
 
-	val = prompt("Embedding 模型名称", "bge-m3")
+	val = prompt(lt.EmbedderModel, "bge-m3")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.EmbedModel = val
 
-	val = prompt("向量维度（回车=自动检测）", "")
+	val = prompt(lt.EmbedderDim, "")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -206,7 +228,7 @@ func stepEmbedder(cfg *config.Config) error {
 		}
 	}
 
-	val = prompt("API Key（可选，回车跳过）", "")
+	val = prompt(lt.EmbedderAPIKey, "")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -217,10 +239,11 @@ func stepEmbedder(cfg *config.Config) error {
 }
 
 func stepReranker(cfg *config.Config) error {
-	fmt.Println("\n--- Reranker 模型配置 ---")
-	fmt.Println("用于二次排序提高搜索精度。支持 Infinity 或 Cohere 兼容 API")
+	lt := T()
+	fmt.Println(lt.RerankerTitle)
+	fmt.Println(lt.RerankerDesc)
 
-	enable := promptYN("是否配置 reranker 模型", false)
+	enable := promptYN(lt.RerankerEnable, false)
 	switch enable {
 	case "back":
 		return errBack
@@ -228,25 +251,25 @@ func stepReranker(cfg *config.Config) error {
 		return nil
 	}
 
-	val := prompt("Reranker API 地址", "http://localhost:7997/rerank")
+	val := prompt(lt.RerankerURL, "http://localhost:7997/rerank")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.RerankEndpoint = val
 
-	val = prompt("Reranker 模型名称", "gte-multilingual-reranker-base")
+	val = prompt(lt.RerankerModel, "gte-multilingual-reranker-base")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.RerankModel = val
 
-	val = prompt("API Key（可选，回车跳过）", "")
+	val = prompt(lt.RerankerAPIKey, "")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.RerankAPIKey = val
 
-	val = prompt("请求超时时间（如 30s, 60s）", "30s")
+	val = prompt(lt.RerankerTimeout, "30s")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -257,10 +280,11 @@ func stepReranker(cfg *config.Config) error {
 }
 
 func stepRerankLimit(cfg *config.Config) error {
-	fmt.Println("\n--- Rerank 候选数限制 ---")
-	fmt.Println("每次重排序最多处理多少个候选文档")
+	lt := T()
+	fmt.Println(lt.RerankLimitTitle)
+	fmt.Println(lt.RerankLimitDesc)
 
-	val := prompt("候选数", "100")
+	val := prompt(lt.RerankLimitPrompt, "100")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -271,10 +295,16 @@ func stepRerankLimit(cfg *config.Config) error {
 }
 
 func stepGPUScheduler(cfg *config.Config) error {
-	fmt.Println("\n--- GPU 调度器 ---")
-	fmt.Println("当 embedding 和 reranker 模型共享 GPU 时，调度器协调两者的睡眠/唤醒")
+	lt := T()
+	fmt.Println(lt.GPUSchedTitle)
+	fmt.Println(lt.GPUSchedDesc)
+	fmt.Println(lt.GPUSchedURLHint)
 
-	enable := promptYN("是否启用 GPU 调度器", false)
+	if cfg.EmbedEndpoint == "" && cfg.RerankEndpoint == "" {
+		fmt.Println(lt.GPUSchedNoModels)
+	}
+
+	enable := promptYN(lt.GPUSchedEnable, false)
 	switch enable {
 	case "back":
 		return errBack
@@ -283,13 +313,59 @@ func stepGPUScheduler(cfg *config.Config) error {
 	}
 	cfg.GPUSchedulerEnabled = true
 
-	val := prompt("调度请求超时时间", "30s")
+	// Embedding model sleep/wake URLs (only if embedder is configured).
+	if cfg.EmbedEndpoint != "" {
+		fmt.Println(lt.GPUSchedEmbedTitle)
+		defaultSleepURL := cfg.EmbedEndpoint
+		if strings.HasSuffix(defaultSleepURL, "/embeddings") {
+			defaultSleepURL = strings.TrimSuffix(defaultSleepURL, "/embeddings") + "/sleep"
+		}
+		defaultWakeURL := cfg.EmbedEndpoint
+		if strings.HasSuffix(defaultWakeURL, "/embeddings") {
+			defaultWakeURL = strings.TrimSuffix(defaultWakeURL, "/embeddings") + "/wake"
+		}
+
+		val := prompt(lt.GPUSchedEmbedSleep, defaultSleepURL)
+		if err := checkBackQuit(val); err != nil {
+			return err
+		}
+		cfg.GPUSchedulerEmbeddingSleepURL = val
+
+		val = prompt(lt.GPUSchedEmbedWake, defaultWakeURL)
+		if err := checkBackQuit(val); err != nil {
+			return err
+		}
+		cfg.GPUSchedulerEmbeddingWakeURL = val
+	}
+
+	// Reranker model sleep/wake URLs (only if reranker is configured).
+	if cfg.RerankEndpoint != "" {
+		fmt.Println(lt.GPUSchedRerankTitle)
+		baseURL := cfg.RerankEndpoint
+		if idx := strings.LastIndex(baseURL, "/rerank"); idx > 0 {
+			baseURL = baseURL[:idx]
+		}
+
+		val := prompt(lt.GPUSchedRerankSleep, baseURL+"/sleep")
+		if err := checkBackQuit(val); err != nil {
+			return err
+		}
+		cfg.GPUSchedulerRerankerSleepURL = val
+
+		val = prompt(lt.GPUSchedRerankWake, baseURL+"/wake")
+		if err := checkBackQuit(val); err != nil {
+			return err
+		}
+		cfg.GPUSchedulerRerankerWakeURL = val
+	}
+
+	val := prompt(lt.GPUSchedTimeout, "30s")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.GPUSchedulerTimeout = val
 
-	val = prompt("唤醒后等待模型加载时间", "3s")
+	val = prompt(lt.GPUSchedWakeDelay, "3s")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -298,10 +374,11 @@ func stepGPUScheduler(cfg *config.Config) error {
 }
 
 func stepManagePort(cfg *config.Config) error {
-	fmt.Println("\n--- 管理界面端口 ---")
-	fmt.Println("知识库的管理 UI 监听端口")
+	lt := T()
+	fmt.Println(lt.ManagePortTitle)
+	fmt.Println(lt.ManagePortDesc)
 
-	val := prompt("管理端口", "8085")
+	val := prompt(lt.ManagePortPrompt, "8085")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -310,24 +387,27 @@ func stepManagePort(cfg *config.Config) error {
 }
 
 func stepLogging(cfg *config.Config) error {
-	fmt.Println("\n--- 日志配置 ---")
+	lt := T()
+	fmt.Println(lt.LogTitle)
 
 	exeDir := ""
 	if exe, err := os.Executable(); err == nil {
 		exeDir = filepath.Dir(exe)
 	}
 	defaultLogFile := ""
-	if exeDir != "" {
+	if home, err := os.UserHomeDir(); err == nil {
+		defaultLogFile = filepath.Join(home, ".knowledge-mcp", "knowledge-mcp.log")
+	} else if exeDir != "" {
 		defaultLogFile = filepath.Join(exeDir, "knowledge-mcp.log")
 	}
 
-	val := prompt("日志文件路径（留空自动选择）", defaultLogFile)
+	val := prompt(lt.LogFilePath, defaultLogFile)
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.LogFile = val
 
-	val = prompt("日志级别（debug/info）", "info")
+	val = prompt(lt.LogLevelPrompt, "info")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
@@ -338,7 +418,8 @@ func stepLogging(cfg *config.Config) error {
 // --- Testing ---
 
 func testEmbedder(cfg *config.Config) error {
-	fmt.Println("\n[测试] 正在测试 embedding API 连接...")
+	lt := T()
+	fmt.Println(lt.EmbedTestTitle)
 	opts := []knowledge.OpenAIEmbedderOption{
 		knowledge.WithEndpointURL(cfg.EmbedEndpoint),
 		knowledge.WithModel(cfg.EmbedModel),
@@ -352,31 +433,32 @@ func testEmbedder(cfg *config.Config) error {
 	embedder := knowledge.NewOpenAIEmbedder(opts...)
 
 	if err := embedder.Probe(context.Background()); err != nil {
-		fmt.Printf("✗ 连接失败: %v\n", err)
-		fmt.Print("(r) 重试 (s) 跳过 (b) 返回: ")
+		fmt.Printf(lt.EmbedTestFail, err)
+		fmt.Print(lt.EmbedRetry)
 		input := strings.ToLower(readLine())
 		switch input {
 		case "r", "retry":
 			return testEmbedder(cfg)
 		case "s", "skip":
-			fmt.Println("已跳过 embedding 配置")
+			fmt.Println(lt.EmbedSkipped)
 			cfg.EmbedEndpoint = ""
 			return nil
 		case "b", "back":
 			return errBack
 		default:
-			fmt.Println("已跳过 embedding 配置")
+			fmt.Println(lt.EmbedSkipped)
 			cfg.EmbedEndpoint = ""
 			return nil
 		}
 	}
-	fmt.Printf("✓ Embedder 连接成功 (dim=%d)\n", embedder.Dim())
+	fmt.Printf(lt.EmbedTestOK, embedder.Dim())
 	cfg.EmbedDim = embedder.Dim()
 	return nil
 }
 
 func testReranker(cfg *config.Config) error {
-	fmt.Println("\n[测试] 正在测试 reranker API 连接...")
+	lt := T()
+	fmt.Println(lt.RerankTestTitle)
 	opts := []knowledge.InfinityRerankerOption{
 		knowledge.WithRerankEndpointURL(cfg.RerankEndpoint),
 		knowledge.WithRerankModel(cfg.RerankModel),
@@ -392,70 +474,85 @@ func testReranker(cfg *config.Config) error {
 	reranker := knowledge.NewInfinityReranker(opts...)
 
 	if err := reranker.Probe(context.Background()); err != nil {
-		fmt.Printf("✗ 连接失败: %v\n", err)
-		fmt.Print("(r) 重试 (s) 跳过 (b) 返回: ")
+		fmt.Printf(lt.RerankTestFail, err)
+		fmt.Print(lt.RerankRetry)
 		input := strings.ToLower(readLine())
 		switch input {
 		case "r", "retry":
 			return testReranker(cfg)
 		case "s", "skip":
-			fmt.Println("已跳过 reranker 配置")
+			fmt.Println(lt.RerankSkipped)
 			cfg.RerankEndpoint = ""
 			return nil
 		case "b", "back":
 			return errBack
 		default:
-			fmt.Println("已跳过 reranker 配置")
+			fmt.Println(lt.RerankSkipped)
 			cfg.RerankEndpoint = ""
 			return nil
 		}
 	}
-	fmt.Println("✓ Reranker 连接成功")
+	fmt.Println(lt.RerankTestOK)
 	return nil
 }
 
 // --- Summary & Save ---
 
 func showSummary(cfg *config.Config) {
-	fmt.Println("\n===========================================")
-	fmt.Println("   配置摘要")
-	fmt.Println("===========================================")
-	fmt.Printf("  数据目录:            %s\n", cfg.DataDir)
-	fmt.Printf("  默认知识库:          %s\n", orNone(cfg.DefaultKB))
-	fmt.Printf("  Embedding:           %s\n", onOff(cfg.EmbedEndpoint != ""))
+	lt := T()
+	fmt.Println(lt.SummaryHeader)
+	fmt.Printf(lt.SummaryDataDir, cfg.DataDir)
+	fmt.Printf(lt.SummaryDefaultKB, orNone(cfg.DefaultKB))
+	fmt.Printf(lt.SummaryEmbedding, onOff(cfg.EmbedEndpoint != ""))
 	if cfg.EmbedEndpoint != "" {
-		fmt.Printf("    - 地址:           %s\n", cfg.EmbedEndpoint)
-		fmt.Printf("    - 模型:           %s\n", cfg.EmbedModel)
-		fmt.Printf("    - 维度:           %d\n", cfg.EmbedDim)
+		fmt.Printf("    - URL:            %s\n", cfg.EmbedEndpoint)
+		fmt.Printf("    - Model:          %s\n", cfg.EmbedModel)
+		fmt.Printf("    - Dim:            %d\n", cfg.EmbedDim)
 	}
-	fmt.Printf("  Reranker:            %s\n", onOff(cfg.RerankEndpoint != ""))
+	fmt.Printf(lt.SummaryReranker, onOff(cfg.RerankEndpoint != ""))
 	if cfg.RerankEndpoint != "" {
-		fmt.Printf("    - 地址:           %s\n", cfg.RerankEndpoint)
-		fmt.Printf("    - 模型:           %s\n", cfg.RerankModel)
+		fmt.Printf("    - URL:            %s\n", cfg.RerankEndpoint)
+		fmt.Printf("    - Model:          %s\n", cfg.RerankModel)
 	}
-	fmt.Printf("  Rerank 候选数:        %d\n", cfg.RerankCandidateLimit)
-	fmt.Printf("  GPU 调度器:          %s\n", onOff(cfg.GPUSchedulerEnabled))
-	fmt.Printf("  管理端口:            %s\n", cfg.ManagePort)
-	fmt.Printf("  日志级别:            %s\n", cfg.LogLevel)
+	fmt.Printf(lt.SummaryRerankLimit, cfg.RerankCandidateLimit)
+	fmt.Printf(lt.SummaryGPUSched, onOff(cfg.GPUSchedulerEnabled))
+	if cfg.GPUSchedulerEnabled {
+		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
+			fmt.Printf(lt.SummaryEmbedSleep, cfg.GPUSchedulerEmbeddingSleepURL)
+		}
+		if cfg.GPUSchedulerEmbeddingWakeURL != "" {
+			fmt.Printf(lt.SummaryEmbedWake, cfg.GPUSchedulerEmbeddingWakeURL)
+		}
+		if cfg.GPUSchedulerRerankerSleepURL != "" {
+			fmt.Printf(lt.SummaryRerankSleep, cfg.GPUSchedulerRerankerSleepURL)
+		}
+		if cfg.GPUSchedulerRerankerWakeURL != "" {
+			fmt.Printf(lt.SummaryRerankWake, cfg.GPUSchedulerRerankerWakeURL)
+		}
+	}
+	fmt.Printf(lt.SummaryManagePort, cfg.ManagePort)
+	fmt.Printf(lt.SummaryLogLevel, cfg.LogLevel)
 	fmt.Println("===========================================")
 }
 
 func onOff(enabled bool) string {
+	lt := T()
 	if enabled {
-		return "✓ 已启用"
+		return lt.SummaryEnabled
 	}
-	return "✗ 未配置"
+	return lt.SummaryNotCfg
 }
 
 func orNone(s string) string {
+	lt := T()
 	if s == "" {
-		return "(无)"
+		return lt.SummaryNone
 	}
 	return s
 }
 
 func confirmSave() bool {
-	fmt.Print("\n确认保存以上配置？(Y/n): ")
+	fmt.Print(T().SavePrompt)
 	input := strings.ToLower(readLine())
 	return input != "n" && input != "no"
 }
@@ -499,11 +596,11 @@ func updateMCPJSON() {
 			continue
 		}
 		if err := os.WriteFile(path, newData, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: 无法更新 %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "warning: failed to update %s: %v\n", path, err)
 			continue
 		}
-		fmt.Printf("✓ 已更新 %s（移除了 env 字段）\n", path)
+		fmt.Printf("✓ Updated %s (removed env field)\n", path)
 		return
 	}
-	fmt.Println("(未找到 .mcp.json，跳过更新)")
+	fmt.Println(T().NoMCPJSON)
 }

@@ -27,8 +27,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Subcommand: serve — run as a long-lived HTTP SSE server.
-	if len(os.Args) > 1 && os.Args[1] == "serve" {
+	// Subcommand: serve (or server) — run as a long-lived HTTP SSE server.
+	if len(os.Args) > 1 && (os.Args[1] == "serve" || os.Args[1] == "server") {
 		mcpOnly := false
 		for _, a := range os.Args[2:] {
 			if a == "--mcp" {
@@ -46,7 +46,8 @@ func main() {
 	// No subcommand: show usage.
 	fmt.Fprintf(os.Stderr, "Usage: knowledge-mcp <command>\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
-	fmt.Fprintf(os.Stderr, "  serve [--mcp]   Start HTTP SSE MCP server\n")
+	fmt.Fprintf(os.Stderr, "  serve           Start HTTP SSE MCP server\n")
+	fmt.Fprintf(os.Stderr, "  server          (alias for serve)\n")
 	fmt.Fprintf(os.Stderr, "  setup           Interactive configuration\n")
 	os.Exit(1)
 }
@@ -60,8 +61,11 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 
 	logPath := cfg.LogFile
 	if logPath == "" {
-		exe, _ := os.Executable()
-		logPath = filepath.Join(filepath.Dir(exe), "knowledge-mcp.log")
+		if home, err := os.UserHomeDir(); err == nil {
+			logPath = filepath.Join(home, ".knowledge-mcp", "knowledge-mcp.log")
+		} else {
+			logPath = "/tmp/knowledge-mcp.log"
+		}
 	}
 	logLevel := logging.ParseLevel(cfg.LogLevel)
 	logger, err := logging.NewLogger(logPath, logLevel)
@@ -142,6 +146,18 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		var schedOpts []knowledge.GPUSchedulerOption
 		schedOpts = append(schedOpts, knowledge.WithSchedulerEnabled(true))
 		schedOpts = append(schedOpts, knowledge.WithSchedulerLogger(logger.WithModule("gpu-scheduler")))
+		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
+			schedOpts = append(schedOpts, knowledge.WithSchedulerEmbeddingSleepURL(cfg.GPUSchedulerEmbeddingSleepURL))
+		}
+		if cfg.GPUSchedulerEmbeddingWakeURL != "" {
+			schedOpts = append(schedOpts, knowledge.WithSchedulerEmbeddingWakeURL(cfg.GPUSchedulerEmbeddingWakeURL))
+		}
+		if cfg.GPUSchedulerRerankerSleepURL != "" {
+			schedOpts = append(schedOpts, knowledge.WithSchedulerRerankerSleepURL(cfg.GPUSchedulerRerankerSleepURL))
+		}
+		if cfg.GPUSchedulerRerankerWakeURL != "" {
+			schedOpts = append(schedOpts, knowledge.WithSchedulerRerankerWakeURL(cfg.GPUSchedulerRerankerWakeURL))
+		}
 		if cfg.GPUSchedulerTimeout != "" {
 			if d, err := time.ParseDuration(cfg.GPUSchedulerTimeout); err == nil {
 				schedOpts = append(schedOpts, knowledge.WithSchedulerTimeout(d))
@@ -694,26 +710,10 @@ func parseTags(raw string) []string {
 	return out
 }
 
-// findConfigPath returns the path to the config file. It checks:
-//  1. knowledge-mcp.toml in the same directory as the executable
-//  2. ~/.knowledge-mcp/config.toml
-// Returns the first found path, or the exe-dir path as default.
+// findConfigPath returns the path to the config file.
+// It only looks for knowledge-mcp.toml in the same directory as the executable.
+// This is the single source of truth — no fallback to home dir config.
 func findConfigPath() string {
-	// Check exe directory.
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// Check ~/.knowledge-mcp/config.toml.
-	if home, err := os.UserHomeDir(); err == nil {
-		p := filepath.Join(home, ".knowledge-mcp", "config.toml")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// Default to exe directory.
 	if exe, err := os.Executable(); err == nil {
 		return filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
 	}

@@ -10,7 +10,7 @@ import (
 
 // Config holds all configuration for the knowledge-mcp server.
 // Fields are populated from (in priority order):
-//  1. TOML config file (knowledge-mcp.toml next to the exe, or ~/.knowledge-mcp/config.toml)
+//  1. knowledge-mcp.toml next to the executable (the single config source)
 //  2. Environment variables (fallback when no TOML file exists)
 //  3. Hard-coded defaults
 type Config struct {
@@ -25,10 +25,14 @@ type Config struct {
 	RerankAPIKey         string `toml:"rerank_api_key"`
 	RerankTimeout        string `toml:"rerank_timeout"`
 	RerankCandidateLimit int    `toml:"rerank_candidate_limit"`
-	GPUSchedulerEnabled  bool   `toml:"gpu_scheduler_enabled"`
-	GPUSchedulerTimeout  string `toml:"gpu_scheduler_timeout"`
-	GPUSchedulerWakeDelay string `toml:"gpu_scheduler_wake_delay"`
-	ManagePort           string `toml:"manage_port"`
+	GPUSchedulerEnabled          bool   `toml:"gpu_scheduler_enabled"`
+	GPUSchedulerTimeout          string `toml:"gpu_scheduler_timeout"`
+	GPUSchedulerWakeDelay        string `toml:"gpu_scheduler_wake_delay"`
+	GPUSchedulerEmbeddingSleepURL string `toml:"gpu_scheduler_embedding_sleep_url"`
+	GPUSchedulerEmbeddingWakeURL  string `toml:"gpu_scheduler_embedding_wake_url"`
+	GPUSchedulerRerankerSleepURL  string `toml:"gpu_scheduler_reranker_sleep_url"`
+	GPUSchedulerRerankerWakeURL   string `toml:"gpu_scheduler_reranker_wake_url"`
+	ManagePort                   string `toml:"manage_port"`
 	ServePort            string `toml:"serve_port"`
 	ServeBaseURL         string `toml:"serve_base_url"`
 	LogFile              string `toml:"log_file"`
@@ -49,10 +53,14 @@ func DefaultConfig() *Config {
 		RerankAPIKey:         "",
 		RerankTimeout:        "30s",
 		RerankCandidateLimit: 100,
-		GPUSchedulerEnabled:  false,
-		GPUSchedulerTimeout:  "30s",
-		GPUSchedulerWakeDelay: "3s",
-		ManagePort:           "8085",
+		GPUSchedulerEnabled:          false,
+		GPUSchedulerTimeout:          "30s",
+		GPUSchedulerWakeDelay:        "3s",
+		GPUSchedulerEmbeddingSleepURL: "",
+		GPUSchedulerEmbeddingWakeURL:  "",
+		GPUSchedulerRerankerSleepURL:  "",
+		GPUSchedulerRerankerWakeURL:   "",
+		ManagePort:                   "8085",
 		ServePort:            "8086",
 		ServeBaseURL:         "",
 		LogFile:              "",
@@ -110,10 +118,14 @@ func LoadWithEnvFallback(path string) *Config {
 		RerankAPIKey:        envOr("RERANK_API_KEY", def.RerankAPIKey),
 		RerankTimeout:       envOr("RERANK_TIMEOUT", def.RerankTimeout),
 		RerankCandidateLimit: envIntOr("RERANK_CANDIDATE_LIMIT", def.RerankCandidateLimit),
-		GPUSchedulerEnabled: os.Getenv("GPU_SCHEDULER_ENABLED") == "true" || os.Getenv("GPU_SCHEDULER_ENABLED") == "1",
-		GPUSchedulerTimeout: envOr("GPU_SCHEDULER_TIMEOUT", def.GPUSchedulerTimeout),
-		GPUSchedulerWakeDelay: envOr("GPU_SCHEDULER_WAKE_DELAY", def.GPUSchedulerWakeDelay),
-		ManagePort:          envOr("MANAGE_PORT", def.ManagePort),
+		GPUSchedulerEnabled:           os.Getenv("GPU_SCHEDULER_ENABLED") == "true" || os.Getenv("GPU_SCHEDULER_ENABLED") == "1",
+		GPUSchedulerTimeout:           envOr("GPU_SCHEDULER_TIMEOUT", def.GPUSchedulerTimeout),
+		GPUSchedulerWakeDelay:         envOr("GPU_SCHEDULER_WAKE_DELAY", def.GPUSchedulerWakeDelay),
+		GPUSchedulerEmbeddingSleepURL: envOr("GPU_SCHEDULER_EMBEDDING_SLEEP_URL", def.GPUSchedulerEmbeddingSleepURL),
+		GPUSchedulerEmbeddingWakeURL:  envOr("GPU_SCHEDULER_EMBEDDING_WAKE_URL", def.GPUSchedulerEmbeddingWakeURL),
+		GPUSchedulerRerankerSleepURL:  envOr("GPU_SCHEDULER_RERANKER_SLEEP_URL", def.GPUSchedulerRerankerSleepURL),
+		GPUSchedulerRerankerWakeURL:   envOr("GPU_SCHEDULER_RERANKER_WAKE_URL", def.GPUSchedulerRerankerWakeURL),
+		ManagePort:                   envOr("MANAGE_PORT", def.ManagePort),
 		ServePort:           envOr("KNOWLEDGE_MCP_SERVE_PORT", def.ServePort),
 		ServeBaseURL:        envOr("KNOWLEDGE_MCP_SERVE_BASE_URL", def.ServeBaseURL),
 		LogFile:             envOr("KNOWLEDGE_MCP_LOG_FILE", def.LogFile),
