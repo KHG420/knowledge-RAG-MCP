@@ -1,6 +1,6 @@
 #!/bin/bash
 # Service management script for knowledge-mcp dependencies
-# Usage: ./service-manager.sh {ollama|reranker|all} {start|stop|restart|status|install}
+# Usage: ./service-manager.sh {ollama|reranker|knowledge|all} {start|stop|restart|status}
 
 set -e
 
@@ -15,6 +15,9 @@ INFINITY_BIN="$SCRIPT_DIR/.venv/bin/infinity_emb"
 INFINITY_LOG="$SCRIPT_DIR/.infinity_cache/infinity.log"
 INFINITY_ERR="$SCRIPT_DIR/.infinity_cache/infinity.err"
 INFINITY_PLIST="$SCRIPT_DIR/.ollama_persist/com.infinity-reranker.service.plist"
+
+KNOWLEDGE_BIN="$SCRIPT_DIR/knowledge-mcp"
+KNOWLEDGE_PORT="8086"
 
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
@@ -44,7 +47,7 @@ unload_service() {
     echo "  → Unloaded $1"
 }
 
-# ── nohup fallback management ──────────────────────────────
+# ── nohup management ────────────────────────────────────────
 
 start_ollama_nohup() {
     echo "  Starting Ollama via nohup..."
@@ -65,6 +68,13 @@ start_reranker_nohup() {
         --batch-size 8 \
         > "$INFINITY_LOG" 2> "$INFINITY_ERR" &
     echo "  → PID $! | log: $INFINITY_LOG"
+}
+
+start_knowledge_nohup() {
+    echo "  Starting knowledge-mcp SSE server via nohup..."
+    nohup "$KNOWLEDGE_BIN" serve --mcp \
+        > "$SCRIPT_DIR/knowledge-mcp.log" 2>&1 &
+    echo "  → PID $! | port $KNOWLEDGE_PORT | log: knowledge-mcp.log"
 }
 
 stop_service_port() {
@@ -104,6 +114,13 @@ cmd_status() {
         echo "  ❌ Not responding"
     fi
     echo ""
+    echo "--- knowledge-mcp (port $KNOWLEDGE_PORT) ---"
+    if curl -s --max-time 3 "http://localhost:$KNOWLEDGE_PORT/sse" >/dev/null 2>&1; then
+        echo "  ✅ SSE endpoint responding"
+    else
+        echo "  ❌ Not responding"
+    fi
+    echo ""
     echo "--- launchd ---"
     launchctl list | grep -E 'ollama|infinity' 2>/dev/null || echo "  (not loaded as launchd service)"
 }
@@ -125,7 +142,6 @@ cmd_start() {
     case "$service" in
         ollama)
             echo "=== Starting Ollama ==="
-            # Try launchd first
             if [ -f "$LAUNCH_AGENTS_DIR/com.ollama.service.plist" ]; then
                 load_service "com.ollama.service.plist" || start_ollama_nohup
             else
@@ -144,10 +160,18 @@ cmd_start() {
             sleep 3
             check_port 7997
             ;;
+        knowledge)
+            echo "=== Starting knowledge-mcp ==="
+            start_knowledge_nohup
+            sleep 1
+            check_port $KNOWLEDGE_PORT
+            ;;
         all)
             cmd_start ollama
             echo ""
             cmd_start reranker
+            echo ""
+            cmd_start knowledge
             ;;
     esac
 }
@@ -165,9 +189,14 @@ cmd_stop() {
             unload_service "com.infinity-reranker.service.plist" || true
             stop_service_port 7997
             ;;
+        knowledge)
+            echo "=== Stopping knowledge-mcp ==="
+            stop_service_port $KNOWLEDGE_PORT
+            ;;
         all)
             cmd_stop ollama
             cmd_stop reranker
+            cmd_stop knowledge
             ;;
     esac
 }
@@ -188,14 +217,15 @@ case "${1:-help}" in
     stop)      cmd_stop "${2:-all}" ;;
     restart)   cmd_restart "${2:-all}" ;;
     help|*)
-        echo "Usage: $0 {ollama|reranker|all} {start|stop|restart|status}"
+        echo "Usage: $0 {ollama|reranker|knowledge|all} {start|stop|restart|status}"
         echo "       $0 install    — Install plists to ~/Library/LaunchAgents/"
         echo "       $0 status     — Check all services"
         echo ""
         echo "Examples:"
-        echo "  $0 all status       # Check both services"
-        echo "  $0 all start        # Start both services"
-        echo "  $0 ollama restart   # Restart only Ollama"
-        echo "  $0 install          # Install launchd plists"
+        echo "  $0 all status            # Check all services"
+        echo "  $0 all start             # Start all services"
+        echo "  $0 knowledge start       # Start knowledge-mcp SSE server"
+        echo "  $0 knowledge stop        # Stop knowledge-mcp"
+        echo "  $0 install               # Install launchd plists"
         ;;
 esac

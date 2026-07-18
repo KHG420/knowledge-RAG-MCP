@@ -177,7 +177,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 
 	u := e.endpointURL
 	start := time.Now()
-	e.logger.Debugf("[embed] POST %s model=%s texts=%d", u, e.model, len(texts))
+	e.logger.Infof("[embed] POST %s model=%s texts=%d", u, e.model, len(texts))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("embed request: %w", err)
@@ -199,7 +199,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("embed api status %d: %s", resp.StatusCode, strings.TrimSpace(string(rbody)))
 	}
 
-	e.logger.Debugf("[embed] OK model=%s texts=%d elapsed=%s", e.model, len(texts), time.Since(start))
+	e.logger.Infof("[embed] OK model=%s texts=%d elapsed=%s", e.model, len(texts), time.Since(start))
 
 	var result embedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -248,6 +248,12 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 	}
 
 	return vectors, nil
+}
+
+// Probe checks connectivity to the embedding API by sending a single text.
+func (e *OpenAIEmbedder) Probe(ctx context.Context) error {
+	_, err := e.Embed(ctx, []string{"test"})
+	return err
 }
 
 // Dim returns the embedding dimension.

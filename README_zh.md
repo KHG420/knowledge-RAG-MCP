@@ -23,10 +23,73 @@
 ## 安装
 
 ```bash
-go install ./...
+go build -o knowledge-mcp .
 ```
 
+## 配置
+
+knowledge-mcp 支持三种配置方式（优先级从高到低）：
+
+1. **TOML 配置文件** — 可执行文件同目录下的 `knowledge-mcp.toml`，或 `~/.knowledge-mcp/config.toml`
+2. **环境变量** — 无 TOML 文件时的回退方案
+3. **内置默认值** — 所有字段均有合理的默认值
+
+### 配置向导
+
+运行交互式配置向导可生成 `knowledge-mcp.toml` 文件：
+
+```bash
+knowledge-mcp setup
+```
+
+向导会探测各端点连通性并写入有效的配置文件。
+
+### 配置项
+
+| 配置键 | 环境变量 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `data_dir` | `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | 知识库存储目录 |
+| `default_kb` | `KNOWLEDGE_MCP_DEFAULT_KB` | — | 默认知识库名称 |
+| `embed_endpoint` | `EMBED_API_ENDPOINT` | — | OpenAI 兼容的 Embedding API 端点 |
+| `embed_model` | `EMBED_MODEL` | `bge-m3` | 嵌入模型名称 |
+| `embed_dim` | `EMBED_DIM` | 自动检测 | 向量维度 |
+| `embed_api_key` | `EMBED_API_KEY` | — | API 密钥（Ollama 无需） |
+| `rerank_endpoint` | `RERANK_API_ENDPOINT` | — | Infinity/Cohere 兼容的 Reranker API 端点 |
+| `rerank_model` | `RERANK_MODEL` | `gte-multilingual-reranker-base` | 交叉编码器模型名称 |
+| `rerank_api_key` | `RERANK_API_KEY` | — | API 密钥（自部署无需） |
+| `rerank_timeout` | `RERANK_TIMEOUT` | `30s` | 重排序 HTTP 请求超时 |
+| `rerank_candidate_limit` | `RERANK_CANDIDATE_LIMIT` | `100` | 送入重排序的 BM25/RRF 候选数量 |
+| `gpu_scheduler_enabled` | `GPU_SCHEDULER_ENABLED` | `false` | 启用 GPU 调度器 |
+| `gpu_scheduler_timeout` | `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
+| `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
+| `manage_port` | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
+| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE 服务器监听端口 |
+| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景） |
+| `log_file` | `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | 日志文件路径 |
+| `log_level` | `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | 日志级别：`debug` 或 `info` |
+
 ## 快速开始
+
+### 运行模式
+
+knowledge-mcp 支持三种运行模式：
+
+- **stdio 模式**（默认）— 适用于通过 stdio 通信的 MCP 客户端：
+  ```bash
+  knowledge-mcp
+  ```
+- **HTTP SSE 模式** — 用于远程 MCP 连接；包含 Web 管理页面：
+  ```bash
+  knowledge-mcp serve
+  ```
+- **仅 MCP SSE** — HTTP SSE 不含管理页面：
+  ```bash
+  knowledge-mcp serve --mcp
+  ```
+- **配置向导** — 交互式配置：
+  ```bash
+  knowledge-mcp setup
+  ```
 
 ### 最小配置（仅 BM25，零外部依赖）
 
@@ -37,7 +100,7 @@ knowledge-mcp
 
 ### 完整配置（BM25 + 向量嵌入 + 重排序）
 
-详见 [docs/deployment-models_zh.md](docs/deployment-models_zh.md) 了解详细模型部署说明。
+详见 [docs/deployment-models.md](docs/deployment-models.md) / [中文版](docs/deployment-models_zh.md) 了解详细模型部署说明。
 
 ```bash
 # 嵌入服务 (Ollama + BGE-M3)
@@ -58,7 +121,7 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 
 ## Web 管理页面
 
-管理页面已**内嵌**在 MCP server 中 —— 启动知识库服务时自动运行。
+管理页面已**内嵌**在 MCP server 中 —— 在 stdio 模式和 `serve` 模式下自动启动（`serve --mcp` 模式不启动）。
 打开浏览器访问 [http://localhost:8085](http://localhost:8085)（默认端口）即可上传、
 浏览、搜索和删除文档，以及管理多个知识库。
 
@@ -84,6 +147,13 @@ MANAGE_PORT=8080 knowledge-mcp
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
+
+### SSE 服务器
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE 服务器监听端口 |
+| `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景） |
 
 ### 嵌入（混合搜索）
 
@@ -203,7 +273,8 @@ GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
-│   ├── kb.json            # KB 描述（创建时填写）
+│   ├── INVERTED.gob        # 全局倒排索引，加速候选查找
+│   ├── kb.json             # KB 描述（创建时填写）
 │   ├── LIST_SNAPSHOT.json
 │   ├── .searchlog.jsonl
 │   └── <document-slug>/
@@ -224,33 +295,43 @@ GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 ## 架构
 
 ```
-main.go                  — MCP 服务启动、工具注册、环境变量解析
+main.go                  — CLI 入口点、子命令 (stdio / serve / setup)、工具注册
 internal/
+  config/
+    config.go            — TOML 配置加载、环境变量回退、默认值
+  setup/
+    setup.go             — 交互式配置向导 ("knowledge-mcp setup")
+    probe.go             — 端点连通性探测
+  logging/
+    logger.go            — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，模块化)
   knowledge/
-    store.go             — Store 结构体、数据目录管理
+    store.go             — Store 结构体、数据目录管理、CHUNKS.toml I/O、KB CRUD
     search.go            — Search、HybridSearch、SearchDocuments、coarseToFine、rerankTop
     chunker.go           — ChunkText、ChunkTextHierarchical、语义合并
-    doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit
-    embed.go             — Embedder 接口、OpenAIEmbedder、Reranker 接口
-    rerank.go            — InfinityReranker（兼容 Cohere/Infinity）
+    doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit、ChunksIndex
+    embed.go             — Embedder 接口、OpenAIEmbedder
+    rerank.go            — InfinityReranker（兼容 Cohere/Infinity）、Reranker 接口
     gpu_scheduler.go     — GPU 调度器，协调嵌入/重排序模型的休眠与唤醒
     rewrite.go           — QueryRewriter 接口、SynonymRewriter
     rewrite_llm.go       — LLMQueryRewriter（可选的 LLM 查询扩展）
-    manage.go            — Web 管理页面服务、知识库 CRUD、上传/删除处理器
+    manage.go            — Web 管理页面服务、知识库 CRUD、上传/删除/搜索处理器
     upload.go            — UploadDocument、UploadDirectory
-    upload_doc.go        — 格式特定解析器（PDF、DOCX 等）
-    parser.go            — 文档解析调度
-    inverted.go          — 倒排索引加速候选查找 (G7)
+    parser.go            — 文档解析调度 (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
+    inverted.go          — 全局倒排索引 (INVERTED.gob)，加速候选查找
     list.go              — ListPreview、ReadChunk、ReadChunkContext
     remove.go            — RemoveDocument
-    searchlog.go         — FileSearchLogger
-    meta_extract.go      — 论文元数据提取
-    store_index.go       — CHUNKS.toml 读写
+    searchlog.go         — FileSearchLogger (.searchlog.jsonl)
+    meta_extract.go      — 论文元数据提取（标题、作者、摘要、章节角色）
   retrieval/
     bm25.go              — 分词器（CJK 双字感知）、BM25Score、MakeSnippet
+scripts/
+  eval.go                — 检索评估脚本 (NDCG@5, MRR, Recall@10)
+service-manager.sh       — Ollama + Infinity 依赖的服务管理脚本
 docs/
-  deployment-models_zh.md   — 嵌入与重排序模型部署指南
-  roadmap_zh.md             — RAG 优化路线图
+  deployment-models.md   — 嵌入与重排序模型部署指南
+  deployment-models_zh.md
+  roadmap.md             — RAG 优化路线图
+  roadmap_zh.md
 ```
 
 ## 许可证

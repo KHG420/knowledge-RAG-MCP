@@ -23,10 +23,73 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 ## Installation
 
 ```bash
-go install ./...
+go build -o knowledge-mcp .
 ```
 
+## Configuration
+
+knowledge-mcp can be configured via three methods (in priority order):
+
+1. **TOML config file** — `knowledge-mcp.toml` in the same directory as the executable, or `~/.knowledge-mcp/config.toml`
+2. **Environment variables** — fallback when no TOML file exists
+3. **Hard-coded defaults** — sensible defaults for all fields
+
+### Setup wizard
+
+Run the interactive configuration wizard to generate a `knowledge-mcp.toml` file:
+
+```bash
+knowledge-mcp setup
+```
+
+The wizard probes endpoint connectivity and writes a valid config file.
+
+### Config keys
+
+| Key | Env var | Default | Description |
+|-----|---------|---------|-------------|
+| `data_dir` | `KNOWLEDGE_MCP_DATA_DIR` | `~/knowledge_base/` | Knowledge base storage directory |
+| `default_kb` | `KNOWLEDGE_MCP_DEFAULT_KB` | — | Default KB name |
+| `embed_endpoint` | `EMBED_API_ENDPOINT` | — | OpenAI-compatible embedding API endpoint |
+| `embed_model` | `EMBED_MODEL` | `bge-m3` | Embedding model name |
+| `embed_dim` | `EMBED_DIM` | auto-detect | Vector dimension |
+| `embed_api_key` | `EMBED_API_KEY` | — | API key (not needed for Ollama) |
+| `rerank_endpoint` | `RERANK_API_ENDPOINT` | — | Infinity/Cohere-compatible reranker API endpoint |
+| `rerank_model` | `RERANK_MODEL` | `gte-multilingual-reranker-base` | Cross-Encoder model name |
+| `rerank_api_key` | `RERANK_API_KEY` | — | API key (not needed for self-hosted) |
+| `rerank_timeout` | `RERANK_TIMEOUT` | `30s` | Reranker HTTP request timeout |
+| `rerank_candidate_limit` | `RERANK_CANDIDATE_LIMIT` | `100` | How many BM25/RRF candidates to feed the reranker |
+| `gpu_scheduler_enabled` | `GPU_SCHEDULER_ENABLED` | `false` | Enable GPU scheduler for model sleep/wake |
+| `gpu_scheduler_timeout` | `GPU_SCHEDULER_TIMEOUT` | `30s` | Sleep/wake HTTP request timeout |
+| `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake for model to load into GPU |
+| `manage_port` | `MANAGE_PORT` | `8085` | Web management UI port |
+| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
+| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy) |
+| `log_file` | `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | Log file path |
+| `log_level` | `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | Log level: `debug` or `info` |
+
 ## Quick Start
+
+### Running modes
+
+knowledge-mcp supports three running modes:
+
+- **stdio mode** (default) — for MCP clients that speak stdio:
+  ```bash
+  knowledge-mcp
+  ```
+- **HTTP SSE mode** — for remote MCP connections; includes web management UI:
+  ```bash
+  knowledge-mcp serve
+  ```
+- **SSE MCP-only** — HTTP SSE without management UI:
+  ```bash
+  knowledge-mcp serve --mcp
+  ```
+- **Setup wizard** — interactive configuration:
+  ```bash
+  knowledge-mcp setup
+  ```
 
 ### Minimal (BM25 only, zero dependencies)
 
@@ -37,7 +100,7 @@ knowledge-mcp
 
 ### Full stack (BM25 + embeddings + reranker)
 
-Refer to [docs/deployment-models.md](docs/deployment-models.md) for detailed model deployment instructions.
+Refer to [docs/deployment-models.md](docs/deployment-models.md) / [中文版](docs/deployment-models_zh.md) for detailed model deployment instructions.
 
 ```bash
 # Embedding service (Ollama + BGE-M3)
@@ -58,7 +121,7 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 
 ## Web Management UI
 
-A management web interface is **built in** — it starts automatically alongside the MCP server.
+A management web interface is **built in** — it starts automatically alongside the MCP server in stdio mode and `serve` mode (not in `serve --mcp` mode).
 Open [http://localhost:8085](http://localhost:8085) (default port) in your browser to upload,
 browse, search, and delete documents, and manage multiple knowledge bases.
 
@@ -85,6 +148,13 @@ web UI are immediately searchable through `knowledge_search`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MANAGE_PORT` | `8085` | Web management UI port |
+
+### SSE Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
+| `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy scenarios) |
 
 ### Embedding (hybrid search)
 
@@ -207,7 +277,8 @@ cosine similarity scores from Phase 1.
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
-│   ├── kb.json            # KB description (set at creation time)
+│   ├── INVERTED.gob        # Global inverted index for accelerated candidate lookup
+│   ├── kb.json             # KB description (set at creation time)
 │   ├── LIST_SNAPSHOT.json
 │   ├── .searchlog.jsonl
 │   └── <document-slug>/
@@ -228,33 +299,43 @@ cosine similarity scores from Phase 1.
 ## Architecture
 
 ```
-main.go                  — MCP server setup, tool registration, env parsing
+main.go                  — CLI entry point, subcommands (stdio / serve / setup), tool registration
 internal/
+  config/
+    config.go            — TOML config loading, env-var fallback, defaults
+  setup/
+    setup.go             — Interactive configuration wizard ("knowledge-mcp setup")
+    probe.go             — Endpoint connectivity probes
+  logging/
+    logger.go            — Structured file logger (DEBUG/INFO/WARN/ERROR, module-scoped)
   knowledge/
-    store.go             — Store struct, data dir management
+    store.go             — Store struct, data dir management, CHUNKS.toml I/O, KB CRUD
     search.go            — Search, HybridSearch, SearchDocuments, coarseToFine, rerankTop
     chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge
-    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit
-    embed.go             — Embedder interface, OpenAIEmbedder, Reranker interface
-    rerank.go            — InfinityReranker (Cohere/Infinity-compatible)
+    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit, ChunksIndex
+    embed.go             — Embedder interface, OpenAIEmbedder
+    rerank.go            — InfinityReranker (Cohere/Infinity-compatible), Reranker interface
     gpu_scheduler.go     — GPU scheduler, coordinates embedding/reranker model sleep/wake
     rewrite.go           — QueryRewriter interface, SynonymRewriter
-    rewrite_llm.go       — LLMQueryRewriter (optional LLM-based expansion)
-    manage.go            — Web management UI server, KB CRUD, upload/delete handlers
+    rewrite_llm.go       — LLMQueryRewriter (optional LLM-based query expansion)
+    manage.go            — Web management UI server, KB CRUD, upload/delete/search handlers
     upload.go            — UploadDocument, UploadDirectory
-    upload_doc.go        — Format-specific parsers (PDF, DOCX, etc.)
-    parser.go            — Document parser dispatch
-    inverted.go          — Inverted index for accelerated candidate lookup (G7)
+    parser.go            — Document parser dispatch (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
+    inverted.go          — Global inverted index (INVERTED.gob) for accelerated candidate lookup
     list.go              — ListPreview, ReadChunk, ReadChunkContext
     remove.go            — RemoveDocument
-    searchlog.go         — FileSearchLogger
-    meta_extract.go      — Paper metadata extraction
-    store_index.go       — CHUNKS.toml read/write
+    searchlog.go         — FileSearchLogger (.searchlog.jsonl)
+    meta_extract.go      — Paper metadata extraction (title, authors, abstract, section roles)
   retrieval/
     bm25.go              — Tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
+scripts/
+  eval.go                — Retrieval evaluation script (NDCG@5, MRR, Recall@10)
+service-manager.sh       — Service management script for Ollama + Infinity dependencies
 docs/
   deployment-models.md   — Embedding & reranker model deployment guide
+  deployment-models_zh.md
   roadmap.md             — RAG optimization roadmap
+  roadmap_zh.md
 ```
 
 ## License

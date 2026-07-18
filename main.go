@@ -5,38 +5,104 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/knowledge"
+	"knowledge-mcp/internal/setup"
 )
 
 func main() {
-	dataDir := os.Getenv("KNOWLEDGE_MCP_DATA_DIR")
-	defaultKB := os.Getenv("KNOWLEDGE_MCP_DEFAULT_KB")
+	// Subcommand: setup — interactive configuration.
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		setup.Run()
+		os.Exit(0)
+	}
 
-	// Set up structured logger: KNOWLEDGE_MCP_LOG_FILE env var, or <exe-dir>/knowledge-mcp.log.
-	// Level: KNOWLEDGE_MCP_LOG_LEVEL env var ("debug" or "info"; defaults to "info").
-	logPath := os.Getenv("KNOWLEDGE_MCP_LOG_FILE")
+	// Subcommand: serve — run as a long-lived HTTP SSE server.
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		mcpOnly := false
+		for _, a := range os.Args[2:] {
+			if a == "--mcp" {
+				mcpOnly = true
+				break
+			}
+		}
+		cfg := config.LoadWithEnvFallback(findConfigPath())
+		store, logger := initStoreAndLogger(cfg)
+		defer logger.Close()
+		runServe(cfg, store, logger, mcpOnly)
+		return
+	}
+
+	// Default: stdio mode (backward compatible).
+	cfg := config.LoadWithEnvFallback(findConfigPath())
+
+	store, logger := initStoreAndLogger(cfg)
+	defer logger.Close()
+	startupLog := logger.WithModule("startup")
+	defaultKB := cfg.DefaultKB
+
+	// --- Web management UI (default: http://localhost:8085) ---
+	managePort := cfg.ManagePort
+	if managePort == "" {
+		managePort = "8085"
+	}
+	go func() {
+		kbInfo := defaultKB
+		if kbInfo == "" {
+			kbInfo = "(none)"
+		}
+		startupLog.Infof("management UI starting on http://localhost:%s (default KB: %s)", managePort, kbInfo)
+		if err := store.StartManageServer(managePort); err != nil {
+			startupLog.Errorf("management UI failed to start on port %s: %v", managePort, err)
+		}
+	}()
+
+	s := server.NewMCPServer(
+		"knowledge-mcp",
+		"1.0.0",
+		server.WithToolCapabilities(true),
+	)
+
+	registerSearch(s, store, logger)
+	registerRead(s, store, logger)
+	registerListKBs(s, store, logger)
+
+	if err := server.ServeStdio(s); err != nil {
+		startupLog.Errorf("server error: %v", err)
+		os.Exit(1)
+	}
+}
+
+// initStoreAndLogger creates and configures the knowledge store and structured
+// logger from the given config. It sets up the embedder, reranker, and GPU
+// scheduler as configured. The caller must call logger.Close() when done.
+func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) {
+	dataDir := cfg.DataDir
+	defaultKB := cfg.DefaultKB
+
+	logPath := cfg.LogFile
 	if logPath == "" {
 		exe, _ := os.Executable()
 		logPath = filepath.Join(filepath.Dir(exe), "knowledge-mcp.log")
 	}
-	logLevel := logging.ParseLevel(os.Getenv("KNOWLEDGE_MCP_LOG_LEVEL"))
+	logLevel := logging.ParseLevel(cfg.LogLevel)
 	logger, err := logging.NewLogger(logPath, logLevel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create logger at %s: %v\n", logPath, err)
 		os.Exit(1)
 	}
-	defer logger.Close()
 	log := logger.WithModule("startup")
-	log.Infof("log file: %s level=%s", logPath, []string{"debug","info"}[logLevel])
+	log.Infof("log file: %s level=%s", logPath, []string{"debug", "info"}[logLevel])
 
 	store := knowledge.NewStore()
 	if dataDir != "" {
@@ -53,67 +119,75 @@ func main() {
 	}
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
-	if endpointURL := os.Getenv("EMBED_API_ENDPOINT"); endpointURL != "" {
-		log.Infof("EMBED_API_ENDPOINT=%q EMBED_MODEL=%q EMBED_DIM=%q",
-			endpointURL, os.Getenv("EMBED_MODEL"), os.Getenv("EMBED_DIM"))
-		opts := []knowledge.OpenAIEmbedderOption{knowledge.WithEndpointURL(endpointURL)}
-		if key := os.Getenv("EMBED_API_KEY"); key != "" {
-			opts = append(opts, knowledge.WithAPIKey(key))
+	if cfg.EmbedEndpoint != "" {
+		log.Infof("EMBED_API_ENDPOINT=%q EMBED_MODEL=%q EMBED_DIM=%d",
+			cfg.EmbedEndpoint, cfg.EmbedModel, cfg.EmbedDim)
+		opts := []knowledge.OpenAIEmbedderOption{knowledge.WithEndpointURL(cfg.EmbedEndpoint)}
+		if cfg.EmbedAPIKey != "" {
+			opts = append(opts, knowledge.WithAPIKey(cfg.EmbedAPIKey))
 		}
-		model := os.Getenv("EMBED_MODEL")
+		model := cfg.EmbedModel
 		if model == "" {
-			model = "bge-m3" // Ollama-compatible default
+			model = "bge-m3"
 		}
 		opts = append(opts, knowledge.WithModel(model))
-		if dimStr := os.Getenv("EMBED_DIM"); dimStr != "" {
-			if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
-				opts = append(opts, knowledge.WithDim(dim))
-			}
+		if cfg.EmbedDim > 0 {
+			opts = append(opts, knowledge.WithDim(cfg.EmbedDim))
 		}
 		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
-		log.Infof("embedder: %s (model=%s)", endpointURL, model)
+		log.Infof("embedder: %s (model=%s)", cfg.EmbedEndpoint, model)
+	} else {
+		log.Infof("embedder not configured (EMBED_API_ENDPOINT empty)")
 	}
 
 	// --- Optional: cross-encoder reranker (Infinity/Cohere-compatible API) ---
-	if endpointURL := os.Getenv("RERANK_API_ENDPOINT"); endpointURL != "" {
-		opts := []knowledge.InfinityRerankerOption{knowledge.WithRerankEndpointURL(endpointURL)}
-		if key := os.Getenv("RERANK_API_KEY"); key != "" {
-			opts = append(opts, knowledge.WithRerankAPIKey(key))
+	if cfg.RerankEndpoint != "" {
+		opts := []knowledge.InfinityRerankerOption{knowledge.WithRerankEndpointURL(cfg.RerankEndpoint)}
+		if cfg.RerankAPIKey != "" {
+			opts = append(opts, knowledge.WithRerankAPIKey(cfg.RerankAPIKey))
 		}
-		if model := os.Getenv("RERANK_MODEL"); model != "" {
-			opts = append(opts, knowledge.WithRerankModel(model))
+		if cfg.RerankModel != "" {
+			opts = append(opts, knowledge.WithRerankModel(cfg.RerankModel))
 		}
-		if s := os.Getenv("RERANK_TIMEOUT"); s != "" {
-			if d, err := time.ParseDuration(s); err == nil {
+		if cfg.RerankTimeout != "" {
+			if d, err := time.ParseDuration(cfg.RerankTimeout); err == nil {
 				opts = append(opts, knowledge.WithRerankTimeout(d))
 				log.Infof("rerank timeout: %s", d)
 			}
 		}
 		opts = append(opts, knowledge.WithRerankLogger(logger.WithModule("rerank")))
 		store.SetReranker(knowledge.NewInfinityReranker(opts...))
-		log.Infof("reranker: %s", endpointURL)
+		log.Infof("reranker: %s", cfg.RerankEndpoint)
+	} else {
+		log.Infof("reranker not configured (RERANK_API_ENDPOINT empty)")
 	}
 
 	// --- Optional: rerank candidate limit (default 100) ---
-	if s := os.Getenv("RERANK_CANDIDATE_LIMIT"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			store.SetRerankCandidateLimit(n)
-			log.Infof("rerank candidate limit: %d", n)
-		}
+	if cfg.RerankCandidateLimit > 0 {
+		store.SetRerankCandidateLimit(cfg.RerankCandidateLimit)
+		log.Infof("rerank candidate limit: %d", cfg.RerankCandidateLimit)
 	}
 
 	// --- Optional: GPU scheduler for model sleep/wake coordination ---
-	if os.Getenv("GPU_SCHEDULER_ENABLED") == "true" || os.Getenv("GPU_SCHEDULER_ENABLED") == "1" {
-		scheduler := knowledge.NewGPUScheduler(
-			knowledge.WithSchedulerLogger(logger.WithModule("gpu-scheduler")),
-		)
+	if cfg.GPUSchedulerEnabled {
+		var schedOpts []knowledge.GPUSchedulerOption
+		schedOpts = append(schedOpts, knowledge.WithSchedulerEnabled(true))
+		schedOpts = append(schedOpts, knowledge.WithSchedulerLogger(logger.WithModule("gpu-scheduler")))
+		if cfg.GPUSchedulerTimeout != "" {
+			if d, err := time.ParseDuration(cfg.GPUSchedulerTimeout); err == nil {
+				schedOpts = append(schedOpts, knowledge.WithSchedulerTimeout(d))
+			}
+		}
+		if cfg.GPUSchedulerWakeDelay != "" {
+			if d, err := time.ParseDuration(cfg.GPUSchedulerWakeDelay); err == nil {
+				schedOpts = append(schedOpts, knowledge.WithSchedulerWakeDelay(d))
+			}
+		}
+		scheduler := knowledge.NewGPUScheduler(schedOpts...)
 		store.SetGPUScheduler(scheduler)
 		log.Infof("GPU scheduler enabled: timeout=%s wakeDelay=%s [%s]",
-			os.Getenv("GPU_SCHEDULER_TIMEOUT"),
-			os.Getenv("GPU_SCHEDULER_WAKE_DELAY"),
-			scheduler.Summary(),
-		)
+			cfg.GPUSchedulerTimeout, cfg.GPUSchedulerWakeDelay, scheduler.Summary())
 		// Probe endpoint connectivity (non-fatal: warn and continue).
 		if summary, err := scheduler.Probe(context.Background()); err != nil {
 			log.Warnf("GPU scheduler: some endpoints unreachable: %s (continuing without GPU coordination)", summary)
@@ -122,21 +196,21 @@ func main() {
 		}
 	}
 
-	// --- Web management UI (default: http://localhost:8085) ---
-	managePort := os.Getenv("MANAGE_PORT")
-	if managePort == "" {
-		managePort = "8085"
-	}
-	go func() {
-		kbInfo := defaultKB
-		if kbInfo == "" {
-			kbInfo = "(none)"
-		}
-		log.Infof("management UI starting on http://localhost:%s (default KB: %s)", managePort, kbInfo)
-		if err := store.StartManageServer(managePort); err != nil {
-			log.Errorf("management UI failed to start on port %s: %v", managePort, err)
-		}
-	}()
+	return store, logger
+}
+
+// registerAllTools registers all MCP tool handlers on the given server.
+func registerAllTools(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
+	registerSearch(s, store, logger)
+	registerRead(s, store, logger)
+	registerListKBs(s, store, logger)
+}
+
+// runServe runs the server in long-lived HTTP SSE mode. When mcpOnly is true,
+// only the MCP SSE endpoint is started; otherwise the management UI is also
+// started in a background goroutine.
+func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger, mcpOnly bool) {
+	log := logger.WithModule("serve")
 
 	s := server.NewMCPServer(
 		"knowledge-mcp",
@@ -144,14 +218,56 @@ func main() {
 		server.WithToolCapabilities(true),
 	)
 
-	registerSearch(s, store, logger)
-	registerRead(s, store, logger)
-	registerListKBs(s, store, logger)
+	registerAllTools(s, store, logger)
 
-	if err := server.ServeStdio(s); err != nil {
-		log.Errorf("server error: %v", err)
+	if !mcpOnly {
+		// Start management UI in the background.
+		managePort := cfg.ManagePort
+		if managePort == "" {
+			managePort = "8085"
+		}
+		go func() {
+			log.Infof("management UI starting on http://localhost:%s", managePort)
+			if err := store.StartManageServer(managePort); err != nil {
+				log.Errorf("management UI failed to start on port %s: %v", managePort, err)
+			}
+		}()
+	}
+
+	// Create the SSE server.
+	sseServer := server.NewSSEServer(s)
+	if cfg.ServeBaseURL != "" {
+		sseServer = server.NewSSEServer(s, server.WithBaseURL(cfg.ServeBaseURL))
+	}
+
+	servePort := cfg.ServePort
+	if servePort == "" {
+		servePort = "8086"
+	}
+
+	// Set up signal handling for graceful shutdown.
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		log.Infof("received signal %v, shutting down...", sig)
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := sseServer.Shutdown(shutdownCtx); err != nil {
+			log.Errorf("SSE server shutdown error: %v", err)
+		}
+	}()
+
+	log.Infof("SSE MCP server starting on :%s (mcpOnly=%v)", servePort, mcpOnly)
+	if err := sseServer.Start(":" + servePort); err != nil {
+		log.Errorf("SSE server error: %v", err)
 		os.Exit(1)
-	}}
+	}
+}
 
 // --- Tool registration ---
 
@@ -608,6 +724,32 @@ func parseTags(raw string) []string {
 		}
 	}
 	return out
+}
+
+// findConfigPath returns the path to the config file. It checks:
+//  1. knowledge-mcp.toml in the same directory as the executable
+//  2. ~/.knowledge-mcp/config.toml
+// Returns the first found path, or the exe-dir path as default.
+func findConfigPath() string {
+	// Check exe directory.
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Check ~/.knowledge-mcp/config.toml.
+	if home, err := os.UserHomeDir(); err == nil {
+		p := filepath.Join(home, ".knowledge-mcp", "config.toml")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Default to exe directory.
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
+	}
+	return "knowledge-mcp.toml"
 }
 
 // parseTime parses an ISO 8601 date string, supporting both date-only

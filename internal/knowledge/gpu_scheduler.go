@@ -86,6 +86,15 @@ func WithSchedulerLogger(l *logging.Logger) GPUSchedulerOption {
 	}
 }
 
+// WithSchedulerEnabled explicitly sets the enabled state of the GPU scheduler.
+// When true, the scheduler coordinates model sleep/wake. Default is false.
+// This overrides the GPU_SCHEDULER_ENABLED environment variable.
+func WithSchedulerEnabled(enabled bool) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.enabled = enabled
+	}
+}
+
 // NewGPUScheduler creates a GPUScheduler from environment variables.
 // Environment variables (all optional):
 //

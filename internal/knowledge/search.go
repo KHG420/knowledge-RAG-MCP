@@ -540,6 +540,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	}
 
 	// Phase 3: embedding scoring (if vectors are available).
+	s.logger.Infof("[search] hybrid: embedding phase hasVectors=%v embedder=%v candidates=%d", hasVectors, s.embedder != nil, len(scored))
 	if hasVectors && s.embedder != nil {
 		// Coordinate GPU: ensure embedding is loaded; sleep reranker to free memory.
 		if s.gpuScheduler != nil {
@@ -556,7 +557,12 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 					scored[i].cosScore = cosineSimilarity(scored[i].entry.vector, qVec64)
 				}
 			}
+			s.logger.Infof("[search] hybrid: embedding computed cos_scores for %d candidates", len(scored))
+		} else {
+			s.logger.Infof("[search] hybrid: embedding returned empty vectors, skip dense scoring")
 		}
+	} else {
+		s.logger.Infof("[search] hybrid: embedding skipped (no vectors or no embedder configured)")
 	}
 
 	// Phase 3.5: abstract score boost. Chunks from the "abstract" section of
@@ -622,6 +628,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	// Phase 8: reranker (optional). Applied BEFORE the final cap so the
 	// cross-encoder sees the full candidate pool (up to rerankCandidateLimit).
 	// When no reranker is configured, this is a no-op.
+	s.logger.Infof("[search] hybrid: reranking phase reranker=%v candidates=%d", s.reranker != nil, len(results))
 	if s.reranker != nil && len(results) > 0 {
 		// Coordinate GPU: switch from embedding to reranker mode.
 		if s.gpuScheduler != nil {
@@ -637,6 +644,13 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		results = make([]hybridRanked, len(newEntries))
 		for i := range newEntries {
 			results[i] = hybridRanked{entry: newEntries[i], rrfScore: newScores[i]}
+		}
+		s.logger.Infof("[search] hybrid: reranking done results=%d", len(newEntries))
+	} else {
+		if s.reranker == nil {
+			s.logger.Infof("[search] hybrid: reranking skipped (no reranker configured)")
+		} else {
+			s.logger.Infof("[search] hybrid: reranking skipped (no results to rerank)")
 		}
 	}
 

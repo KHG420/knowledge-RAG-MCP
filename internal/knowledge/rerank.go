@@ -106,6 +106,12 @@ type rerankResponse struct {
 	Results []rerankResult `json:"results"`
 }
 
+// Probe checks connectivity to the reranker API by sending a simple query.
+func (r *InfinityReranker) Probe(ctx context.Context) error {
+	_, err := r.Rerank(ctx, "test", []string{"test document"})
+	return err
+}
+
 // Rerank sends a query-document batch to the reranker and returns per-document
 // relevance scores (higher = more relevant). Scores are returned in documents
 // input order; unmatched entries receive score 0.
@@ -126,7 +132,7 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 
 	u := r.endpointURL
 	start := time.Now()
-	r.logger.Debugf("[rerank] POST %s model=%s query_len=%d docs=%d", u, r.model, len(query), len(documents))
+	r.logger.Infof("[rerank] POST %s model=%s query_len=%d docs=%d", u, r.model, len(query), len(documents))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("rerank request: %w", err)
@@ -160,6 +166,6 @@ func (r *InfinityReranker) Rerank(ctx context.Context, query string, documents [
 			scores[rr.Index] = rr.RelevanceScore
 		}
 	}
-	r.logger.Debugf("[rerank] OK model=%s docs=%d elapsed=%s", r.model, len(documents), time.Since(start))
+	r.logger.Infof("[rerank] OK model=%s docs=%d elapsed=%s", r.model, len(documents), time.Since(start))
 	return scores, nil
 }

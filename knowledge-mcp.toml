@@ -1,0 +1,17 @@
+data_dir = "~/knowledge_base/"
+default_kb = ""
+embed_endpoint = "http://localhost:11434/v1/embeddings"
+embed_model = "bge-m3"
+embed_dim = 1024
+embed_api_key = ""
+rerank_endpoint = "http://localhost:7997/rerank"
+rerank_model = "gte-multilingual-reranker-base"
+rerank_api_key = "s"
+rerank_timeout = "30s"
+rerank_candidate_limit = 100
+gpu_scheduler_enabled = false
+gpu_scheduler_timeout = "30s"
+gpu_scheduler_wake_delay = "3s"
+manage_port = "8085"
+log_file = "/Users/aq/knowledge-mcp/knowledge-mcp.log"
+log_level = "info"
