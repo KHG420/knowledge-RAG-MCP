@@ -1,0 +1,27 @@
+[Unit]
+Description=Knowledge MCP Server
+Documentation=https://github.com/aquastream/knowledge-mcp
+After=network.target
+
+[Service]
+Type=simple
+# Path to the knowledge-mcp binary — adjust to your installation location.
+ExecStart=/usr/local/bin/knowledge-mcp serve --mcp
+
+# Environment file: put your config (EMBED_API_ENDPOINT, RERANK_API_ENDPOINT, etc.)
+# EnvironmentFile=-/etc/knowledge-mcp/env
+
+# Uncomment and set KNOWLEDGE_MCP_DATA_DIR if not using the default:
+# Environment=KNOWLEDGE_MCP_DATA_DIR=/var/lib/knowledge-mcp
+
+Restart=always
+RestartSec=5
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

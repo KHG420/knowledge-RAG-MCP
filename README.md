@@ -74,11 +74,7 @@ The wizard probes endpoint connectivity and writes a valid config file.
 
 knowledge-mcp supports three running modes:
 
-- **stdio mode** (default) — for MCP clients that speak stdio:
-  ```bash
-  knowledge-mcp
-  ```
-- **HTTP SSE mode** — for remote MCP connections; includes web management UI:
+- **HTTP SSE mode (default)** — includes web management UI:
   ```bash
   knowledge-mcp serve
   ```
@@ -95,7 +91,7 @@ knowledge-mcp supports three running modes:
 
 ```bash
 export KNOWLEDGE_MCP_DATA_DIR=./kb-data
-knowledge-mcp
+knowledge-mcp serve
 ```
 
 ### Full stack (BM25 + embeddings + reranker)
@@ -116,23 +112,65 @@ EMBED_MODEL=bge-m3 \
 RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
-  knowledge-mcp
+  knowledge-mcp serve
 ```
 
 ## Web Management UI
 
-A management web interface is **built in** — it starts automatically alongside the MCP server in stdio mode and `serve` mode (not in `serve --mcp` mode).
+A management web interface is **built in** — it starts automatically alongside the MCP server in `serve` mode (not in `serve --mcp` mode).
 Open [http://localhost:8085](http://localhost:8085) (default port) in your browser to upload,
 browse, search, and delete documents, and manage multiple knowledge bases.
 
 Override the port with the `MANAGE_PORT` environment variable:
 
 ```bash
-MANAGE_PORT=8080 knowledge-mcp
+MANAGE_PORT=8080 knowledge-mcp serve
 ```
 
 The UI shares the same data directory as the MCP server, so documents uploaded via the
 web UI are immediately searchable through `knowledge_search`.
+
+## Running as a Daemon / Service
+
+The `serve` command runs as a foreground process. For production use, run it as a
+system service to survive reboots and crashes.
+
+### Linux (systemd)
+
+Copy the service template and reload systemd:
+
+```bash
+sudo cp scripts/knowledge-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now knowledge-mcp
+```
+
+Configure environment variables (embeddings, reranker, etc.) in `/etc/knowledge-mcp/env`:
+
+```bash
+sudo mkdir -p /etc/knowledge-mcp
+cat <<EOF | sudo tee /etc/knowledge-mcp/env
+KNOWLEDGE_MCP_DATA_DIR=/var/lib/knowledge-mcp
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings
+EOF
+```
+
+### macOS (launchd)
+
+Copy the plist to your LaunchAgents directory and load it:
+
+```bash
+cp scripts/com.knowledge-mcp.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.knowledge-mcp.plist
+```
+
+Edit `~/Library/LaunchAgents/com.knowledge-mcp.plist` to set the correct binary path
+and environment variables before loading.
+
+### Other options
+
+- **tmux / screen**: run `knowledge-mcp serve --mcp` inside a persistent session.
+- **nohup**: `nohup knowledge-mcp serve --mcp > /tmp/kmcp.log 2>&1 &`
 
 ## Environment Variables
 

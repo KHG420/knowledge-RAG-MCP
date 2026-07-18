@@ -74,11 +74,7 @@ knowledge-mcp setup
 
 knowledge-mcp 支持三种运行模式：
 
-- **stdio 模式**（默认）— 适用于通过 stdio 通信的 MCP 客户端：
-  ```bash
-  knowledge-mcp
-  ```
-- **HTTP SSE 模式** — 用于远程 MCP 连接；包含 Web 管理页面：
+- **HTTP SSE 模式（默认）** — 长期运行的 MCP 服务器；包含 Web 管理页面：
   ```bash
   knowledge-mcp serve
   ```
@@ -95,7 +91,7 @@ knowledge-mcp 支持三种运行模式：
 
 ```bash
 export KNOWLEDGE_MCP_DATA_DIR=./kb-data
-knowledge-mcp
+knowledge-mcp serve
 ```
 
 ### 完整配置（BM25 + 向量嵌入 + 重排序）
@@ -116,22 +112,62 @@ EMBED_MODEL=bge-m3 \
 RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
-  knowledge-mcp
+  knowledge-mcp serve
 ```
 
 ## Web 管理页面
 
-管理页面已**内嵌**在 MCP server 中 —— 在 stdio 模式和 `serve` 模式下自动启动（`serve --mcp` 模式不启动）。
+管理页面已**内嵌**在 MCP server 中 —— 在 `serve` 模式下自动启动（`serve --mcp` 模式不启动）。
 打开浏览器访问 [http://localhost:8085](http://localhost:8085)（默认端口）即可上传、
 浏览、搜索和删除文档，以及管理多个知识库。
 
 可通过 `MANAGE_PORT` 环境变量修改端口：
 
 ```bash
-MANAGE_PORT=8080 knowledge-mcp
+MANAGE_PORT=8080 knowledge-mcp serve
 ```
 
 管理页面与 MCP server 共享同一数据目录，通过网页上传的文档立即可通过 `knowledge_search` 搜索。
+
+## 作为守护进程 / 服务运行
+
+`serve` 命令本身以前台进程方式运行。生产环境中建议通过系统服务管理，以实现开机自启和崩溃自动恢复。
+
+### Linux (systemd)
+
+复制服务模板并重新加载 systemd：
+
+```bash
+sudo cp scripts/knowledge-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now knowledge-mcp
+```
+
+在 `/etc/knowledge-mcp/env` 中配置环境变量（嵌入、重排序等）：
+
+```bash
+sudo mkdir -p /etc/knowledge-mcp
+cat <<EOF | sudo tee /etc/knowledge-mcp/env
+KNOWLEDGE_MCP_DATA_DIR=/var/lib/knowledge-mcp
+EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings
+EOF
+```
+
+### macOS (launchd)
+
+将 plist 复制到 LaunchAgents 目录并加载：
+
+```bash
+cp scripts/com.knowledge-mcp.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.knowledge-mcp.plist
+```
+
+加载前请编辑 `~/Library/LaunchAgents/com.knowledge-mcp.plist`，设置正确的二进制路径和环境变量。
+
+### 其他方式
+
+- **tmux / screen**：在持久会话中运行 `knowledge-mcp serve --mcp`。
+- **nohup**：`nohup knowledge-mcp serve --mcp > /tmp/kmcp.log 2>&1 &`
 
 ## 环境变量
 
@@ -295,7 +331,7 @@ GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 ## 架构
 
 ```
-main.go                  — CLI 入口点、子命令 (stdio / serve / setup)、工具注册
+main.go                  — CLI 入口点、子命令 (serve / setup)、工具注册
 internal/
   config/
     config.go            — TOML 配置加载、环境变量回退、默认值

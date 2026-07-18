@@ -43,44 +43,12 @@ func main() {
 		return
 	}
 
-	// Default: stdio mode (backward compatible).
-	cfg := config.LoadWithEnvFallback(findConfigPath())
-
-	store, logger := initStoreAndLogger(cfg)
-	defer logger.Close()
-	startupLog := logger.WithModule("startup")
-	defaultKB := cfg.DefaultKB
-
-	// --- Web management UI (default: http://localhost:8085) ---
-	managePort := cfg.ManagePort
-	if managePort == "" {
-		managePort = "8085"
-	}
-	go func() {
-		kbInfo := defaultKB
-		if kbInfo == "" {
-			kbInfo = "(none)"
-		}
-		startupLog.Infof("management UI starting on http://localhost:%s (default KB: %s)", managePort, kbInfo)
-		if err := store.StartManageServer(managePort); err != nil {
-			startupLog.Errorf("management UI failed to start on port %s: %v", managePort, err)
-		}
-	}()
-
-	s := server.NewMCPServer(
-		"knowledge-mcp",
-		"1.0.0",
-		server.WithToolCapabilities(true),
-	)
-
-	registerSearch(s, store, logger)
-	registerRead(s, store, logger)
-	registerListKBs(s, store, logger)
-
-	if err := server.ServeStdio(s); err != nil {
-		startupLog.Errorf("server error: %v", err)
-		os.Exit(1)
-	}
+	// No subcommand: show usage.
+	fmt.Fprintf(os.Stderr, "Usage: knowledge-mcp <command>\n\n")
+	fmt.Fprintf(os.Stderr, "Commands:\n")
+	fmt.Fprintf(os.Stderr, "  serve [--mcp]   Start HTTP SSE MCP server\n")
+	fmt.Fprintf(os.Stderr, "  setup           Interactive configuration\n")
+	os.Exit(1)
 }
 
 // initStoreAndLogger creates and configures the knowledge store and structured

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.knowledge-mcp</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/knowledge-mcp</string>
+		<string>serve</string>
+		<string>--mcp</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- Uncomment and set your knowledge base directory -->
+		<!-- <key>KNOWLEDGE_MCP_DATA_DIR</key> -->
+		<!-- <string>/Users/me/kb-data</string> -->
+
+		<!-- Uncomment and set the embedding API endpoint -->
+		<!-- <key>EMBED_API_ENDPOINT</key> -->
+		<!-- <string>http://localhost:11434/v1/embeddings</string> -->
+	</dict>
+
+	<!-- Automatically restart on crash -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<!-- Restart with a 10-second delay after crash -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<!-- Log files (optional; defaults go to system log) -->
+	<!--
+	<key>StandardOutPath</key>
+	<string>/tmp/knowledge-mcp.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/knowledge-mcp.stderr.log</string>
+	-->
+
+	<!-- Run at user login -->
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Use a working directory for the process -->
+	<key>WorkingDirectory</key>
+	<string>/tmp</string>
+</dict>
+</plist>
