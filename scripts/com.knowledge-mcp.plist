@@ -8,20 +8,29 @@
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/knowledge-mcp</string>
+		<string>/Users/aq/knowledge-mcp/knowledge-mcp</string>
 		<string>serve</string>
 		<string>--mcp</string>
 	</array>
 
 	<key>EnvironmentVariables</key>
 	<dict>
-		<!-- Uncomment and set your knowledge base directory -->
-		<!-- <key>KNOWLEDGE_MCP_DATA_DIR</key> -->
-		<!-- <string>/Users/me/kb-data</string> -->
-
-		<!-- Uncomment and set the embedding API endpoint -->
-		<!-- <key>EMBED_API_ENDPOINT</key> -->
-		<!-- <string>http://localhost:11434/v1/embeddings</string> -->
+		<key>KNOWLEDGE_MCP_DATA_DIR</key>
+		<string>/Users/aq/knowledge-mcp/data</string>
+		<key>KNOWLEDGE_MCP_DEFAULT_KB</key>
+		<string>notes</string>
+		<key>KNOWLEDGE_MCP_LOG_FILE</key>
+		<string>/Users/aq/knowledge-mcp/knowledge-mcp-launchd.log</string>
+		<key>EMBED_API_ENDPOINT</key>
+		<string>http://localhost:11434/v1/embeddings</string>
+		<key>EMBED_MODEL</key>
+		<string>bge-m3</string>
+		<key>EMBED_DIM</key>
+		<string>1024</string>
+		<key>RERANK_API_ENDPOINT</key>
+		<string>http://localhost:7997/rerank</string>
+		<key>RERANK_CANDIDATE_LIMIT</key>
+		<string>100</string>
 	</dict>
 
 	<!-- Automatically restart on crash -->
@@ -32,20 +41,18 @@
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 
-	<!-- Log files (optional; defaults go to system log) -->
-	<!--
+	<!-- Log files -->
 	<key>StandardOutPath</key>
-	<string>/tmp/knowledge-mcp.stdout.log</string>
+	<string>/Users/aq/knowledge-mcp/knowledge-mcp-launchd.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/knowledge-mcp.stderr.log</string>
-	-->
+	<string>/Users/aq/knowledge-mcp/knowledge-mcp-launchd.log</string>
 
 	<!-- Run at user login -->
 	<key>RunAtLoad</key>
 	<true/>
 
-	<!-- Use a working directory for the process -->
+	<!-- Use project directory as working directory -->
 	<key>WorkingDirectory</key>
-	<string>/tmp</string>
+	<string>/Users/aq/knowledge-mcp</string>
 </dict>
 </plist>

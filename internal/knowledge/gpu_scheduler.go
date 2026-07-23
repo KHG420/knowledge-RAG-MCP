@@ -22,13 +22,10 @@ import (
 // sleep requires a JSON body with sleep level).
 type GPUScheduler struct {
 	embeddingSleepURL  string        // URL to sleep the embedding model
-	embeddingWakeURL   string        // URL to wake the embedding model
 	embeddingSleepBody string        // Optional JSON body for embedding sleep request
 	rerankerSleepURL   string        // URL to sleep the reranker model
-	rerankerWakeURL    string        // URL to wake the reranker model
 	rerankerSleepBody  string        // Optional JSON body for reranker sleep request (default `{"level":2}`)
-	timeout            time.Duration // HTTP timeout for sleep/wake requests (default 30s)
-	wakeDelay          time.Duration // Delay after wake to let the model load into GPU (default 3s)
+	timeout            time.Duration // HTTP timeout for sleep requests (default 30s)
 	enabled            bool
 	client             *http.Client
 	logger             *logging.Logger
@@ -44,13 +41,6 @@ func WithSchedulerEmbeddingSleepURL(url string) GPUSchedulerOption {
 	}
 }
 
-// WithSchedulerEmbeddingWakeURL sets the URL to wake the embedding model.
-func WithSchedulerEmbeddingWakeURL(url string) GPUSchedulerOption {
-	return func(s *GPUScheduler) {
-		s.embeddingWakeURL = url
-	}
-}
-
 // WithSchedulerRerankerSleepURL sets the URL to sleep the reranker model.
 func WithSchedulerRerankerSleepURL(url string) GPUSchedulerOption {
 	return func(s *GPUScheduler) {
@@ -58,24 +48,10 @@ func WithSchedulerRerankerSleepURL(url string) GPUSchedulerOption {
 	}
 }
 
-// WithSchedulerRerankerWakeURL sets the URL to wake the reranker model.
-func WithSchedulerRerankerWakeURL(url string) GPUSchedulerOption {
-	return func(s *GPUScheduler) {
-		s.rerankerWakeURL = url
-	}
-}
-
 // WithSchedulerTimeout sets the HTTP timeout for sleep/wake requests.
 func WithSchedulerTimeout(d time.Duration) GPUSchedulerOption {
 	return func(s *GPUScheduler) {
 		s.timeout = d
-	}
-}
-
-// WithSchedulerWakeDelay sets the delay after wake for model loading.
-func WithSchedulerWakeDelay(d time.Duration) GPUSchedulerOption {
-	return func(s *GPUScheduler) {
-		s.wakeDelay = d
 	}
 }
 
@@ -100,20 +76,15 @@ func WithSchedulerEnabled(enabled bool) GPUSchedulerOption {
 //
 //	GPU_SCHEDULER_ENABLED                — "true" or "1" to enable (default: false)
 //	GPU_SCHEDULER_EMBEDDING_SLEEP_URL    — Embedding model sleep API URL (default: empty, must be set if enabled)
-//	GPU_SCHEDULER_EMBEDDING_WAKE_URL     — Embedding model wake API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_EMBEDDING_SLEEP_BODY   — JSON body for embedding sleep request (default: empty)
 //	GPU_SCHEDULER_RERANKER_SLEEP_URL     — Reranker model sleep API URL (default: empty, must be set if enabled)
-//	GPU_SCHEDULER_RERANKER_WAKE_URL      — Reranker model wake API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_RERANKER_SLEEP_BODY    — JSON body for reranker sleep (default: {"level":2})
 //	GPU_SCHEDULER_TIMEOUT                — HTTP timeout (default: "30s")
-//	GPU_SCHEDULER_WAKE_DELAY             — delay after wake (default: "3s")
 func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	s := &GPUScheduler{
 		rerankerSleepURL: "",
-		rerankerWakeURL:  "",
 		rerankerSleepBody: `{"level":2}`,
 		timeout:          30 * time.Second,
-		wakeDelay:        3 * time.Second,
 		enabled:          false,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -128,17 +99,11 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_SLEEP_URL"); v != "" {
 		s.embeddingSleepURL = v
 	}
-	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_WAKE_URL"); v != "" {
-		s.embeddingWakeURL = v
-	}
 	if v := os.Getenv("GPU_SCHEDULER_EMBEDDING_SLEEP_BODY"); v != "" {
 		s.embeddingSleepBody = v
 	}
 	if v := os.Getenv("GPU_SCHEDULER_RERANKER_SLEEP_URL"); v != "" {
 		s.rerankerSleepURL = v
-	}
-	if v := os.Getenv("GPU_SCHEDULER_RERANKER_WAKE_URL"); v != "" {
-		s.rerankerWakeURL = v
 	}
 	if v := os.Getenv("GPU_SCHEDULER_RERANKER_SLEEP_BODY"); v != "" {
 		s.rerankerSleepBody = v
@@ -147,11 +112,6 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 		if d, err := time.ParseDuration(v); err == nil {
 			s.timeout = d
 			s.client.Timeout = d
-		}
-	}
-	if v := os.Getenv("GPU_SCHEDULER_WAKE_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			s.wakeDelay = d
 		}
 	}
 
@@ -173,14 +133,8 @@ func (s *GPUScheduler) Summary() string {
 	if s.embeddingSleepURL != "" {
 		parts = append(parts, "embed-sleep="+s.embeddingSleepURL)
 	}
-	if s.embeddingWakeURL != "" {
-		parts = append(parts, "embed-wake="+s.embeddingWakeURL)
-	}
 	if s.rerankerSleepURL != "" {
 		parts = append(parts, "reranker-sleep="+s.rerankerSleepURL)
-	}
-	if s.rerankerWakeURL != "" {
-		parts = append(parts, "reranker-wake="+s.rerankerWakeURL)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -214,37 +168,6 @@ func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 	return nil
 }
 
-// doWake sends a POST request to the given URL, then waits for wakeDelay to
-// allow the model to load into GPU memory.
-func (s *GPUScheduler) doWake(ctx context.Context, url string) error {
-	if url == "" {
-		return nil
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
-		return fmt.Errorf("create wake request for %q: %w", url, err)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("wake request to %q failed: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("wake %q returned status %d", url, resp.StatusCode)
-	}
-	s.logger.Debugf("gpu-scheduler: wake %q → %s", url, resp.Status)
-	// Wait for the model to load.
-	if s.wakeDelay > 0 {
-		s.logger.Debugf("gpu-scheduler: waiting %v for %q to load", s.wakeDelay, url)
-		select {
-		case <-time.After(s.wakeDelay):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
 // ProbeResult holds the probe result for a single endpoint.
 type ProbeResult struct {
 	URL    string
@@ -252,21 +175,15 @@ type ProbeResult struct {
 	Err    string `json:",omitempty"`
 }
 
-// Probe checks connectivity to each configured sleep/wake endpoint by sending
+// Probe checks connectivity to each configured sleep endpoint by sending
 // a GET request. Returns a human-readable summary.
 func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 	urls := []string{}
 	if s.embeddingSleepURL != "" {
 		urls = append(urls, s.embeddingSleepURL)
 	}
-	if s.embeddingWakeURL != "" {
-		urls = append(urls, s.embeddingWakeURL)
-	}
 	if s.rerankerSleepURL != "" {
 		urls = append(urls, s.rerankerSleepURL)
-	}
-	if s.rerankerWakeURL != "" {
-		urls = append(urls, s.rerankerWakeURL)
 	}
 
 	var results []ProbeResult
@@ -302,10 +219,10 @@ func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 	return summary, lastErr
 }
 
-// PrepareForEmbedding switches the GPU to embedding mode:
-// it sleeps the reranker (if loaded) and wakes the embedding model.
-// Returns a restore function that restores the previous state (sleeps embedding,
-// wakes reranker). The restore function is idempotent-safe — it logs warnings
+// PrepareForEmbedding ensures the embedding model has GPU access by sleeping
+// the reranker (if loaded). The embedding API auto-wakes on first call.
+// Returns a restore function that sleeps the embedding model (so the reranker
+// can load later). The restore function is idempotent-safe — it logs warnings
 // on failure but does not return an error, making it suitable for defer.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
@@ -319,26 +236,19 @@ func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
 	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 		log.Warnf("sleep reranker failed (continuing): %v", err)
 	}
-	// Wake embedding model.
-	if err := s.doWake(context.Background(), s.embeddingWakeURL); err != nil {
-		log.Warnf("wake embedding failed (continuing): %v", err)
-	}
 
 	return func() {
-		// Restore: sleep embedding, wake reranker.
+		// Restore: sleep embedding (reranker auto-wakes on next call).
 		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 			log.Warnf("sleep embedding (restore) failed: %v", err)
-		}
-		if err := s.doWake(context.Background(), s.rerankerWakeURL); err != nil {
-			log.Warnf("wake reranker (restore) failed: %v", err)
 		}
 	}
 }
 
-// PrepareForReranking switches the GPU to reranker mode:
-// it sleeps the embedding model and wakes the reranker.
-// Returns a restore function that restores the previous state (sleeps reranker,
-// wakes embedding). The restore function is idempotent-safe.
+// PrepareForReranking ensures the reranker model has GPU access by sleeping
+// the embedding model (if loaded). The reranker API auto-wakes on first call.
+// Returns a restore function that sleeps the reranker (so the embedding model
+// can load later). The restore function is idempotent-safe.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForReranking() (restore func()) {
@@ -351,18 +261,11 @@ func (s *GPUScheduler) PrepareForReranking() (restore func()) {
 	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 		log.Warnf("sleep embedding failed (continuing): %v", err)
 	}
-	// Wake reranker model.
-	if err := s.doWake(context.Background(), s.rerankerWakeURL); err != nil {
-		log.Warnf("wake reranker failed (continuing): %v", err)
-	}
 
 	return func() {
-		// Restore: sleep reranker, wake embedding.
+		// Restore: sleep reranker (embedding auto-wakes on next call).
 		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 			log.Warnf("sleep reranker (restore) failed: %v", err)
-		}
-		if err := s.doWake(context.Background(), s.embeddingWakeURL); err != nil {
-			log.Warnf("wake embedding (restore) failed: %v", err)
 		}
 	}
 }

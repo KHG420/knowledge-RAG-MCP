@@ -78,12 +78,9 @@ type langStr struct {
 	GPUSchedEnable   string
 	GPUSchedEmbedTitle string
 	GPUSchedEmbedSleep string
-	GPUSchedEmbedWake  string
 	GPUSchedRerankTitle string
 	GPUSchedRerankSleep string
-	GPUSchedRerankWake  string
 	GPUSchedTimeout     string
-	GPUSchedWakeDelay   string
 
 	// --- Manage port ---
 	ManagePortTitle  string
@@ -109,9 +106,7 @@ type langStr struct {
 	SummaryNotCfg     string
 	SummaryNone       string
 	SummaryEmbedSleep string
-	SummaryEmbedWake  string
 	SummaryRerankSleep string
-	SummaryRerankWake  string
 }
 
 var zhStrs = langStr{
@@ -180,14 +175,11 @@ var zhStrs = langStr{
 	GPUSchedURLHint:  "需要提供两个模型各自的睡眠/唤醒 API，用于在 GPU 内存中切换模型",
 	GPUSchedNoModels: "⚠ 未配置任何模型，GPU 调度器需要同时配置 embedding 和 reranker\n   请先在上一步配置两个模型再启用调度器",
 	GPUSchedEnable:   "是否启用 GPU 调度器",
-	GPUSchedEmbedTitle: "\n--- Embedding 模型睡眠/唤醒 API ---",
+	GPUSchedEmbedTitle: "\n--- Embedding 模型睡眠 API ---",
 	GPUSchedEmbedSleep: "Embedding 睡眠 API 地址",
-	GPUSchedEmbedWake:  "Embedding 唤醒 API 地址",
-	GPUSchedRerankTitle: "\n--- Reranker 模型睡眠/唤醒 API ---",
+	GPUSchedRerankTitle: "\n--- Reranker 模型睡眠 API ---",
 	GPUSchedRerankSleep: "Reranker 睡眠 API 地址",
-	GPUSchedRerankWake:  "Reranker 唤醒 API 地址",
 	GPUSchedTimeout:     "调度请求超时时间",
-	GPUSchedWakeDelay:   "唤醒后等待模型加载时间",
 
 	// --- Manage port ---
 	ManagePortTitle:  "\n--- 管理界面端口 ---",
@@ -213,9 +205,7 @@ var zhStrs = langStr{
 	SummaryNotCfg:     "✗ 未配置",
 	SummaryNone:       "(无)",
 	SummaryEmbedSleep: "    - Embedding 睡眠:  %s\n",
-	SummaryEmbedWake:  "    - Embedding 唤醒:  %s\n",
 	SummaryRerankSleep: "    - Reranker 睡眠:   %s\n",
-	SummaryRerankWake:  "    - Reranker 唤醒:   %s\n",
 }
 
 var enStrs = langStr{
@@ -284,14 +274,11 @@ var enStrs = langStr{
 	GPUSchedURLHint:  "Provide sleep/wake API URLs for both models to switch them in GPU memory",
 	GPUSchedNoModels: "⚠ No models configured. GPU scheduler requires both embedding and reranker.\n   Please configure both models first before enabling the scheduler.",
 	GPUSchedEnable:   "Enable GPU scheduler?",
-	GPUSchedEmbedTitle: "\n--- Embedding Model Sleep/Wake API ---",
+	GPUSchedEmbedTitle: "\n--- Embedding Model Sleep API ---",
 	GPUSchedEmbedSleep: "Embedding sleep API URL",
-	GPUSchedEmbedWake:  "Embedding wake API URL",
-	GPUSchedRerankTitle: "\n--- Reranker Model Sleep/Wake API ---",
+	GPUSchedRerankTitle: "\n--- Reranker Model Sleep API ---",
 	GPUSchedRerankSleep: "Reranker sleep API URL",
-	GPUSchedRerankWake:  "Reranker wake API URL",
 	GPUSchedTimeout:     "Scheduler request timeout",
-	GPUSchedWakeDelay:   "Wake delay for model loading",
 
 	// --- Manage port ---
 	ManagePortTitle:  "\n--- Management UI Port ---",
@@ -317,9 +304,7 @@ var enStrs = langStr{
 	SummaryNotCfg:     "✗ Not configured",
 	SummaryNone:       "(none)",
 	SummaryEmbedSleep: "    - Embedding Sleep:  %s\n",
-	SummaryEmbedWake:  "    - Embedding Wake:   %s\n",
 	SummaryRerankSleep: "    - Reranker Sleep:   %s\n",
-	SummaryRerankWake:  "    - Reranker Wake:    %s\n",
 }
 
 // currentLang is the language selected by the user at the start of the wizard.

@@ -115,24 +115,23 @@ cmd_status() {
     fi
     echo ""
     echo "--- knowledge-mcp (port $KNOWLEDGE_PORT) ---"
-    if curl -s --max-time 3 "http://localhost:$KNOWLEDGE_PORT/sse" >/dev/null 2>&1; then
-        echo "  ✅ SSE endpoint responding"
-    else
-        echo "  ❌ Not responding"
-    fi
+    check_port $KNOWLEDGE_PORT
     echo ""
     echo "--- launchd ---"
-    launchctl list | grep -E 'ollama|infinity' 2>/dev/null || echo "  (not loaded as launchd service)"
+    launchctl list | grep -E 'ollama|infinity|knowledge' 2>/dev/null || echo "  (not loaded as launchd service)"
 }
 
 cmd_install() {
     echo "=== Installing launchd services ==="
     echo ""
-    echo "[1/2] Installing Ollama..."
+    echo "[1/3] Installing Ollama..."
     install_plist "$OLLAMA_PLIST" "com.ollama.service.plist"
     echo ""
-    echo "[2/2] Installing Infinity Reranker..."
+    echo "[2/3] Installing Infinity Reranker..."
     install_plist "$INFINITY_PLIST" "com.infinity-reranker.service.plist"
+    echo ""
+    echo "[3/3] Installing knowledge-mcp..."
+    install_plist "$SCRIPT_DIR/scripts/com.knowledge-mcp.plist" "com.knowledge-mcp.plist"
     echo ""
     echo "✅ Plists installed. Run '$0 all start' to load them."
 }
@@ -162,7 +161,11 @@ cmd_start() {
             ;;
         knowledge)
             echo "=== Starting knowledge-mcp ==="
-            start_knowledge_nohup
+            if [ -f "$LAUNCH_AGENTS_DIR/com.knowledge-mcp.plist" ]; then
+                load_service "com.knowledge-mcp.plist" || start_knowledge_nohup
+            else
+                start_knowledge_nohup
+            fi
             sleep 1
             check_port $KNOWLEDGE_PORT
             ;;
@@ -191,6 +194,7 @@ cmd_stop() {
             ;;
         knowledge)
             echo "=== Stopping knowledge-mcp ==="
+            unload_service "com.knowledge-mcp.plist" || true
             stop_service_port $KNOWLEDGE_PORT
             ;;
         all)
@@ -209,6 +213,12 @@ cmd_restart() {
 }
 
 # ── Main ────────────────────────────────────────────────────
+
+# Accept both "all start" and "start all" — swap if $1 is a service name.
+case "${1:-help}" in ollama|reranker|knowledge|all)
+    set -- "${2:-help}" "${1}"
+    ;;
+esac
 
 case "${1:-help}" in
     status)    cmd_status ;;

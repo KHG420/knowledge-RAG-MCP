@@ -72,8 +72,14 @@ The wizard probes endpoint connectivity and writes a valid config file.
 
 ### Running modes
 
-knowledge-mcp supports three running modes:
+knowledge-mcp supports four running modes:
 
+- **stdio mode (recommended for MCP clients)** — communicate via stdin/stdout using the
+  MCP protocol. No HTTP server, no web UI. Ideal for Reasonix, Claude Desktop, and
+  other stdio-based MCP hosts:
+  ```bash
+  knowledge-mcp stdio
+  ```
 - **HTTP SSE mode (default)** — includes web management UI:
   ```bash
   knowledge-mcp serve
@@ -166,6 +172,25 @@ launchctl load ~/Library/LaunchAgents/com.knowledge-mcp.plist
 
 Edit `~/Library/LaunchAgents/com.knowledge-mcp.plist` to set the correct binary path
 and environment variables before loading.
+
+### MCP client integration (stdio)
+
+For MCP clients such as **Reasonix**, **Claude Desktop**, and **Cline**, the
+recommended approach is to use the **stdio** mode via a `.mcp.json` file in your
+project root. The client automatically starts and manages the process lifecycle:
+
+```json
+{
+  "mcpServers": {
+    "knowledge-mcp": {
+      "command": "/path/to/knowledge-mcp",
+      "args": ["stdio"]
+    }
+  }
+}
+```
+
+No launchd setup is needed — the MCP client handles everything.
 
 ### Other options
 

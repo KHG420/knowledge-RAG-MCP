@@ -72,8 +72,14 @@ knowledge-mcp setup
 
 ### 运行模式
 
-knowledge-mcp 支持三种运行模式：
+knowledge-mcp 支持四种运行模式：
 
+- **stdio 模式（推荐 MCP 客户端使用）** — 通过 stdin/stdout 走 MCP 协议通信。
+  无 HTTP 服务器，无 Web 管理页面。适合 Reasonix、Claude Desktop 等
+  基于 stdio 的 MCP 客户端：
+  ```bash
+  knowledge-mcp stdio
+  ```
 - **HTTP SSE 模式（默认）** — 长期运行的 MCP 服务器；包含 Web 管理页面：
   ```bash
   knowledge-mcp serve
@@ -163,6 +169,24 @@ launchctl load ~/Library/LaunchAgents/com.knowledge-mcp.plist
 ```
 
 加载前请编辑 `~/Library/LaunchAgents/com.knowledge-mcp.plist`，设置正确的二进制路径和环境变量。
+
+### MCP 客户端集成（stdio）
+
+对于 **Reasonix**、**Claude Desktop**、**Cline** 等 MCP 客户端，推荐使用 **stdio** 模式，
+通过在项目根目录配置 `.mcp.json` 文件即可。MCP 客户端会自动管理进程生命周期：
+
+```json
+{
+  "mcpServers": {
+    "knowledge-mcp": {
+      "command": "/path/to/knowledge-mcp",
+      "args": ["stdio"]
+    }
+  }
+}
+```
+
+无需配置 launchd，MCP 客户端会处理一切。
 
 ### 其他方式
 
@@ -331,7 +355,7 @@ GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 ## 架构
 
 ```
-main.go                  — CLI 入口点、子命令 (serve / setup)、工具注册
+main.go                  — CLI 入口点、子命令 (stdio / serve / setup)、工具注册
 internal/
   config/
     config.go            — TOML 配置加载、环境变量回退、默认值

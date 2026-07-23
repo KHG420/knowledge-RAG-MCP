@@ -10,6 +10,9 @@ import (
 // removes its entry from INDEX.md. It is a no-op (no error) if the document
 // does not exist.
 func (s *Store) RemoveDocument(slug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	log := s.logger.WithModule("remove")
 	log.Infof("RemoveDocument slug=%q kb=%q", slug, s.kbName)
 	// Read current metadata for the INDEX.md update message.

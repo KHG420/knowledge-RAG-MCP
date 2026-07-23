@@ -59,6 +59,17 @@ type searchEntry struct {
 // it uses an accelerated path that only reads CHUNKS.toml for candidate
 // documents (G7).
 func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]searchEntry, error) {
+	log := s.logger.WithModule("search")
+	start := time.Now()
+	nTerms := len(queryTerms)
+	pathLabel := "fullscan"
+	if nTerms > 0 {
+		pathLabel = "inverted"
+	}
+	defer func() {
+		log.Debugf("collectEntries done: terms=%d path=%s elapsed=%v", nTerms, pathLabel, time.Since(start))
+	}()
+
 	kd := s.kbDir()
 
 	// G7: try inverted-index fast path when query terms are available.
@@ -261,10 +272,12 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 
 	// G14: coarse-to-fine filter — reduce entries to those in top-3 sections.
 	if filter.Coarse {
+		log.Debugf("coarseToFineFilter: entries before=%d", len(entries))
 		entries, err = s.coarseToFineFilter(query, entries)
 		if err != nil {
 			// Non-fatal: fall back to unfiltered entries.
 		}
+		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
 		if len(entries) == 0 {
 			return nil, nil
 		}
@@ -364,7 +377,17 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		}
 	}
 	// Phase 9a: deduplicate overlapping snippets (G9).
+	before := len(hits)
 	hits = deduplicateSnippets(hits)
+	dupCount := 0
+	for _, h := range hits {
+		if h.DuplicateOf != "" {
+			dupCount++
+		}
+	}
+	if dupCount > 0 {
+		log.Debugf("deduplicateSnippets: total=%d duplicates=%d", before, dupCount)
+	}
 
 	// Phase 9b: section hint — when multiple chunks from the same section appear
 	// in the results, annotate them so the caller knows to read the full section.
@@ -468,6 +491,9 @@ func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]S
 // The limit caps the number of results; hits below 15% of the top BM25 score
 // are trimmed before fusion.
 func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	log := s.logger.WithModule("search")
+	log.Debugf("HybridSearch: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
+
 	if limit <= 0 {
 		limit = 8
 	}
@@ -495,10 +521,12 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 
 	// G14: coarse-to-fine filter — reduce entries to those in top-3 sections.
 	if filter.Coarse {
+		log.Debugf("coarseToFineFilter: entries before=%d", len(entries))
 		entries, err = s.coarseToFineFilter(query, entries)
 		if err != nil {
 			// Non-fatal: fall back to unfiltered entries.
 		}
+		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
 		if len(entries) == 0 {
 			return nil, nil
 		}
@@ -684,7 +712,17 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		}
 	}
 	// Phase 10a: deduplicate overlapping snippets (G9).
+	before := len(hits)
 	hits = deduplicateSnippets(hits)
+	dupCount := 0
+	for _, h := range hits {
+		if h.DuplicateOf != "" {
+			dupCount++
+		}
+	}
+	if dupCount > 0 {
+		log.Debugf("deduplicateSnippets: total=%d duplicates=%d", before, dupCount)
+	}
 
 	// Phase 10b: section hint — when multiple chunks from the same section appear
 	// in the results, annotate them so the caller knows to read the full section.
@@ -734,6 +772,10 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 // (pure BM25) otherwise.
 // An optional SearchFilter can be passed to narrow results.
 func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter) ([]DocumentHit, error) {
+	log := s.logger.WithModule("search")
+	log.Debugf("SearchDocuments: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
+	start := time.Now()
+
 	if limit <= 0 {
 		limit = 8
 	}
@@ -751,6 +793,7 @@ func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter
 		return nil, fmt.Errorf("search documents: %w", err)
 	}
 	if len(hits) == 0 {
+		log.Debugf("SearchDocuments done: query=%q hits=0 elapsed=%v", query, time.Since(start))
 		return nil, nil
 	}
 
@@ -802,6 +845,7 @@ func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter
 	if len(docs) > limit {
 		docs = docs[:limit]
 	}
+	log.Debugf("SearchDocuments done: query=%q docs=%d elapsed=%v", query, len(docs), time.Since(start))
 	return docs, nil
 }
 

@@ -5,6 +5,7 @@
 *.so
 *.dylib
 knowledge-mcp
+knowledge-mcp.toml
 
 # Test binary
 *.test

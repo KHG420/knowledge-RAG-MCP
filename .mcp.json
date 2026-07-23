@@ -1,3 +1,10 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "knowledge-mcp": {
+      "args": [
+        "stdio"
+      ],
+      "command": "/Users/aq/knowledge-mcp/knowledge-mcp"
+    }
+  }
 }

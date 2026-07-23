@@ -21,6 +21,9 @@ import (
 // caller is responsible for preserving source.<ext> if desired. Returns the
 // generated slug and the metadata written.
 func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	log := s.logger.WithModule("upload")
 	log.Infof("UploadDocument path=%q kb=%q", path, s.kbName)
 	start := time.Now()

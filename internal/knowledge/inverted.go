@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Posting is a single entry in the inverted index: a chunk occurrence of a term.
@@ -49,6 +50,8 @@ func (s *Store) loadInvertedIndex() (*InvertedIndex, error) {
 
 // saveInvertedIndex persists the inverted index as gob.
 func (s *Store) saveInvertedIndex(idx *InvertedIndex) error {
+	termCount := len(idx.Index)
+	s.logger.WithModule("store").Debugf("saveInvertedIndex: terms=%d path=%s", termCount, s.invertedIndexPath())
 	if err := os.MkdirAll(s.kbDir(), 0o755); err != nil {
 		return fmt.Errorf("ensure knowledge dir: %w", err)
 	}
@@ -107,6 +110,7 @@ func (s *Store) updateInvertedIndex(slug string, entries []ChunkIndexEntry) erro
 // rebuildInvertedIndex scans all CHUNKS.toml files and rebuilds the global
 // inverted index from scratch.
 func (s *Store) rebuildInvertedIndex() error {
+	start := time.Now()
 	kd := s.kbDir()
 	docDirs, err := listDocDirs(kd)
 	if err != nil {
@@ -128,6 +132,7 @@ func (s *Store) rebuildInvertedIndex() error {
 			}
 		}
 	}
+	s.logger.WithModule("store").Debugf("rebuildInvertedIndex: docs=%d terms=%d elapsed=%v", len(docDirs), len(idx.Index), time.Since(start))
 	return s.saveInvertedIndex(idx)
 }
 
@@ -152,5 +157,6 @@ func (s *Store) queryCandidates(queryTerms []string) (map[string]map[string]bool
 	if len(candidates) == 0 {
 		return nil, nil // no matches — empty result, not a fallback
 	}
+	s.logger.WithModule("store").Debugf("queryCandidates: queryTerms=%d candidates=%d", len(queryTerms), len(candidates))
 	return candidates, nil
 }

@@ -68,11 +68,13 @@ func (s *Store) StartManageServer(port string) error {
 		})
 	})
 	mux.HandleFunc("POST /api/knowledge-bases", func(w http.ResponseWriter, r *http.Request) {
+		log := s.logger.WithModule("manage")
 		var body struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			log.Errorf("CreateKB: invalid JSON: %v", err)
 			writeManageError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
@@ -80,18 +82,25 @@ func (s *Store) StartManageServer(port string) error {
 			writeManageError(w, http.StatusBadRequest, "name is required")
 			return
 		}
+		log.Infof("CreateKB: name=%q description=%q", body.Name, body.Description)
 		if err := s.CreateKB(body.Name, body.Description); err != nil {
+			log.Errorf("CreateKB: name=%q failed: %v", body.Name, err)
 			writeManageError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		log.Infof("CreateKB: name=%q created", body.Name)
 		writeManageJSON(w, http.StatusOK, map[string]string{"message": "created", "name": body.Name})
 	})
 	mux.HandleFunc("DELETE /api/knowledge-bases/{name}", func(w http.ResponseWriter, r *http.Request) {
+		log := s.logger.WithModule("manage")
 		name := r.PathValue("name")
+		log.Infof("DeleteKB: name=%q", name)
 		if err := s.DeleteKB(name); err != nil {
+			log.Errorf("DeleteKB: name=%q failed: %v", name, err)
 			writeManageError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		log.Infof("DeleteKB: name=%q deleted", name)
 		writeManageJSON(w, http.StatusOK, map[string]string{"message": "deleted", "name": name})
 	})
 
@@ -142,7 +151,9 @@ type manageDocItem struct {
 }
 
 func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
+	log.Debugf("List: kb=%q", kb)
 	var docs []DocumentMeta
 	var err error
 	if kb != "" {
@@ -152,6 +163,7 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 		docs, err = s.ListDocumentsAll()
 	}
 	if err != nil {
+		log.Errorf("List: kb=%q failed: %v", kb, err)
 		writeManageError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -164,8 +176,10 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 20
+	} else if limit > 500 {
+		limit = 500
 	}
 	sortBy := r.URL.Query().Get("sortBy")
 	if sortBy == "" {
@@ -236,9 +250,11 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 		"offset":    offset,
 		"limit":     limit,
 	})
+	log.Debugf("List: kb=%q returned %d/%d docs", kb, len(page), total)
 }
 
 func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	if kb != "" {
 		s = s.WithKB(kb)
@@ -246,6 +262,7 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
 
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		log.Errorf("Upload: parse multipart form failed: %v", err)
 		writeManageError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
 		return
 	}
@@ -256,11 +273,14 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 		file, header, err := r.FormFile("file")
 		if err == nil {
 			defer file.Close()
+			log.Debugf("Upload: single file name=%q kb=%q", header.Filename, s.kbName)
 			meta, err := saveManageFile(s, file, header.Filename)
 			if err != nil {
+				log.Errorf("Upload: single file %q failed: %v", header.Filename, err)
 				writeManageError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+			log.Infof("Upload: single file %q → slug=%q", header.Filename, meta.Slug)
 			writeManageJSON(w, http.StatusOK, map[string]any{
 				"message": "uploaded",
 				"slug":    meta.Slug,
@@ -271,6 +291,8 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 		writeManageError(w, http.StatusBadRequest, "no files uploaded")
 		return
 	}
+
+	log.Debugf("Upload: %d files kb=%q", len(files), s.kbName)
 
 	type uploadResult struct {
 		Name  string `json:"name"`
@@ -299,6 +321,7 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 			successCount++
 		}
 	}
+	log.Infof("Upload: %d files, %d succeeded, %d failed kb=%q", len(files), successCount, len(files)-successCount, s.kbName)
 	if successCount == 0 {
 		writeManageError(w, http.StatusInternalServerError, "all files failed to upload")
 		return
@@ -331,36 +354,45 @@ func saveManageFile(s *Store, src io.Reader, filename string) (DocumentMeta, err
 }
 
 func (s *Store) handleManageDelete(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	if kb != "" {
 		s = s.WithKB(kb)
 	}
 	slug := r.PathValue("slug")
 	if slug == "" {
+		log.Errorf("Delete: slug is empty")
 		writeManageError(w, http.StatusBadRequest, "slug is required")
 		return
 	}
+	log.Debugf("Delete: slug=%q kb=%q", slug, s.kbName)
 	if err := s.RemoveDocument(slug); err != nil {
+		log.Errorf("Delete: slug=%q failed: %v", slug, err)
 		writeManageError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	log.Infof("Delete: slug=%q deleted", slug)
 	writeManageJSON(w, http.StatusOK, map[string]string{"message": "deleted", "slug": slug})
 }
 
 // handleManageDocDetail returns full document metadata.
 func (s *Store) handleManageDocDetail(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	if kb != "" {
 		s = s.WithKB(kb)
 	}
 	slug := r.PathValue("slug")
 	if slug == "" {
+		log.Errorf("DocDetail: slug is empty")
 		writeManageError(w, http.StatusBadRequest, "slug is required")
 		return
 	}
+	log.Debugf("DocDetail: slug=%q kb=%q", slug, s.kbName)
 
 	meta, err := s.ReadMeta(slug)
 	if err != nil {
+		log.Errorf("DocDetail: slug=%q failed: %v", slug, err)
 		writeManageError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -373,6 +405,7 @@ func (s *Store) handleManageDocDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleManageSearch performs a full-text search across the knowledge base.
 func (s *Store) handleManageSearch(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
@@ -384,6 +417,7 @@ func (s *Store) handleManageSearch(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 50 {
 		limit = n
 	}
+	log.Debugf("Search: q=%q limit=%d kb=%q", q, limit, s.kbName)
 
 	var hits []SearchHit
 	var err error
@@ -394,12 +428,14 @@ func (s *Store) handleManageSearch(w http.ResponseWriter, r *http.Request) {
 		hits, err = s.SearchAll(q, limit)
 	}
 	if err != nil {
+		log.Errorf("Search: q=%q failed: %v", q, err)
 		writeManageError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if hits == nil {
 		hits = []SearchHit{}
 	}
+	log.Debugf("Search: q=%q hits=%d", q, len(hits))
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
 		"query": q,

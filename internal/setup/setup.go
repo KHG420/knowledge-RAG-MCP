@@ -313,16 +313,12 @@ func stepGPUScheduler(cfg *config.Config) error {
 	}
 	cfg.GPUSchedulerEnabled = true
 
-	// Embedding model sleep/wake URLs (only if embedder is configured).
+	// Embedding model sleep URL (only if embedder is configured).
 	if cfg.EmbedEndpoint != "" {
 		fmt.Println(lt.GPUSchedEmbedTitle)
 		defaultSleepURL := cfg.EmbedEndpoint
 		if strings.HasSuffix(defaultSleepURL, "/embeddings") {
 			defaultSleepURL = strings.TrimSuffix(defaultSleepURL, "/embeddings") + "/sleep"
-		}
-		defaultWakeURL := cfg.EmbedEndpoint
-		if strings.HasSuffix(defaultWakeURL, "/embeddings") {
-			defaultWakeURL = strings.TrimSuffix(defaultWakeURL, "/embeddings") + "/wake"
 		}
 
 		val := prompt(lt.GPUSchedEmbedSleep, defaultSleepURL)
@@ -330,15 +326,9 @@ func stepGPUScheduler(cfg *config.Config) error {
 			return err
 		}
 		cfg.GPUSchedulerEmbeddingSleepURL = val
-
-		val = prompt(lt.GPUSchedEmbedWake, defaultWakeURL)
-		if err := checkBackQuit(val); err != nil {
-			return err
-		}
-		cfg.GPUSchedulerEmbeddingWakeURL = val
 	}
 
-	// Reranker model sleep/wake URLs (only if reranker is configured).
+	// Reranker model sleep URL (only if reranker is configured).
 	if cfg.RerankEndpoint != "" {
 		fmt.Println(lt.GPUSchedRerankTitle)
 		baseURL := cfg.RerankEndpoint
@@ -351,12 +341,6 @@ func stepGPUScheduler(cfg *config.Config) error {
 			return err
 		}
 		cfg.GPUSchedulerRerankerSleepURL = val
-
-		val = prompt(lt.GPUSchedRerankWake, baseURL+"/wake")
-		if err := checkBackQuit(val); err != nil {
-			return err
-		}
-		cfg.GPUSchedulerRerankerWakeURL = val
 	}
 
 	val := prompt(lt.GPUSchedTimeout, "30s")
@@ -364,12 +348,6 @@ func stepGPUScheduler(cfg *config.Config) error {
 		return err
 	}
 	cfg.GPUSchedulerTimeout = val
-
-	val = prompt(lt.GPUSchedWakeDelay, "3s")
-	if err := checkBackQuit(val); err != nil {
-		return err
-	}
-	cfg.GPUSchedulerWakeDelay = val
 	return nil
 }
 
@@ -520,14 +498,8 @@ func showSummary(cfg *config.Config) {
 		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
 			fmt.Printf(lt.SummaryEmbedSleep, cfg.GPUSchedulerEmbeddingSleepURL)
 		}
-		if cfg.GPUSchedulerEmbeddingWakeURL != "" {
-			fmt.Printf(lt.SummaryEmbedWake, cfg.GPUSchedulerEmbeddingWakeURL)
-		}
 		if cfg.GPUSchedulerRerankerSleepURL != "" {
 			fmt.Printf(lt.SummaryRerankSleep, cfg.GPUSchedulerRerankerSleepURL)
-		}
-		if cfg.GPUSchedulerRerankerWakeURL != "" {
-			fmt.Printf(lt.SummaryRerankWake, cfg.GPUSchedulerRerankerWakeURL)
 		}
 	}
 	fmt.Printf(lt.SummaryManagePort, cfg.ManagePort)

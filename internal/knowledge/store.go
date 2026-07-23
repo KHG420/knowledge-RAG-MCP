@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -38,12 +39,13 @@ type Store struct {
 	searchLogger       SearchLogger
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
 	logger *logging.Logger
+	mu     *sync.Mutex
 }
 
 // NewStore returns a Store. The data directory defaults to ~/knowledge_base/;
 // call WithDataDir to override.
 func NewStore() *Store {
-	return &Store{AbstractBoost: 1.1, logger: logging.NewNopLogger()}
+	return &Store{AbstractBoost: 1.1, logger: logging.NewNopLogger(), mu: &sync.Mutex{}}
 }
 
 // WithDataDir sets an explicit data directory for the knowledge base,
@@ -66,6 +68,7 @@ func (s *Store) WithKB(name string) *Store {
 // SetLogger sets the logger on the Store.
 func (s *Store) SetLogger(l *logging.Logger) {
 	s.logger = l
+	SetParserLogger(l)
 }
 
 // SetGPUScheduler configures a GPU scheduler for managing model sleep/wake.
@@ -221,7 +224,11 @@ func (s *Store) knowledgeDir() string {
 
 // EnsureDir creates the knowledge directory tree if it doesn't exist.
 func (s *Store) EnsureDir() error {
-	return os.MkdirAll(s.knowledgeDir(), 0o755)
+	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
+		return err
+	}
+	s.logger.Infof("knowledge dir ready: %s", s.knowledgeDir())
+	return nil
 }
 
 // IndexPath returns the path to INDEX.md.
@@ -719,7 +726,7 @@ func SlugFromPath(path string) string {
 		name = "document"
 	}
 	// Append timestamp suffix for uniqueness.
-	suffix := time.Now().Format("20060102-150405")
+	suffix := time.Now().Format("20060102-150405.000")
 	return name + "-" + suffix
 }
 
@@ -745,6 +752,7 @@ func (s *Store) ListDocuments() ([]DocumentMeta, error) {
 		meta.Slug = e.Name()
 		docs = append(docs, meta)
 	}
+	s.logger.WithModule("store").Debugf("ListDocuments: kb=%q docs=%d", s.kbName, len(docs))
 	return docs, nil
 }
 

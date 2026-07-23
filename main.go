@@ -43,11 +43,32 @@ func main() {
 		return
 	}
 
+	// Subcommand: stdio — run as a stdio MCP server (for Reasonix/Claude Desktop).
+	if len(os.Args) > 1 && os.Args[1] == "stdio" {
+		cfg := config.LoadWithEnvFallback(findConfigPath())
+		store, logger := initStoreAndLogger(cfg)
+		defer logger.Close()
+		runStdio(store, logger)
+		return
+	}
+
+	// Subcommand: manage — start only the web management UI (no MCP server).
+	// Use this alongside stdio mode to manage documents via browser.
+	if len(os.Args) > 1 && os.Args[1] == "manage" {
+		cfg := config.LoadWithEnvFallback(findConfigPath())
+		store, logger := initStoreAndLogger(cfg)
+		defer logger.Close()
+		runManage(cfg, store, logger)
+		return
+	}
+
 	// No subcommand: show usage.
 	fmt.Fprintf(os.Stderr, "Usage: knowledge-mcp <command>\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  serve           Start HTTP SSE MCP server\n")
 	fmt.Fprintf(os.Stderr, "  server          (alias for serve)\n")
+	fmt.Fprintf(os.Stderr, "  stdio           Start stdio MCP server (for Reasonix/Claude Desktop)\n")
+	fmt.Fprintf(os.Stderr, "  manage          Start web management UI only (run alongside stdio)\n")
 	fmt.Fprintf(os.Stderr, "  setup           Interactive configuration\n")
 	os.Exit(1)
 }
@@ -141,6 +162,12 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		log.Infof("rerank candidate limit: %d", cfg.RerankCandidateLimit)
 	}
 
+	// --- Optional: MinerU document parser (magic-pdf CLI) ---
+	knowledge.SetMinerUEnabled(cfg.MinerUEnabled)
+	if cfg.MinerUEnabled {
+		log.Infof("MinerU document parser enabled (magic-pdf)")
+	}
+
 	// --- Optional: GPU scheduler for model sleep/wake coordination ---
 	if cfg.GPUSchedulerEnabled {
 		var schedOpts []knowledge.GPUSchedulerOption
@@ -149,29 +176,18 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
 			schedOpts = append(schedOpts, knowledge.WithSchedulerEmbeddingSleepURL(cfg.GPUSchedulerEmbeddingSleepURL))
 		}
-		if cfg.GPUSchedulerEmbeddingWakeURL != "" {
-			schedOpts = append(schedOpts, knowledge.WithSchedulerEmbeddingWakeURL(cfg.GPUSchedulerEmbeddingWakeURL))
-		}
 		if cfg.GPUSchedulerRerankerSleepURL != "" {
 			schedOpts = append(schedOpts, knowledge.WithSchedulerRerankerSleepURL(cfg.GPUSchedulerRerankerSleepURL))
-		}
-		if cfg.GPUSchedulerRerankerWakeURL != "" {
-			schedOpts = append(schedOpts, knowledge.WithSchedulerRerankerWakeURL(cfg.GPUSchedulerRerankerWakeURL))
 		}
 		if cfg.GPUSchedulerTimeout != "" {
 			if d, err := time.ParseDuration(cfg.GPUSchedulerTimeout); err == nil {
 				schedOpts = append(schedOpts, knowledge.WithSchedulerTimeout(d))
 			}
 		}
-		if cfg.GPUSchedulerWakeDelay != "" {
-			if d, err := time.ParseDuration(cfg.GPUSchedulerWakeDelay); err == nil {
-				schedOpts = append(schedOpts, knowledge.WithSchedulerWakeDelay(d))
-			}
-		}
 		scheduler := knowledge.NewGPUScheduler(schedOpts...)
 		store.SetGPUScheduler(scheduler)
-		log.Infof("GPU scheduler enabled: timeout=%s wakeDelay=%s [%s]",
-			cfg.GPUSchedulerTimeout, cfg.GPUSchedulerWakeDelay, scheduler.Summary())
+		log.Infof("GPU scheduler enabled: timeout=%s [%s]",
+			cfg.GPUSchedulerTimeout, scheduler.Summary())
 		// Probe endpoint connectivity (non-fatal: warn and continue).
 		if summary, err := scheduler.Probe(context.Background()); err != nil {
 			log.Warnf("GPU scheduler: some endpoints unreachable: %s (continuing without GPU coordination)", summary)
@@ -249,6 +265,54 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 	log.Infof("SSE MCP server starting on :%s (mcpOnly=%v)", servePort, mcpOnly)
 	if err := sseServer.Start(":" + servePort); err != nil {
 		log.Errorf("SSE server error: %v", err)
+		os.Exit(1)
+	}
+}
+
+// runStdio runs the server in stdio mode (stdin/stdout MCP protocol).
+// This is the mode used by Reasonix, Claude Desktop, and other stdio-based MCP hosts.
+func runStdio(store *knowledge.Store, logger *logging.Logger) {
+	log := logger.WithModule("stdio")
+	log.Infof("starting in stdio MCP mode")
+
+	s := server.NewMCPServer(
+		"knowledge-mcp",
+		"1.0.0",
+		server.WithToolCapabilities(true),
+	)
+
+	registerAllTools(s, store, logger)
+
+	if err := server.ServeStdio(s); err != nil {
+		log.Errorf("stdio server error: %v", err)
+		os.Exit(1)
+	}
+}
+
+// runManage starts only the web management UI, without any MCP server.
+// This can run alongside stdio mode (used by Reasonix etc.) to let users
+// upload/delete documents via the browser.
+func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logger) {
+	log := logger.WithModule("manage")
+
+	managePort := cfg.ManagePort
+	if managePort == "" {
+		managePort = "8085"
+	}
+
+	// Set up signal handling for graceful shutdown.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		log.Infof("received signal %v, shutting down...", sig)
+		logger.Close()
+		os.Exit(0)
+	}()
+
+	log.Infof("management UI starting on http://localhost:%s", managePort)
+	if err := store.StartManageServer(managePort); err != nil {
+		log.Errorf("management UI error: %v", err)
 		os.Exit(1)
 	}
 }

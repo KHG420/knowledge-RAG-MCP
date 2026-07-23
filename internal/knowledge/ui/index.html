@@ -771,7 +771,7 @@ async function apiRaw(path, opts = {}) {
 async function loadDocs() {
   document.getElementById('loadingDocs').classList.add('active');
   try {
-    const data = await api('/api/documents');
+    const data = await api('/api/documents?limit=500');
     allDocs = data.documents || [];
     fulltextMode = false;
     fulltextHits = [];
