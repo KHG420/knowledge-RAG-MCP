@@ -79,9 +79,11 @@ func (s *Store) SetDocParser(p DocParser) {
 }
 
 // SetGPUScheduler configures a GPU scheduler for managing model sleep/wake.
-// When set, embedding and reranker operations coordinate to share GPU memory.
+// When set, embedding, reranker, and doc parser operations coordinate to
+// share GPU memory.
 func (s *Store) SetGPUScheduler(g *GPUScheduler) {
 	s.gpuScheduler = g
+	SetParserGPUScheduler(g)
 }
 
 // kbDir returns the KB-scoped data directory.

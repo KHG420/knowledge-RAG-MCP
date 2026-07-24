@@ -29,6 +29,7 @@ type Config struct {
 	GPUSchedulerTimeout           string `toml:"gpu_scheduler_timeout"`
 	GPUSchedulerEmbeddingSleepURL string `toml:"gpu_scheduler_embedding_sleep_url"`
 	GPUSchedulerRerankerSleepURL  string `toml:"gpu_scheduler_reranker_sleep_url"`
+	GPUSchedulerDocParserSleepURL string `toml:"gpu_scheduler_doc_parser_sleep_url"`
 	MinerUEnabled                bool   `toml:"mineru_enabled"`
 
 	// DocParserEndpoint is the URL of an external HTTP API for document parsing.
@@ -65,6 +66,7 @@ func DefaultConfig() *Config {
 		GPUSchedulerTimeout:           "30s",
 		GPUSchedulerEmbeddingSleepURL: "",
 		GPUSchedulerRerankerSleepURL:  "",
+		GPUSchedulerDocParserSleepURL: "",
 		MinerUEnabled:         true,
 		DocParserEndpoint:     "",
 		DocParserAPIKey:       "",
@@ -131,6 +133,7 @@ func LoadWithEnvFallback(path string) *Config {
 		GPUSchedulerTimeout:            envOr("GPU_SCHEDULER_TIMEOUT", def.GPUSchedulerTimeout),
 		GPUSchedulerEmbeddingSleepURL:  envOr("GPU_SCHEDULER_EMBEDDING_SLEEP_URL", def.GPUSchedulerEmbeddingSleepURL),
 		GPUSchedulerRerankerSleepURL:   envOr("GPU_SCHEDULER_RERANKER_SLEEP_URL", def.GPUSchedulerRerankerSleepURL),
+		GPUSchedulerDocParserSleepURL:  envOr("GPU_SCHEDULER_DOC_PARSER_SLEEP_URL", def.GPUSchedulerDocParserSleepURL),
 		MinerUEnabled:                os.Getenv("MINERU_ENABLED") != "false",
 		DocParserEndpoint:            os.Getenv("DOC_PARSER_ENDPOINT"),
 		DocParserAPIKey:              os.Getenv("DOC_PARSER_API_KEY"),

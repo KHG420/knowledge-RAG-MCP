@@ -57,12 +57,20 @@ func Run() {
 	cfg := config.DefaultConfig()
 	stdIn = bufio.NewScanner(os.Stdin)
 
+	// Try loading existing config first so step prompts default to
+	// the user's previously configured values.
+	savePath := findSetupConfigPath()
+	if loaded, err := config.Load(savePath); err == nil && loaded != nil {
+		cfg = loaded
+	}
+
 	steps := []step{
 		{name: "data_dir", run: stepDataDir},
 		{name: "default_kb", run: stepDefaultKB},
 		{name: "embedder", run: stepEmbedder},
 		{name: "reranker", run: stepReranker},
 		{name: "rerank_limit", run: stepRerankLimit},
+		{name: "doc_parser", run: stepDocParser},
 		{name: "gpu_scheduler", run: stepGPUScheduler},
 		{name: "manage_port", run: stepManagePort},
 		{name: "logging", run: stepLogging},
@@ -94,8 +102,7 @@ func Run() {
 		return
 	}
 
-	// Determine save path.
-	savePath := findSetupConfigPath()
+	// Save to config file.
 	if err := config.Save(savePath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, lt.SaveFailed, err)
 		os.Exit(1)
@@ -294,6 +301,39 @@ func stepRerankLimit(cfg *config.Config) error {
 	return nil
 }
 
+func stepDocParser(cfg *config.Config) error {
+	lt := T()
+	fmt.Println(lt.DocParserTitle)
+	fmt.Println(lt.DocParserDesc)
+
+	enable := promptYN(lt.DocParserEnable, false)
+	switch enable {
+	case "back":
+		return errBack
+	case "no":
+		return nil
+	}
+
+	val := prompt(lt.DocParserURL, "")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.DocParserEndpoint = val
+
+	val = prompt(lt.DocParserAPIKey, "")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.DocParserAPIKey = val
+
+	val = prompt(lt.DocParserTimeout, "120s")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.DocParserTimeout = val
+	return nil
+}
+
 func stepGPUScheduler(cfg *config.Config) error {
 	lt := T()
 	fmt.Println(lt.GPUSchedTitle)
@@ -341,6 +381,21 @@ func stepGPUScheduler(cfg *config.Config) error {
 			return err
 		}
 		cfg.GPUSchedulerRerankerSleepURL = val
+	}
+
+	// Doc parser model sleep URL (only if doc parser is configured).
+	if cfg.DocParserEndpoint != "" {
+		fmt.Println(lt.GPUSchedDocParserTitle)
+		defaultSleepURL := cfg.DocParserEndpoint
+		if idx := strings.LastIndex(defaultSleepURL, "/parse"); idx > 0 {
+			defaultSleepURL = defaultSleepURL[:idx] + "/sleep"
+		}
+
+		val := prompt(lt.GPUSchedDocParserSleep, defaultSleepURL)
+		if err := checkBackQuit(val); err != nil {
+			return err
+		}
+		cfg.GPUSchedulerDocParserSleepURL = val
 	}
 
 	val := prompt(lt.GPUSchedTimeout, "30s")
@@ -493,6 +548,10 @@ func showSummary(cfg *config.Config) {
 		fmt.Printf("    - Model:          %s\n", cfg.RerankModel)
 	}
 	fmt.Printf(lt.SummaryRerankLimit, cfg.RerankCandidateLimit)
+	fmt.Printf(lt.SummaryDocParser, onOff(cfg.DocParserEndpoint != ""))
+	if cfg.DocParserEndpoint != "" {
+		fmt.Printf("    - URL:            %s\n", cfg.DocParserEndpoint)
+	}
 	fmt.Printf(lt.SummaryGPUSched, onOff(cfg.GPUSchedulerEnabled))
 	if cfg.GPUSchedulerEnabled {
 		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
@@ -500,6 +559,9 @@ func showSummary(cfg *config.Config) {
 		}
 		if cfg.GPUSchedulerRerankerSleepURL != "" {
 			fmt.Printf(lt.SummaryRerankSleep, cfg.GPUSchedulerRerankerSleepURL)
+		}
+		if cfg.GPUSchedulerDocParserSleepURL != "" {
+			fmt.Printf(lt.SummaryDocParserSleep, cfg.GPUSchedulerDocParserSleepURL)
 		}
 	}
 	fmt.Printf(lt.SummaryManagePort, cfg.ManagePort)

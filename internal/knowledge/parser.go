@@ -256,6 +256,11 @@ var fallbackParser = NewTabulaParser()
 // Set by SetParserLogger (called from Store.SetLogger during init).
 var parserLogger = logging.NewNopLogger()
 
+// parserGPUScheduler coordinates GPU sleep/wake for the doc parser model.
+// When set, ParseFile will sleep embedding+reranker before calling the
+// external doc parser API, and sleep the doc parser when done.
+var parserGPUScheduler *GPUScheduler
+
 // SetLogger configures the logger used by ParseFile and related parser functions.
 func SetParserLogger(l *logging.Logger) {
 	parserLogger = l
@@ -273,6 +278,14 @@ func SetDocParser(p DocParser) {
 			hp.logger = parserLogger
 		}
 	}
+}
+
+// SetParserGPUScheduler configures the GPU scheduler for doc parser
+// coordination. When set, ParseFile will sleep embedding+reranker before
+// calling the external doc parser API, and restore (sleep doc parser) when
+// done, ensuring only one model occupies GPU memory at a time.
+func SetParserGPUScheduler(s *GPUScheduler) {
+	parserGPUScheduler = s
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +348,20 @@ func ParseFile(path string) (string, error) {
 	// Try the configured DocParser first (e.g. HTTP API).
 	if docParser != nil {
 		parserLogger.Infof("DocParser: parsing %s", filepath.Base(path))
+
+		// Coordinate GPU: sleep embedding+reranker before doc parser API call.
+		var restoreDoc func()
+		if parserGPUScheduler != nil {
+			restoreDoc = parserGPUScheduler.PrepareForDocParsing()
+		}
+
 		text, err := docParser.Parse(path)
+
+		// Restore: sleep doc parser so others can reload.
+		if restoreDoc != nil {
+			restoreDoc()
+		}
+
 		if err == nil {
 			parserLogger.Infof("DocParser: success for %s (%d chars)", filepath.Base(path), len(text))
 			return text, nil

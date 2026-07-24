@@ -203,6 +203,9 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		if cfg.GPUSchedulerRerankerSleepURL != "" {
 			schedOpts = append(schedOpts, knowledge.WithSchedulerRerankerSleepURL(cfg.GPUSchedulerRerankerSleepURL))
 		}
+		if cfg.GPUSchedulerDocParserSleepURL != "" {
+			schedOpts = append(schedOpts, knowledge.WithSchedulerDocParserSleepURL(cfg.GPUSchedulerDocParserSleepURL))
+		}
 		if cfg.GPUSchedulerTimeout != "" {
 			if d, err := time.ParseDuration(cfg.GPUSchedulerTimeout); err == nil {
 				schedOpts = append(schedOpts, knowledge.WithSchedulerTimeout(d))

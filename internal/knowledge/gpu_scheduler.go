@@ -13,18 +13,21 @@ import (
 	"knowledge-mcp/internal/logging"
 )
 
-// GPUScheduler manages the sleep/wake lifecycle of embedding and reranker
-// models on a shared GPU, ensuring only one model is loaded at a time.
-// This is useful when both models cannot fit simultaneously in GPU memory.
+// GPUScheduler manages the sleep/wake lifecycle of embedding, reranker,
+// and document parser models on a shared GPU, ensuring only one model is
+// loaded at a time. This is useful when models cannot fit simultaneously
+// in GPU memory.
 //
-// Each model has its own sleep/wake API URLs since the two models may use
-// different endpoints or require different request bodies (e.g. reranker
-// sleep requires a JSON body with sleep level).
+// Each model has its own sleep/wake API URLs since they may use different
+// endpoints or require different request bodies (e.g. reranker sleep
+// requires a JSON body with sleep level).
 type GPUScheduler struct {
 	embeddingSleepURL  string        // URL to sleep the embedding model
 	embeddingSleepBody string        // Optional JSON body for embedding sleep request
 	rerankerSleepURL   string        // URL to sleep the reranker model
 	rerankerSleepBody  string        // Optional JSON body for reranker sleep request (default `{"level":2}`)
+	docParserSleepURL  string        // URL to sleep the document parser model
+	docParserSleepBody string        // Optional JSON body for doc parser sleep request
 	timeout            time.Duration // HTTP timeout for sleep requests (default 30s)
 	enabled            bool
 	client             *http.Client
@@ -62,6 +65,13 @@ func WithSchedulerLogger(l *logging.Logger) GPUSchedulerOption {
 	}
 }
 
+// WithSchedulerDocParserSleepURL sets the URL to sleep the document parser model.
+func WithSchedulerDocParserSleepURL(url string) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.docParserSleepURL = url
+	}
+}
+
 // WithSchedulerEnabled explicitly sets the enabled state of the GPU scheduler.
 // When true, the scheduler coordinates model sleep/wake. Default is false.
 // This overrides the GPU_SCHEDULER_ENABLED environment variable.
@@ -79,6 +89,8 @@ func WithSchedulerEnabled(enabled bool) GPUSchedulerOption {
 //	GPU_SCHEDULER_EMBEDDING_SLEEP_BODY   — JSON body for embedding sleep request (default: empty)
 //	GPU_SCHEDULER_RERANKER_SLEEP_URL     — Reranker model sleep API URL (default: empty, must be set if enabled)
 //	GPU_SCHEDULER_RERANKER_SLEEP_BODY    — JSON body for reranker sleep (default: {"level":2})
+//	GPU_SCHEDULER_DOC_PARSER_SLEEP_URL   — Document parser model sleep API URL (default: empty)
+//	GPU_SCHEDULER_DOC_PARSER_SLEEP_BODY  — JSON body for doc parser sleep request (default: empty)
 //	GPU_SCHEDULER_TIMEOUT                — HTTP timeout (default: "30s")
 func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	s := &GPUScheduler{
@@ -108,6 +120,12 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	if v := os.Getenv("GPU_SCHEDULER_RERANKER_SLEEP_BODY"); v != "" {
 		s.rerankerSleepBody = v
 	}
+	if v := os.Getenv("GPU_SCHEDULER_DOC_PARSER_SLEEP_URL"); v != "" {
+		s.docParserSleepURL = v
+	}
+	if v := os.Getenv("GPU_SCHEDULER_DOC_PARSER_SLEEP_BODY"); v != "" {
+		s.docParserSleepBody = v
+	}
 	if v := os.Getenv("GPU_SCHEDULER_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			s.timeout = d
@@ -135,6 +153,9 @@ func (s *GPUScheduler) Summary() string {
 	}
 	if s.rerankerSleepURL != "" {
 		parts = append(parts, "reranker-sleep="+s.rerankerSleepURL)
+	}
+	if s.docParserSleepURL != "" {
+		parts = append(parts, "doc-parser-sleep="+s.docParserSleepURL)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -185,6 +206,9 @@ func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 	if s.rerankerSleepURL != "" {
 		urls = append(urls, s.rerankerSleepURL)
 	}
+	if s.docParserSleepURL != "" {
+		urls = append(urls, s.docParserSleepURL)
+	}
 
 	var results []ProbeResult
 	var lastErr error
@@ -220,10 +244,12 @@ func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 }
 
 // PrepareForEmbedding ensures the embedding model has GPU access by sleeping
-// the reranker (if loaded). The embedding API auto-wakes on first call.
+// the reranker and document parser (if loaded). The embedding API auto-wakes
+// on first call.
 // Returns a restore function that sleeps the embedding model (so the reranker
-// can load later). The restore function is idempotent-safe — it logs warnings
-// on failure but does not return an error, making it suitable for defer.
+// or doc parser can load later). The restore function is idempotent-safe — it
+// logs warnings on failure but does not return an error, making it suitable
+// for defer.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
@@ -232,13 +258,16 @@ func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
 	}
 	log := s.logger.WithModule("gpu-scheduler")
 
-	// Sleep reranker first (releases GPU memory for embedding).
+	// Sleep reranker and doc parser (releases GPU memory for embedding).
 	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 		log.Warnf("sleep reranker failed (continuing): %v", err)
 	}
+	if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+		log.Warnf("sleep doc parser failed (continuing): %v", err)
+	}
 
 	return func() {
-		// Restore: sleep embedding (reranker auto-wakes on next call).
+		// Restore: sleep embedding (reranker/doc parser auto-wakes on next call).
 		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 			log.Warnf("sleep embedding (restore) failed: %v", err)
 		}
@@ -246,9 +275,10 @@ func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
 }
 
 // PrepareForReranking ensures the reranker model has GPU access by sleeping
-// the embedding model (if loaded). The reranker API auto-wakes on first call.
+// the embedding model and document parser (if loaded). The reranker API
+// auto-wakes on first call.
 // Returns a restore function that sleeps the reranker (so the embedding model
-// can load later). The restore function is idempotent-safe.
+// or doc parser can load later). The restore function is idempotent-safe.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForReranking() (restore func()) {
@@ -257,15 +287,47 @@ func (s *GPUScheduler) PrepareForReranking() (restore func()) {
 	}
 	log := s.logger.WithModule("gpu-scheduler")
 
-	// Sleep embedding first (releases GPU memory for reranker).
+	// Sleep embedding and doc parser (releases GPU memory for reranker).
 	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
 		log.Warnf("sleep embedding failed (continuing): %v", err)
 	}
+	if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+		log.Warnf("sleep doc parser failed (continuing): %v", err)
+	}
 
 	return func() {
-		// Restore: sleep reranker (embedding auto-wakes on next call).
+		// Restore: sleep reranker (embedding/doc parser auto-wakes on next call).
 		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
 			log.Warnf("sleep reranker (restore) failed: %v", err)
+		}
+	}
+}
+
+// PrepareForDocParsing ensures the document parser model has GPU access by
+// sleeping the embedding and reranker models (if loaded). The doc parser API
+// auto-wakes on first call.
+// Returns a restore function that sleeps the doc parser (so the embedding or
+// reranker can load later). The restore function is idempotent-safe.
+//
+// When the scheduler is disabled, this is a no-op and returns a no-op restore.
+func (s *GPUScheduler) PrepareForDocParsing() (restore func()) {
+	if !s.enabled {
+		return func() {}
+	}
+	log := s.logger.WithModule("gpu-scheduler")
+
+	// Sleep embedding and reranker (releases GPU memory for doc parser).
+	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
+		log.Warnf("sleep embedding failed (continuing): %v", err)
+	}
+	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
+		log.Warnf("sleep reranker failed (continuing): %v", err)
+	}
+
+	return func() {
+		// Restore: sleep doc parser (embedding/reranker auto-wakes on next call).
+		if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+			log.Warnf("sleep doc parser (restore) failed: %v", err)
 		}
 	}
 }

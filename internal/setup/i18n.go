@@ -70,6 +70,14 @@ type langStr struct {
 	RerankLimitDesc  string
 	RerankLimitPrompt string
 
+	// --- Doc Parser ---
+	DocParserTitle  string
+	DocParserDesc   string
+	DocParserEnable string
+	DocParserURL    string
+	DocParserAPIKey string
+	DocParserTimeout string
+
 	// --- GPU Scheduler ---
 	GPUSchedTitle    string
 	GPUSchedDesc     string
@@ -80,6 +88,8 @@ type langStr struct {
 	GPUSchedEmbedSleep string
 	GPUSchedRerankTitle string
 	GPUSchedRerankSleep string
+	GPUSchedDocParserTitle string
+	GPUSchedDocParserSleep string
 	GPUSchedTimeout     string
 
 	// --- Manage port ---
@@ -107,6 +117,8 @@ type langStr struct {
 	SummaryNone       string
 	SummaryEmbedSleep string
 	SummaryRerankSleep string
+	SummaryDocParser   string
+	SummaryDocParserSleep string
 }
 
 var zhStrs = langStr{
@@ -169,6 +181,14 @@ var zhStrs = langStr{
 	RerankLimitDesc:   "每次重排序最多处理多少个候选文档",
 	RerankLimitPrompt: "候选数",
 
+	// --- Doc Parser ---
+	DocParserTitle:  "\n--- 文档解析 API 配置 ---",
+	DocParserDesc:   "用于解析非纯文本文档（PDF/DOCX 等）。配置外部 HTTP API 优先，API 不可用时自动回退本地 tabula",
+	DocParserEnable: "是否配置文档解析 API",
+	DocParserURL:    "文档解析 API 地址",
+	DocParserAPIKey: "API Key（可选，回车跳过）",
+	DocParserTimeout: "请求超时时间（如 30s, 120s）",
+
 	// --- GPU Scheduler ---
 	GPUSchedTitle:    "\n--- GPU 调度器 ---",
 	GPUSchedDesc:     "当 embedding 和 reranker 模型共享 GPU 时，调度器协调两者的睡眠/唤醒",
@@ -179,6 +199,8 @@ var zhStrs = langStr{
 	GPUSchedEmbedSleep: "Embedding 睡眠 API 地址",
 	GPUSchedRerankTitle: "\n--- Reranker 模型睡眠 API ---",
 	GPUSchedRerankSleep: "Reranker 睡眠 API 地址",
+	GPUSchedDocParserTitle: "\n--- 文档解析模型睡眠 API ---",
+	GPUSchedDocParserSleep: "文档解析模型睡眠 API 地址",
 	GPUSchedTimeout:     "调度请求超时时间",
 
 	// --- Manage port ---
@@ -206,6 +228,8 @@ var zhStrs = langStr{
 	SummaryNone:       "(无)",
 	SummaryEmbedSleep: "    - Embedding 睡眠:  %s\n",
 	SummaryRerankSleep: "    - Reranker 睡眠:   %s\n",
+	SummaryDocParser:   "  文档解析 API:       %s\n",
+	SummaryDocParserSleep: "    - 文档解析睡眠:   %s\n",
 }
 
 var enStrs = langStr{
@@ -268,6 +292,14 @@ var enStrs = langStr{
 	RerankLimitDesc:   "Maximum number of candidate documents per reranking pass",
 	RerankLimitPrompt: "Candidate limit",
 
+	// --- Doc Parser ---
+	DocParserTitle:  "\n--- Document Parser API ---",
+	DocParserDesc:   "Parses non-plain-text documents (PDF, DOCX, etc.). External HTTP API is tried first; falls back to local tabula when unavailable",
+	DocParserEnable: "Configure document parser API?",
+	DocParserURL:    "Document parser API endpoint",
+	DocParserAPIKey: "API Key (optional, press Enter to skip)",
+	DocParserTimeout: "Request timeout (e.g. 30s, 120s)",
+
 	// --- GPU Scheduler ---
 	GPUSchedTitle:    "\n--- GPU Scheduler ---",
 	GPUSchedDesc:     "Coordinates sleep/wake of embedding and reranker models sharing the same GPU",
@@ -278,6 +310,8 @@ var enStrs = langStr{
 	GPUSchedEmbedSleep: "Embedding sleep API URL",
 	GPUSchedRerankTitle: "\n--- Reranker Model Sleep API ---",
 	GPUSchedRerankSleep: "Reranker sleep API URL",
+	GPUSchedDocParserTitle: "\n--- Document Parser Model Sleep API ---",
+	GPUSchedDocParserSleep: "Doc parser sleep API URL",
 	GPUSchedTimeout:     "Scheduler request timeout",
 
 	// --- Manage port ---
@@ -305,6 +339,8 @@ var enStrs = langStr{
 	SummaryNone:       "(none)",
 	SummaryEmbedSleep: "    - Embedding Sleep:  %s\n",
 	SummaryRerankSleep: "    - Reranker Sleep:   %s\n",
+	SummaryDocParser:   "  Doc Parser API:       %s\n",
+	SummaryDocParserSleep: "    - Doc Parser Sleep: %s\n",
 }
 
 // currentLang is the language selected by the user at the start of the wizard.
