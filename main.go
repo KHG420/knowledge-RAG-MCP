@@ -162,10 +162,34 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		log.Infof("rerank candidate limit: %d", cfg.RerankCandidateLimit)
 	}
 
-	// --- Optional: MinerU document parser (magic-pdf CLI) ---
+	// --- Optional: document parsing API (HTTP) ---
+	// When an endpoint is configured, the external API is tried first when
+	// parsing non-plain-text documents (PDF, DOCX, etc.), with the local
+	// tabula library as fallback.
+	if cfg.DocParserEndpoint != "" {
+		var parserOpts []knowledge.HTTPDocParserOption
+		parserOpts = append(parserOpts, knowledge.WithParserEndpoint(cfg.DocParserEndpoint))
+		if cfg.DocParserAPIKey != "" {
+			parserOpts = append(parserOpts, knowledge.WithParserAPIKey(cfg.DocParserAPIKey))
+		}
+		if cfg.DocParserTimeout != "" {
+			if d, err := time.ParseDuration(cfg.DocParserTimeout); err == nil {
+				parserOpts = append(parserOpts, knowledge.WithParserTimeout(d))
+			}
+		}
+		parserOpts = append(parserOpts, knowledge.WithParserLogger(logger.WithModule("doc-parser")))
+		httpParser := knowledge.NewHTTPDocParser(parserOpts...)
+		knowledge.SetDocParser(httpParser)
+		log.Infof("HTTP doc parser configured: %s", cfg.DocParserEndpoint)
+	} else {
+		log.Infof("HTTP doc parser not configured (DOC_PARSER_ENDPOINT empty); using local tabula only")
+	}
+
+	// Legacy: MinerU CLI support (deprecated — kept for backward compatibility).
 	knowledge.SetMinerUEnabled(cfg.MinerUEnabled)
 	if cfg.MinerUEnabled {
-		log.Infof("MinerU document parser enabled (magic-pdf)")
+		log.Warnf("MinerU (magic-pdf) CLI support has been removed. " +
+			"Set DOC_PARSER_ENDPOINT to use an external document parsing API instead.")
 	}
 
 	// --- Optional: GPU scheduler for model sleep/wake coordination ---

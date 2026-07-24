@@ -71,6 +71,13 @@ func (s *Store) SetLogger(l *logging.Logger) {
 	SetParserLogger(l)
 }
 
+// SetDocParser configures the document parser used by ParseFile for
+// non-plain-text formats. When set, the parser is tried before falling
+// back to the local tabula library.
+func (s *Store) SetDocParser(p DocParser) {
+	SetDocParser(p)
+}
+
 // SetGPUScheduler configures a GPU scheduler for managing model sleep/wake.
 // When set, embedding and reranker operations coordinate to share GPU memory.
 func (s *Store) SetGPUScheduler(g *GPUScheduler) {

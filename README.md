@@ -62,6 +62,9 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `gpu_scheduler_enabled` | `GPU_SCHEDULER_ENABLED` | `false` | Enable GPU scheduler for model sleep/wake |
 | `gpu_scheduler_timeout` | `GPU_SCHEDULER_TIMEOUT` | `30s` | Sleep/wake HTTP request timeout |
 | `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake for model to load into GPU |
+| `doc_parser_endpoint` | `DOC_PARSER_ENDPOINT` | — | External document parsing HTTP API URL. Leave empty to skip external parsing and use local tabula directly |
+| `doc_parser_api_key` | `DOC_PARSER_API_KEY` | — | Bearer token for the document parsing API (optional) |
+| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `120s` | HTTP request timeout for document parsing |
 | `manage_port` | `MANAGE_PORT` | `8085` | Web management UI port |
 | `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy) |
@@ -271,6 +274,16 @@ Each model has its own sleep/wake API endpoints since they may use different pro
 | `GPU_SCHEDULER_TIMEOUT` | `30s` | HTTP timeout for sleep/wake requests |
 | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake to wait for model to load into GPU |
 
+### Document Parser
+
+When configured, all non-plain-text formats (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX) are sent to the external HTTP API first for parsing. If the API is unavailable, the system automatically falls back to the local tabula library without interrupting the upload flow.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOC_PARSER_ENDPOINT` | — | External document parsing API URL |
+| `DOC_PARSER_API_KEY` | — | Bearer token (optional) |
+| `DOC_PARSER_TIMEOUT` | `120s` | HTTP request timeout |
+
 ## MCP Tools
 
 ### `knowledge_search`
@@ -383,7 +396,7 @@ internal/
     rewrite_llm.go       — LLMQueryRewriter (optional LLM-based query expansion)
     manage.go            — Web management UI server, KB CRUD, upload/delete/search handlers
     upload.go            — UploadDocument, UploadDirectory
-    parser.go            — Document parser dispatch (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
+    parser.go            — Document parser dispatch — external HTTP API + tabula fallback (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
     inverted.go          — Global inverted index (INVERTED.gob) for accelerated candidate lookup
     list.go              — ListPreview, ReadChunk, ReadChunkContext
     remove.go            — RemoveDocument

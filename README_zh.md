@@ -62,6 +62,9 @@ knowledge-mcp setup
 | `gpu_scheduler_enabled` | `GPU_SCHEDULER_ENABLED` | `false` | 启用 GPU 调度器 |
 | `gpu_scheduler_timeout` | `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
 | `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
+| `doc_parser_endpoint` | `DOC_PARSER_ENDPOINT` | — | 外部文档解析 HTTP API 地址。留空则跳过外部解析，直接用本地 tabula |
+| `doc_parser_api_key` | `DOC_PARSER_API_KEY` | — | 文档解析 API 的 Bearer token（可选） |
+| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `120s` | 文档解析 HTTP 请求超时 |
 | `manage_port` | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
 | `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE 服务器监听端口 |
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景） |
@@ -267,6 +270,17 @@ GPU 调度器协调嵌入和重排序模型在单 GPU 上的休眠/唤醒。
 | `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
 | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
 
+### 文档解析
+
+配置后，所有非纯文本格式（PDF、DOCX、ODT、EPUB、HTML、XLSX、PPTX）优先走外部 HTTP API 解析；
+API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `DOC_PARSER_ENDPOINT` | — | 外部文档解析 API 地址 |
+| `DOC_PARSER_API_KEY` | — | Bearer token（可选） |
+| `DOC_PARSER_TIMEOUT` | `120s` | HTTP 请求超时 |
+
 ## MCP 工具
 
 ### `knowledge_search`
@@ -376,7 +390,7 @@ internal/
     rewrite_llm.go       — LLMQueryRewriter（可选的 LLM 查询扩展）
     manage.go            — Web 管理页面服务、知识库 CRUD、上传/删除/搜索处理器
     upload.go            — UploadDocument、UploadDirectory
-    parser.go            — 文档解析调度 (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
+    parser.go            — 文档解析调度 — 外部 HTTP API + tabula 回退 (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
     inverted.go          — 全局倒排索引 (INVERTED.gob)，加速候选查找
     list.go              — ListPreview、ReadChunk、ReadChunkContext
     remove.go            — RemoveDocument
