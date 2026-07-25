@@ -326,7 +326,7 @@ func stepDocParser(cfg *config.Config) error {
 	}
 	cfg.DocParserAPIKey = val
 
-	val = prompt(lt.DocParserTimeout, "120s")
+	val = prompt(lt.DocParserTimeout, "600s")
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}

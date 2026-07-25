@@ -13,6 +13,7 @@
 //	├── INDEX.md                   ← document-level index (runtime, not prefix)
 //	└── <document-slug>/
 //	    ├── meta.json              ← {original_name, source_type, added_at, chunk_count, total_chars}
+//	    ├── document.md            ← full raw markdown from external API parser
 //	    ├── CHUNKS.toml            ← pre-computed term frequencies per chunk (search index)
 //	    ├── source.<ext>           ← original file (preserved for audit)
 //	    └── chunks/

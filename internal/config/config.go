@@ -38,7 +38,7 @@ type Config struct {
 	DocParserEndpoint string `toml:"doc_parser_endpoint"`
 	// DocParserAPIKey is an optional bearer token sent to the parser API.
 	DocParserAPIKey string `toml:"doc_parser_api_key"`
-	// DocParserTimeout is the HTTP timeout for the parser API (e.g. "120s").
+	// DocParserTimeout is the HTTP timeout for the parser API (e.g. "600s").
 	DocParserTimeout string `toml:"doc_parser_timeout"`
 
 	ManagePort                    string `toml:"manage_port"`
@@ -70,7 +70,7 @@ func DefaultConfig() *Config {
 		MinerUEnabled:         true,
 		DocParserEndpoint:     "",
 		DocParserAPIKey:       "",
-		DocParserTimeout:      "120s",
+		DocParserTimeout:      "600s",
 		ManagePort:            "8085",
 		ServePort:            "8086",
 		ServeBaseURL:         "",

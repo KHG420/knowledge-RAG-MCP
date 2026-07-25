@@ -50,7 +50,7 @@ type DocParser interface {
 type HTTPDocParser struct {
 	endpoint string        // URL of the document parsing API
 	apiKey   string        // Bearer token or API key (optional)
-	timeout  time.Duration // HTTP client timeout (default 120s)
+	timeout  time.Duration // HTTP client timeout (default 600s)
 	client   *http.Client
 
 	// sendFile constructs and sends the HTTP request for a given file path.
@@ -80,7 +80,7 @@ func WithParserAPIKey(key string) HTTPDocParserOption {
 	return func(p *HTTPDocParser) { p.apiKey = key }
 }
 
-// WithParserTimeout sets the HTTP client timeout. Default is 120 seconds.
+// WithParserTimeout sets the HTTP client timeout. Default is 600 seconds.
 func WithParserTimeout(d time.Duration) HTTPDocParserOption {
 	return func(p *HTTPDocParser) { p.timeout = d }
 }
@@ -101,7 +101,7 @@ func WithParserLogger(l *logging.Logger) HTTPDocParserOption {
 // request construction and/or response parsing.
 func NewHTTPDocParser(opts ...HTTPDocParserOption) *HTTPDocParser {
 	p := &HTTPDocParser{
-		timeout:  120 * time.Second,
+		timeout:  600 * time.Second,
 		logger:   logging.NewNopLogger(),
 		endpoint: "",
 	}
@@ -109,7 +109,7 @@ func NewHTTPDocParser(opts ...HTTPDocParserOption) *HTTPDocParser {
 		opt(p)
 	}
 	if p.timeout <= 0 {
-		p.timeout = 120 * time.Second
+		p.timeout = 600 * time.Second
 	}
 	p.client = &http.Client{Timeout: p.timeout}
 
@@ -286,6 +286,20 @@ func SetDocParser(p DocParser) {
 // done, ensuring only one model occupies GPU memory at a time.
 func SetParserGPUScheduler(s *GPUScheduler) {
 	parserGPUScheduler = s
+}
+
+// DocParserInfo returns information about the configured document parser,
+// or nil if none is configured (local Tabula fallback is used).
+func DocParserInfo() map[string]any {
+	if docParser == nil {
+		return nil
+	}
+	if hp, ok := docParser.(*HTTPDocParser); ok {
+		return map[string]any{
+			"endpointURL": hp.endpoint,
+		}
+	}
+	return map[string]any{"type": "custom"}
 }
 
 // ---------------------------------------------------------------------------

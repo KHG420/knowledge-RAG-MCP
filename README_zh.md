@@ -64,7 +64,7 @@ knowledge-mcp setup
 | `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
 | `doc_parser_endpoint` | `DOC_PARSER_ENDPOINT` | — | 外部文档解析 HTTP API 地址。留空则跳过外部解析，直接用本地 tabula |
 | `doc_parser_api_key` | `DOC_PARSER_API_KEY` | — | 文档解析 API 的 Bearer token（可选） |
-| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `120s` | 文档解析 HTTP 请求超时 |
+| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `600s` | 文档解析 HTTP 请求超时 |
 | `manage_port` | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
 | `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE 服务器监听端口 |
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景） |
@@ -279,7 +279,7 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 |----------|---------|-------------|
 | `DOC_PARSER_ENDPOINT` | — | 外部文档解析 API 地址 |
 | `DOC_PARSER_API_KEY` | — | Bearer token（可选） |
-| `DOC_PARSER_TIMEOUT` | `120s` | HTTP 请求超时 |
+| `DOC_PARSER_TIMEOUT` | `600s` | HTTP 请求超时 |
 
 ## MCP 工具
 

@@ -15,11 +15,9 @@ import (
 //  3. Chunks are written as NNN.md under ~/knowledge_base/<slug>/chunks/.
 //  4. Metadata is written to meta.json.
 //  5. CHUNKS.toml search index is written with position metadata.
-//  6. INDEX.md is updated with a link to the new document.
-//
-// The original file is NOT copied into the knowledge base by this method; the
-// caller is responsible for preserving source.<ext> if desired. Returns the
-// generated slug and the metadata written.
+//  6. The original file is copied as source.<ext> for traceability.
+//  7. The full raw markdown text is saved as document.md.
+//  8. INDEX.md is updated with a link to the new document.
 func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,7 +111,13 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		_ = err
 	}
 
-	// Step 7: update INDEX.md.
+	// Step 7: write the full raw markdown text as document.md for reference.
+	if err := s.WriteRawText(slug, text); err != nil {
+		// Non-fatal: the document is already ingested.
+		_ = err
+	}
+
+	// Step 8: update INDEX.md.
 	if err := s.updateIndex(slug, meta); err != nil {
 		// Non-fatal: re-index can be rebuilt.
 		_ = err

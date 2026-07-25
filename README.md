@@ -64,7 +64,7 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | Delay after wake for model to load into GPU |
 | `doc_parser_endpoint` | `DOC_PARSER_ENDPOINT` | — | External document parsing HTTP API URL. Leave empty to skip external parsing and use local tabula directly |
 | `doc_parser_api_key` | `DOC_PARSER_API_KEY` | — | Bearer token for the document parsing API (optional) |
-| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `120s` | HTTP request timeout for document parsing |
+| `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `600s` | HTTP request timeout for document parsing |
 | `manage_port` | `MANAGE_PORT` | `8085` | Web management UI port |
 | `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy) |
@@ -282,7 +282,7 @@ When configured, all non-plain-text formats (PDF, DOCX, ODT, EPUB, HTML, XLSX, P
 |----------|---------|-------------|
 | `DOC_PARSER_ENDPOINT` | — | External document parsing API URL |
 | `DOC_PARSER_API_KEY` | — | Bearer token (optional) |
-| `DOC_PARSER_TIMEOUT` | `120s` | HTTP request timeout |
+| `DOC_PARSER_TIMEOUT` | `600s` | HTTP request timeout |
 
 ## MCP Tools
 

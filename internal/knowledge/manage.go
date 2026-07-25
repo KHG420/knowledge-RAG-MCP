@@ -110,6 +110,7 @@ func (s *Store) StartManageServer(port string) error {
 			"embedder":            s.EmbedderInfo(),
 			"reranker":            s.RerankerInfo(),
 			"rerankCandidateLimit": s.RerankCandidateLimit(),
+			"docParser":           DocParserInfo(),
 		})
 	})
 
@@ -171,6 +172,7 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 	// Parse query params
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	sourceType := strings.TrimSpace(r.URL.Query().Get("sourceType"))
+	tagFilter := strings.TrimSpace(r.URL.Query().Get("tag"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if offset < 0 {
 		offset = 0
@@ -192,12 +194,27 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 
 	// Build & filter
 	items := make([]manageDocItem, 0, len(docs))
+	totalChunks := 0
+	totalPapers := 0
+	typeSet := make(map[string]struct{})
 	for _, d := range docs {
 		if sourceType != "" && d.SourceType != sourceType {
 			continue
 		}
 		if search != "" && !strings.Contains(strings.ToLower(d.OriginalName), strings.ToLower(search)) {
 			continue
+		}
+		if tagFilter != "" {
+			hasTag := false
+			for _, t := range d.Tags {
+				if strings.EqualFold(t, tagFilter) {
+					hasTag = true
+					break
+				}
+			}
+			if !hasTag {
+				continue
+			}
 		}
 		items = append(items, manageDocItem{
 			Slug:       d.Slug,
@@ -211,9 +228,15 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 			IsPaper:    d.IsPaper,
 			Tags:       d.Tags,
 		})
+		totalChunks += d.ChunkCount
+		if d.IsPaper {
+			totalPapers++
+		}
+		typeSet[d.SourceType] = struct{}{}
 	}
 
 	total := len(items)
+	totalTypes := len(typeSet)
 
 	// Sort
 	sort.Slice(items, func(i, j int) bool {
@@ -245,10 +268,13 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 	page := items[offset:end]
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"documents": page,
-		"total":     total,
-		"offset":    offset,
-		"limit":     limit,
+		"documents":   page,
+		"total":       total,
+		"offset":      offset,
+		"limit":       limit,
+		"totalChunks": totalChunks,
+		"totalPapers": totalPapers,
+		"totalTypes":  totalTypes,
 	})
 	log.Debugf("List: kb=%q returned %d/%d docs", kb, len(page), total)
 }

@@ -6,28 +6,28 @@
 <title>Knowledge Base Manager</title>
 <style>
   :root {
-    --bg: #f4f5f7;
-    --card: #ffffff;
-    --border: #e2e5ea;
-    --text: #1a1d23;
-    --text-secondary: #6b7280;
-    --text-muted: #9ca3af;
-    --primary: #4f46e5;
-    --primary-light: #eef2ff;
-    --primary-hover: #4338ca;
-    --danger: #dc2626;
-    --danger-hover: #b91c1c;
-    --success: #16a34a;
-    --warning: #f59e0b;
-    --radius: 10px;
-    --radius-sm: 6px;
-    --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
-    --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+    --bg: #F7F7F8;
+    --card: #FFFFFF;
+    --border: #D1D5DB;
+    --text: #111827;
+    --text-secondary: #6B7280;
+    --text-muted: #9CA3AF;
+    --primary: #10B981;
+    --primary-light: #D1FAE5;
+    --primary-hover: #059669;
+    --danger: #DC2626;
+    --danger-hover: #B91C1C;
+    --success: #16A34A;
+    --warning: #F59E0B;
+    --radius: 0px;
+    --radius-sm: 0px;
+    --shadow: none;
+    --shadow-md: none;
     --transition: 0.2s ease;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+    font-family: "Helvetica Neue", Helvetica, Arial, "Noto Sans SC", sans-serif;
     background: var(--bg);
     color: var(--text);
     line-height: 1.5;
@@ -37,7 +37,7 @@
 
   /* Header */
   .header {
-    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    background: #10B981;
     color: #fff;
     padding: 32px 24px;
   }
@@ -51,21 +51,23 @@
   /* Stats cards */
   .stats-row {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px; margin-bottom: 24px;
+    gap: 0px; margin-bottom: 24px;
   }
   .stat-card {
     background: var(--card); border-radius: var(--radius); padding: 16px 18px;
-    box-shadow: var(--shadow); border: 1px solid var(--border);
+    box-shadow: var(--shadow); border-right: 1px solid var(--border);
   }
-  .stat-card .num { font-size: 28px; font-weight: 700; color: var(--primary); }
+  .stat-card:last-child { border-right: none; }
+  .stat-card .num { font-size: 40px; font-weight: 300; color: var(--primary); letter-spacing: -0.02em; line-height: 1; }
   .stat-card .label { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
   .stat-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 
   /* Model info cards */
   .model-card {
     background: var(--card); border-radius: var(--radius); padding: 14px 16px;
-    box-shadow: var(--shadow); border: 1px solid var(--border);
+    box-shadow: var(--shadow); border-right: 1px solid var(--border);
   }
+  .model-card:last-child { border-right: none; }
   .model-card .model-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .model-card .model-badge {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
@@ -81,7 +83,7 @@
   .model-card .model-detail { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
   .model-card .model-detail span {
     display: inline-block; background: var(--primary-light); color: var(--primary);
-    padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-top: 2px;
+    padding: 1px 6px; border-radius: 0px; font-size: 11px; margin-top: 2px;
   }
   .model-card .model-detail .url {
     background: none; color: var(--text-muted);
@@ -118,8 +120,8 @@
   .upload-progress.active { display: block; }
   .upload-item {
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 14px; background: var(--card); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); margin-bottom: 5px; font-size: 14px;
+    padding: 8px 14px; background: var(--card); border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-sm); margin-bottom: 0px; font-size: 14px;
     box-shadow: var(--shadow);
   }
   .upload-item .spinner {
@@ -133,17 +135,36 @@
   .upload-item .status { font-size: 12px; flex-shrink: 0; }
   .upload-item.done .status { color: var(--success); }
   .upload-item.fail .status { color: var(--danger); }
+
+  .upload-item.pending .spinner { border-color: var(--text-muted); animation: none; }
+  .upload-item.pending .status { color: var(--text-muted); }
+
+  .upload-queue-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 14px; background: var(--card); border-bottom: 2px solid var(--border);
+    border-radius: var(--radius-sm); margin-bottom: 0px; font-size: 13px;
+    color: var(--text-secondary); box-shadow: var(--shadow);
+  }
+  .upload-queue-header .queue-progress { font-weight: 500; }
+  .upload-queue-header .queue-clear {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 13px; padding: 2px 8px; border-radius: 0px;
+    transition: all var(--transition);
+  }
+  .upload-queue-header .queue-clear:hover { color: var(--danger); background: #FEF2F2; }
+
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Toolbar */
   .toolbar {
     display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
+    border-bottom: 1px solid var(--border); padding-bottom: 12px;
   }
   .toolbar input, .toolbar select {
     padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
     font-size: 14px; background: var(--card); outline: none; transition: border var(--transition);
   }
-  .toolbar input:focus, .toolbar select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
+  .toolbar input:focus, .toolbar select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(16,185,129,0.12); }
   .toolbar .search-box { flex: 1; min-width: 160px; }
   .toolbar .filter-select { min-width: 100px; }
   .toolbar .count-info { font-size: 13px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
@@ -173,17 +194,18 @@
   /* ===== CARD VIEW ===== */
   .card-grid {
     display: none; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 14px;
+    gap: 0px; border-top: 1px solid var(--border);
   }
   .card-grid.active { display: grid; }
   .doc-card {
-    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--card); border: none; border-radius: var(--radius);
     padding: 18px; box-shadow: var(--shadow); cursor: pointer;
     transition: all var(--transition); position: relative;
+    border-bottom: 1px solid var(--border);
   }
   .doc-card:hover {
-    box-shadow: var(--shadow-md); border-color: var(--primary);
-    transform: translateY(-2px);
+    border-left: 3px solid var(--primary);
+    transform: none;
   }
   .doc-card .card-top { display: flex; align-items: flex-start; gap: 12px; }
   .doc-card .type-icon { font-size: 28px; flex-shrink: 0; line-height: 1; }
@@ -199,8 +221,8 @@
   .doc-card .card-meta span { white-space: nowrap; }
   .doc-card .card-badges { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
   .doc-card .badge {
-    font-size: 11px; padding: 1px 7px; border-radius: 3px;
-    background: #e0e7ff; color: #3730a3;
+    font-size: 11px; padding: 1px 7px; border-radius: 0px;
+    background: #D1FAE5; color: #10B981;
   }
   .doc-card .badge-paper { background: #fef3c7; color: #92400e; }
   .doc-card .card-actions { margin-top: 10px; display: flex; gap: 6px; }
@@ -218,12 +240,12 @@
   .doc-card .btn-delete-card:hover { background: #fef2f2; border-color: var(--danger); }
 
   /* ===== TABLE VIEW ===== */
-  .table-wrap { display: none; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; box-shadow: var(--shadow); }
+  .table-wrap { display: none; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; box-shadow: none; }
   .table-wrap.active { display: block; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th {
     text-align: left; padding: 10px 14px; font-weight: 600; color: var(--text-secondary);
-    border-bottom: 2px solid var(--border); white-space: nowrap; cursor: pointer;
+    border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer;
     user-select: none; font-size: 13px;
   }
   th:hover { color: var(--primary); }
@@ -231,11 +253,11 @@
   th.sorted .sort-icon { opacity: 1; color: var(--primary); }
   td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: #f8f9ff; }
+  tr:hover td { background: #ECFDF5; }
   .doc-name-cell { font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .doc-type-badge { font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
-  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 3px;
-    background: #e0e7ff; color: #3730a3; cursor: pointer; transition: opacity var(--transition); }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 0px;
+    background: #D1FAE5; color: #10B981; cursor: pointer; transition: opacity var(--transition); }
   .tag:hover { opacity: 0.7; }
   .btn-delete {
     padding: 4px 10px; font-size: 12px; border: 1px solid var(--danger);
@@ -247,6 +269,7 @@
   /* Empty state */
   .empty-state {
     display: none; text-align: center; padding: 60px 24px 40px; color: var(--text-muted);
+    border-top: 1px solid var(--border);
   }
   .empty-state.active { display: block; }
   .empty-state .icon { font-size: 56px; margin-bottom: 12px; }
@@ -277,7 +300,7 @@
   .drawer {
     position: fixed; top: 0; right: -480px; width: 480px; max-width: 92vw;
     height: 100vh; background: var(--card); z-index: 210;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+    border-left: 1px solid var(--border);
     transition: right 0.3s ease; display: flex; flex-direction: column;
     overflow: hidden;
   }
@@ -358,7 +381,7 @@
   .kb-badge span { font-weight: 600; }
   .kb-badge .home-btn {
     margin-left: 10px; padding: 2px 8px; font-size: 13px;
-    border: 1px solid rgba(255,255,255,0.4); border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.4); border-radius: 0px;
     background: transparent; color: #fff; cursor: pointer;
     transition: background var(--transition);
   }
@@ -371,7 +394,7 @@
   }
   .kb-home.active { display: flex; }
   .kb-home-card {
-    background: var(--card); border-radius: 16px;
+    background: var(--card); border-radius: 0px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.08);
     max-width: 580px; width: 100%; padding: 40px 36px;
     text-align: center;
@@ -398,7 +421,7 @@
   .kb-home-card .kb-list-item:hover .kb-arrow { color: var(--primary); }
   .kb-home-card .kb-list-item .kb-del-btn {
     font-size: 15px; opacity: 0; cursor: pointer; transition: opacity var(--transition);
-    padding: 4px; border-radius: 4px; line-height: 1; margin-left: 4px;
+    padding: 4px; border-radius: 0px; line-height: 1; margin-left: 4px;
   }
   .kb-home-card .kb-list-item:hover .kb-del-btn { opacity: 0.5; }
   .kb-home-card .kb-list-item .kb-del-btn:hover { opacity: 1 !important; background: #fef2f2; }
@@ -426,6 +449,50 @@
     .kb-home-card .welcome-icon { font-size: 40px; }
     .kb-home-card h1 { font-size: 20px; }
   }
+
+  /* Dark mode */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1A1B1E;
+      --card: #25262B;
+      --border: #3D3F45;
+      --text: #E4E5E7;
+      --text-secondary: #A0A2A8;
+      --text-muted: #6C6F78;
+      --primary: #34D399;
+      --primary-light: #064E3B;
+      --primary-hover: #10B981;
+      --danger: #F87171;
+      --danger-hover: #EF4444;
+      --success: #4ADE80;
+      --warning: #FBBF24;
+      --radius: 0px;
+      --radius-sm: 0px;
+      --shadow: none;
+      --shadow-md: none;
+    }
+    .header { background: #047857; }
+    .doc-card .badge { background: #064E3B; color: #34D399; }
+    .doc-card .badge-paper { background: #3D2E0A; color: #FBBF24; }
+    tr:hover td { background: #2A2B30; }
+    .tag { background: #064E3B; color: #34D399; }
+    .search-active-bar { background: #064E3B; }
+    .kb-home-card .kb-list-item:hover { background: #064E3B; }
+    .upload-item .spinner { border-color: #3D3F45; border-top-color: #34D399; }
+    .loading-docs .spinner-lg { border-color: #3D3F45; border-top-color: #34D399; }
+    .toolbar input:focus, .toolbar select:focus { box-shadow: 0 0 0 3px rgba(52,211,153,0.2); }
+  }
+
+  /* Tag filter chip */
+  .tag-chip {
+    display: none; align-items: center; gap: 4px;
+    padding: 4px 10px; background: var(--primary-light); color: var(--primary);
+    border: 1px solid var(--primary); border-radius: 0px;
+    font-size: 12px; font-weight: 500; white-space: nowrap;
+    cursor: pointer; transition: all var(--transition);
+  }
+  .tag-chip:hover { background: var(--primary); color: #fff; }
+  .tag-chip .tag-chip-close { font-size: 14px; line-height: 1; margin-left: 2px; }
 </style>
 </head>
 <body>
@@ -482,6 +549,16 @@
           <span id="rerankerLimit"></span>
         </div>
       </div>
+      <div class="model-card" id="statDocParser">
+        <div class="model-header">
+          <span class="model-badge" id="docParserBadge"></span>
+          <span class="model-label">📝 文档解析</span>
+        </div>
+        <div class="model-name" id="docParserModel">—</div>
+        <div class="model-detail">
+          <span class="url" id="docParserUrl"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Upload zone -->
@@ -518,6 +595,10 @@
         <button id="viewTable" onclick="setView('table')">📋 表格</button>
       </div>
       <span class="count-info" id="resultCount"></span>
+      <span class="tag-chip" id="tagFilterChip" onclick="filterByTag(currentTag)" title="点击清除标签过滤">
+        🏷️ <span class="tag-chip-text" id="tagFilterLabel"></span>
+        <span class="tag-chip-close">✕</span>
+      </span>
     </div>
 
     <!-- Fulltext search active bar -->
@@ -620,34 +701,43 @@
 
 <script>
 // === State ===
-let currentKB = '';
-let allDocs = [];
-let currentSort = { by: 'addedAt', order: 'desc' };
-let currentPage = 0;
-const pageSize = 15;
-let pendingDelete = null;
-let currentView = 'card';
-let fulltextMode = false;
-let fulltextHits = [];
-let fulltextQuery = '';
-let currentTag = ''; // tag filter; empty means no tag filter
+var currentKB = '';
+var currentDocs = [];
+var totalDocs = 0;
+var totalChunks = 0;
+var totalPapers = 0;
+var totalTypes = 0;
+var currentSort = { by: 'addedAt', order: 'desc' };
+var currentPage = 0;
+var pageSize = 15;
+var pendingDelete = null;
+var currentView = 'card';
+var fulltextMode = false;
+var fulltextHits = [];
+var fulltextQuery = '';
+var currentTag = '';
+var isLoading = false;
 
 // === Init ===
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', async function() {
   setupDragDrop();
   await loadKBs();
-  // Show home page; user selects a KB to enter
-  renderKBHome();
+  var lastKB = localStorage.getItem('kb_lastKB');
+  if (lastKB && window._kbList && window._kbList.some(function(kb) { return kb.name === lastKB; })) {
+    enterKB(lastKB);
+  } else {
+    renderKBHome();
+  }
 });
 
 // === Knowledge Bases ===
 async function loadKBs() {
   try {
-    const data = await api('/api/knowledge-bases');
-    const kbs = data.knowledgeBases || [];
-    document.getElementById('kbSelect').innerHTML = kbs.map(kb =>
-      `<option value="${escHtml(kb.name)}">${escHtml(kb.name)}</option>`
-    ).join('');
+    var data = await api('/api/knowledge-bases');
+    var kbs = data.knowledgeBases || [];
+    document.getElementById('kbSelect').innerHTML = kbs.map(function(kb) {
+      return '<option value="' + escHtml(kb.name) + '">' + escHtml(kb.name) + '</option>';
+    }).join('');
     currentKB = '';
     window._kbList = kbs;
   } catch (e) {
@@ -658,6 +748,7 @@ async function loadKBs() {
 
 function enterKB(name) {
   currentKB = name;
+  localStorage.setItem('kb_lastKB', name);
   document.getElementById('currentKBLabel').textContent = name;
   document.getElementById('kbSelect').value = name;
   document.getElementById('kbHome').style.display = 'none';
@@ -672,6 +763,7 @@ function enterKB(name) {
 }
 
 function goHome() {
+  localStorage.removeItem('kb_lastKB');
   document.getElementById('header').style.display = 'none';
   document.getElementById('mainContent').style.display = 'none';
   document.getElementById('kbHome').style.display = 'flex';
@@ -700,19 +792,17 @@ function renderKBHome() {
 }
 
 function switchKB(name) {
-  if (name) {
-    enterKB(name);
-  }
+  if (name) { enterKB(name); }
 }
 
 async function createKB() {
-  const name = prompt('请输入新知识库名称：');
+  var name = prompt('请输入新知识库名称：');
   if (!name) return;
   try {
     await api('/api/knowledge-bases', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name: name })
     });
     showToast('知识库 "' + name + '" 创建成功', 'success');
     await loadKBs();
@@ -729,6 +819,7 @@ async function deleteKB(name) {
     showToast('知识库 "' + name + '" 已删除', 'success');
     if (currentKB === name) {
       currentKB = '';
+      localStorage.removeItem('kb_lastKB');
       document.getElementById('header').style.display = 'none';
       document.getElementById('mainContent').style.display = 'none';
       document.getElementById('kbHome').style.display = 'flex';
@@ -741,63 +832,76 @@ async function deleteKB(name) {
 }
 
 // === API ===
-async function api(path, opts = {}) {
-  let url = path;
+async function api(path, opts) {
+  if (!opts) opts = {};
+  var url = path;
   if (currentKB) {
-    const sep = path.includes('?') ? '&' : '?';
+    var sep = path.indexOf('?') >= 0 ? '&' : '?';
     url = path + sep + 'kb=' + encodeURIComponent(currentKB);
   }
-  const res = await fetch(url, opts);
-  const data = await res.json();
+  var res = await fetch(url, opts);
+  var data = await res.json();
   if (!res.ok) throw new Error(data.error || 'request failed');
   return data;
 }
 
-// Like api() but returns raw JSON regardless of HTTP status —
-// does NOT throw on !res.ok so the caller can inspect the response body
-// (used by uploadFiles to check per-file errors in the results array).
-async function apiRaw(path, opts = {}) {
-  let url = path;
+async function apiRaw(path, opts) {
+  if (!opts) opts = {};
+  var url = path;
   if (currentKB) {
-    const sep = path.includes('?') ? '&' : '?';
+    var sep = path.indexOf('?') >= 0 ? '&' : '?';
     url = path + sep + 'kb=' + encodeURIComponent(currentKB);
   }
-  const res = await fetch(url, opts);
-  const data = await res.json();
-  return data; // always return raw JSON, caller checks errors
+  var res = await fetch(url, opts);
+  return await res.json();
 }
 
-// === Load docs ===
+// === Load docs (server-side pagination + search + sort) ===
 async function loadDocs() {
+  if (isLoading) return;
+  isLoading = true;
   document.getElementById('loadingDocs').classList.add('active');
   try {
-    const data = await api('/api/documents?limit=500');
-    allDocs = data.documents || [];
+    var search = document.getElementById('searchInput').value.trim();
+    var type = document.getElementById('typeFilter').value;
+    var params = 'limit=' + pageSize + '&offset=' + (currentPage * pageSize) +
+      '&sortBy=' + encodeURIComponent(currentSort.by) +
+      '&sortOrder=' + encodeURIComponent(currentSort.order);
+    if (search) params += '&search=' + encodeURIComponent(search);
+    if (type) params += '&sourceType=' + encodeURIComponent(type);
+    if (currentTag) params += '&tag=' + encodeURIComponent(currentTag);
+
+    var data = await api('/api/documents?' + params);
+    currentDocs = data.documents || [];
+    totalDocs = data.total || 0;
+    totalChunks = data.totalChunks || 0;
+    totalPapers = data.totalPapers || 0;
+    totalTypes = data.totalTypes || 0;
     fulltextMode = false;
     fulltextHits = [];
     fulltextQuery = '';
     document.getElementById('searchBar').classList.remove('show');
-    currentPage = 0;
     render();
   } catch (e) {
     showToast('加载失败: ' + e.message, 'error');
   } finally {
     document.getElementById('loadingDocs').classList.remove('active');
+    isLoading = false;
   }
 }
 
 // === Fulltext search ===
 async function doFulltextSearch() {
-  const q = document.getElementById('fulltextInput').value.trim();
+  var q = document.getElementById('fulltextInput').value.trim();
   if (!q) return;
   try {
     document.getElementById('loadingDocs').classList.add('active');
-    const data = await api('/api/search?q=' + encodeURIComponent(q) + '&limit=30');
+    var data = await api('/api/search?q=' + encodeURIComponent(q) + '&limit=30');
     fulltextMode = true;
     fulltextHits = data.hits || [];
     fulltextQuery = q;
     document.getElementById('searchQueryLabel').textContent = q;
-    document.getElementById('searchResultCount').textContent = `（${data.count} 条结果）`;
+    document.getElementById('searchResultCount').textContent = '（' + data.count + ' 条结果）';
     document.getElementById('searchBar').classList.add('show');
     currentPage = 0;
     render();
@@ -815,10 +919,9 @@ function clearFulltextSearch() {
   fulltextQuery = '';
   document.getElementById('searchBar').classList.remove('show');
   currentPage = 0;
-  render();
+  loadDocs();
 }
 
-// === Filter & Sort ===
 function onFilterChange() {
   fulltextMode = false;
   fulltextHits = [];
@@ -826,31 +929,32 @@ function onFilterChange() {
   document.getElementById('searchBar').classList.remove('show');
   document.getElementById('fulltextInput').value = '';
   currentPage = 0;
-  render();
+  loadDocs();
 }
 
 function sortBy(field) {
-  const { by, order } = currentSort;
+  var by = currentSort.by;
+  var order = currentSort.order;
   if (by === field) {
     currentSort.order = order === 'desc' ? 'asc' : 'desc';
   } else {
     currentSort.by = field;
     currentSort.order = 'desc';
   }
-  document.querySelectorAll('#tableView th').forEach(el => el.classList.remove('sorted'));
-  document.querySelectorAll('#tableView th .sort-icon').forEach(el => { el.textContent = '▲'; });
-  const ths = document.querySelectorAll('#tableView th');
-  const idx = field === 'name' ? 0 : field === 'sourceType' ? 1 : field === 'chunkCount' ? 2 : 3;
+  var ths = document.querySelectorAll('#tableView th');
+  ths.forEach(function(el) { el.classList.remove('sorted'); });
+  var icons = document.querySelectorAll('#tableView th .sort-icon');
+  icons.forEach(function(el) { el.textContent = '▲'; });
+  var idx = field === 'name' ? 0 : field === 'sourceType' ? 1 : field === 'chunkCount' ? 2 : 3;
   if (ths[idx]) {
     ths[idx].classList.add('sorted');
-    const icon = ths[idx].querySelector('.sort-icon');
+    var icon = ths[idx].querySelector('.sort-icon');
     if (icon) icon.textContent = currentSort.order === 'desc' ? '▼' : '▲';
   }
   currentPage = 0;
-  render();
+  loadDocs();
 }
 
-// === View toggle ===
 function setView(v) {
   currentView = v;
   document.getElementById('viewCard').classList.toggle('active', v === 'card');
@@ -858,46 +962,32 @@ function setView(v) {
   render();
 }
 
-// === Render ===
 function render() {
-  let displayDocs, displayHits;
+  var items, isHits, total;
   if (fulltextMode) {
-    displayHits = fulltextHits;
-    displayDocs = [];
+    items = fulltextHits;
+    isHits = true;
+    total = items.length;
   } else {
-    const search = document.getElementById('searchInput').value.trim().toLowerCase();
-    const type = document.getElementById('typeFilter').value;
-    displayDocs = allDocs.filter(d => {
-      if (type && d.sourceType !== type) return false;
-      if (search && !d.name.toLowerCase().includes(search)) return false;
-      if (currentTag && !(d.tags||[]).includes(currentTag)) return false;
-      return true;
-    });
-    // Sort
-    const { by, order } = currentSort;
-    displayDocs.sort((a, b) => {
-      let cmp = 0;
-      switch (by) {
-        case 'name': cmp = (a.name||'').localeCompare(b.name||''); break;
-        case 'sourceType': cmp = (a.sourceType||'').localeCompare(b.sourceType||''); break;
-        case 'chunkCount': cmp = (a.chunkCount||0) - (b.chunkCount||0); break;
-        default: cmp = (a.addedAt||'').localeCompare(b.addedAt||''); break;
-      }
-      return order === 'desc' ? -cmp : cmp;
-    });
-    displayHits = [];
+    items = currentDocs;
+    isHits = false;
+    total = totalDocs;
+    document.getElementById('statTotal').textContent = totalDocs;
+    document.getElementById('statChunks').textContent = totalChunks;
+    document.getElementById('statPapers').textContent = totalPapers;
+    document.getElementById('statTypes').textContent = totalTypes;
   }
 
-  const total = fulltextMode ? displayHits.length : displayDocs.length;
-  const tagInfo = currentTag ? ` · 标签: ${currentTag} <a href="#" onclick="event.preventDefault();filterByTag('${escHtml(currentTag)}')" style="color:var(--danger);text-decoration:none;font-weight:600">✕</a>` : '';
+  updateTagIndicator();
+
+  var tagHtml = '';
+  if (currentTag) {
+    tagHtml = ' · 🏷️ ' + escHtml(currentTag) + ' <a href="#" onclick="event.preventDefault();filterByTag(\'' + escHtml(currentTag) + '\')" style="color:var(--danger);text-decoration:none;font-weight:600">✕</a>';
+  }
   document.getElementById('resultCount').innerHTML = fulltextMode
-    ? `🔍 搜索结果 ${total} 条`
-    : `共 ${total} 个文档${tagInfo}`;
+    ? '🔍 搜索结果 ' + total + ' 条'
+    : '共 ' + total + ' 个文档' + tagHtml;
 
-  // Stats
-  updateStats(displayDocs);
-
-  // Empty
   if (total === 0 && !fulltextMode) {
     document.getElementById('cardGrid').classList.remove('active');
     document.getElementById('cardGrid').innerHTML = '';
@@ -908,34 +998,27 @@ function render() {
   }
   document.getElementById('emptyState').classList.remove('active');
 
-  const start = currentPage * pageSize;
-  const pageTotal = total;
-  const totalPages = Math.ceil(pageTotal / pageSize);
-  const pageItems = fulltextMode
-    ? displayHits.slice(start, start + pageSize)
-    : displayDocs.slice(start, start + pageSize);
-
-  renderCards(pageItems, fulltextMode);
-  renderTable(pageItems, fulltextMode);
-  renderPagination(pageTotal, totalPages);
+  var totalPages = Math.ceil(total / pageSize);
+  renderCards(items, isHits);
+  renderTable(items, isHits);
+  renderPagination(total, totalPages);
 }
 
-function updateStats(docs) {
-  document.getElementById('statTotal').textContent = allDocs.length;
-  const totalChunks = allDocs.reduce((s, d) => s + (d.chunkCount || 0), 0);
-  document.getElementById('statChunks').textContent = totalChunks;
-  const papers = allDocs.filter(d => d.isPaper).length;
-  document.getElementById('statPapers').textContent = papers;
-  const types = new Set(allDocs.map(d => d.sourceType));
-  document.getElementById('statTypes').textContent = types.size;
+function updateTagIndicator() {
+  var el = document.getElementById('tagFilterChip');
+  if (currentTag) {
+    el.style.display = 'inline-flex';
+    document.getElementById('tagFilterLabel').textContent = currentTag;
+  } else {
+    el.style.display = 'none';
+  }
 }
 
-// === Model info ===
 async function loadModelInfo() {
   try {
-    const data = await api('/api/models');
-    const emb = data.embedder;
-    const rer = data.reranker;
+    var data = await api('/api/models');
+    var emb = data.embedder;
+    var rer = data.reranker;
 
     if (emb) {
       document.getElementById('embedderBadge').className = 'model-badge';
@@ -954,148 +1037,176 @@ async function loadModelInfo() {
       document.getElementById('rerankerModel').textContent = rer.model || '未知';
       document.getElementById('rerankerUrl').textContent = rer.endpointURL || '';
       document.getElementById('rerankerLimit').textContent = data.rerankCandidateLimit > 0
-        ? '候选上限 ' + data.rerankCandidateLimit
-        : '';
+        ? '候选上限 ' + data.rerankCandidateLimit : '';
     } else {
       document.getElementById('rerankerBadge').className = 'model-badge off';
       document.getElementById('rerankerModel').textContent = '未启用';
       document.getElementById('rerankerUrl').textContent = '';
       document.getElementById('rerankerLimit').textContent = '跳过重排序';
     }
+
+    if (data.docParser) {
+      document.getElementById('docParserBadge').className = 'model-badge';
+      document.getElementById('docParserUrl').textContent = data.docParser.endpointURL || '';
+      if (data.docParser.endpointURL) {
+        try {
+          var u = new URL(data.docParser.endpointURL);
+          document.getElementById('docParserModel').textContent = u.hostname;
+        } catch (e) {
+          document.getElementById('docParserModel').textContent = data.docParser.endpointURL;
+        }
+      } else {
+        document.getElementById('docParserModel').textContent = '自定义';
+      }
+    } else {
+      document.getElementById('docParserBadge').className = 'model-badge';
+      document.getElementById('docParserModel').textContent = '本地 Tabula';
+      document.getElementById('docParserUrl').textContent = '本地解析 PDF · DOCX · EPUB · HTML · XLSX · PPTX';
+    }
   } catch (e) {
     // silently ignore; model info is non-critical
   }
 }
 
-// === Cards ===
 function renderCards(items, isHits) {
-  const grid = document.getElementById('cardGrid');
+  var grid = document.getElementById('cardGrid');
   if (currentView !== 'card') { grid.classList.remove('active'); return; }
   grid.classList.add('active');
   document.getElementById('tableView').classList.remove('active');
 
   if (isHits) {
-    grid.innerHTML = items.map(h => {
-      const score = (h.score || 0).toFixed(3);
-      return `<div class="doc-card" onclick="showHitDetail('${escHtml(h.docSlug)}')">
-        <div class="card-top">
-          <div class="type-icon">📄</div>
-          <div class="card-info">
-            <div class="card-title">${escHtml(h.docSlug)}</div>
-            <div class="card-meta">
-              <span>⭐ ${score}</span>
-              <span>${h.section || ''}</span>
-            </div>
-          </div>
-        </div>
-        <div style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${escHtml(h.snippet||'')}</div>
-      </div>`;
+    grid.innerHTML = items.map(function(h) {
+      var score = (h.score || 0).toFixed(3);
+      return '<div class="doc-card" onclick="showHitDetail(\'' + escHtml(h.docSlug) + '\')">' +
+        '<div class="card-top">' +
+        '<div class="type-icon">📄</div>' +
+        '<div class="card-info">' +
+        '<div class="card-title">' + escHtml(h.docSlug) + '</div>' +
+        '<div class="card-meta">' +
+        '<span>⭐ ' + score + '</span>' +
+        '<span>' + (h.section || '') + '</span>' +
+        '</div></div></div>' +
+        '<div style="font-size:13px;color:var(--text-secondary);margin-top:8px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">' + escHtml(h.snippet||'') + '</div>' +
+        '</div>';
     }).join('');
     return;
   }
 
-  grid.innerHTML = items.map(d => {
-    const icon = typeIcon(d.sourceType);
-    const paperTag = d.isPaper ? '<span class="badge badge-paper">📄 论文</span>' : '';
-    const tags = (d.tags||[]).map(t => `<span class="badge" onclick="event.stopPropagation();filterByTag('${escHtml(t)}')" style="cursor:pointer">${escHtml(t)}</span>`).join('');
-    const sizeStr = formatSize(d.totalChars);
-    return `<div class="doc-card">
-      <div class="card-top">
-        <div class="type-icon">${icon}</div>
-        <div class="card-info">
-          <div class="card-title" title="${escHtml(d.name)}">${escHtml(d.name)}</div>
-          <div class="card-meta">
-            <span>📦 ${d.chunkCount} 分块</span>
-            <span>📏 ${sizeStr}</span>
-            <span>🕐 ${formatTime(d.addedAt)}</span>
-          </div>
-        </div>
-      </div>
-      <div class="card-badges">${paperTag}${tags}</div>
-      <div class="card-actions">
-        <button class="btn-detail" onclick="event.stopPropagation();showDetail('${escHtml(d.slug)}')">📖 查看详情</button>
-        <button class="btn-delete-card" onclick="event.stopPropagation();confirmDelete('${escHtml(d.slug)}','${escHtml(d.name)}')">🗑️</button>
-      </div>
-    </div>`;
+  grid.innerHTML = items.map(function(d) {
+    var icon = typeIcon(d.sourceType);
+    var paperTag = d.isPaper ? '<span class="badge badge-paper">📄 论文</span>' : '';
+    var tags = (d.tags||[]).map(function(t) {
+      return '<span class="badge" onclick="event.stopPropagation();filterByTag(\'' + escHtml(t) + '\')" style="cursor:pointer">' + escHtml(t) + '</span>';
+    }).join('');
+    var sizeStr = formatSize(d.totalChars);
+    return '<div class="doc-card" onclick="showDetail(\'' + escHtml(d.slug) + '\')">' +
+      '<div class="card-top">' +
+      '<div class="type-icon">' + icon + '</div>' +
+      '<div class="card-info">' +
+      '<div class="card-title" title="' + escHtml(d.name) + '">' + escHtml(d.name) + '</div>' +
+      '<div class="card-meta">' +
+      '<span>📦 ' + d.chunkCount + ' 分块</span>' +
+      '<span>📏 ' + sizeStr + '</span>' +
+      '<span>🕐 ' + formatTime(d.addedAt) + '</span>' +
+      '</div></div></div>' +
+      '<div class="card-badges">' + paperTag + tags + '</div>' +
+      '<div class="card-actions">' +
+      '<button class="btn-detail" onclick="event.stopPropagation();showDetail(\'' + escHtml(d.slug) + '\')">📖 查看详情</button>' +
+      '<button class="btn-delete-card" onclick="event.stopPropagation();confirmDelete(\'' + escHtml(d.slug) + '\',\'' + escHtml(d.name) + '\')">🗑️</button>' +
+      '</div></div>';
   }).join('');
 }
 
-// === Table ===
 function renderTable(items, isHits) {
-  const tbody = document.getElementById('tableBody');
+  var tbody = document.getElementById('tableBody');
   if (currentView !== 'table') { document.getElementById('tableView').classList.remove('active'); return; }
   document.getElementById('tableView').classList.add('active');
   document.getElementById('cardGrid').classList.remove('active');
 
   if (isHits) {
-    tbody.innerHTML = items.map(h => `<tr>
-      <td><div class="doc-name-cell" onclick="showHitDetail('${escHtml(h.docSlug)}')" style="cursor:pointer;color:var(--primary)">${escHtml(h.docSlug)}</div></td>
-      <td><span class="doc-type-badge">🔍</span></td>
-      <td style="text-align:right;font-size:13px;color:var(--text-secondary)">${(h.score||0).toFixed(3)}</td>
-      <td><span style="font-size:12px;color:var(--text-muted)">${h.section||''}</span></td>
-      <td><button class="btn-delete" onclick="event.stopPropagation();showHitDetail('${escHtml(h.docSlug)}')">📖 查看</button></td>
-    </tr>`).join('');
+    tbody.innerHTML = items.map(function(h) {
+      return '<tr>' +
+        '<td><div class="doc-name-cell" onclick="showHitDetail(\'' + escHtml(h.docSlug) + '\')" style="cursor:pointer;color:var(--primary)">' + escHtml(h.docSlug) + '</div></td>' +
+        '<td><span class="doc-type-badge">🔍</span></td>' +
+        '<td style="text-align:right;font-size:13px;color:var(--text-secondary)">' + (h.score||0).toFixed(3) + '</td>' +
+        '<td><span style="font-size:12px;color:var(--text-muted)">' + (h.section||'') + '</span></td>' +
+        '<td><button class="btn-delete" onclick="event.stopPropagation();showHitDetail(\'' + escHtml(h.docSlug) + '\')">📖 查看</button></td>' +
+        '</tr>';
+    }).join('');
     return;
   }
 
-  tbody.innerHTML = items.map(d => {
-    const tags = (d.tags||[]).map(t => `<span class="tag" onclick="filterByTag('${escHtml(t)}')">${escHtml(t)}</span>`).join(' ');
-    return `<tr>
-      <td><div class="doc-name-cell" title="${escHtml(d.name)}">${escHtml(d.name)}</div></td>
-      <td><span class="doc-type-badge">${escHtml(d.sourceType||'')}</span></td>
-      <td style="text-align:right">${d.chunkCount}</td>
-      <td><span style="font-size:13px;color:var(--text-muted)">${formatTime(d.addedAt)}</span></td>
-      <td>
-        <button class="btn-delete" style="border-color:var(--primary);color:var(--primary);margin-right:4px" onclick="showDetail('${escHtml(d.slug)}')">📖</button>
-        <button class="btn-delete" onclick="confirmDelete('${escHtml(d.slug)}','${escHtml(d.name)}')">🗑️</button>
-      </td>
-    </tr>`;
+  tbody.innerHTML = items.map(function(d) {
+    var tags = (d.tags||[]).map(function(t) {
+      return '<span class="tag" onclick="filterByTag(\'' + escHtml(t) + '\')">' + escHtml(t) + '</span>';
+    }).join(' ');
+    return '<tr>' +
+      '<td><div class="doc-name-cell" title="' + escHtml(d.name) + '">' + escHtml(d.name) + '</div></td>' +
+      '<td><span class="doc-type-badge">' + escHtml(d.sourceType||'') + '</span></td>' +
+      '<td style="text-align:right">' + d.chunkCount + '</td>' +
+      '<td><span style="font-size:13px;color:var(--text-muted)">' + formatTime(d.addedAt) + '</span></td>' +
+      '<td>' +
+      '<button class="btn-delete" style="border-color:var(--primary);color:var(--primary);margin-right:4px" onclick="showDetail(\'' + escHtml(d.slug) + '\')">📖</button>' +
+      '<button class="btn-delete" onclick="confirmDelete(\'' + escHtml(d.slug) + '\',\'' + escHtml(d.name) + '\')">🗑️</button>' +
+      '</td></tr>';
   }).join('');
 }
 
-// === Pagination ===
 function renderPagination(total, totalPages) {
-  const el = document.getElementById('pagination');
+  var el = document.getElementById('pagination');
   if (totalPages <= 1) { el.classList.remove('active'); return; }
   el.classList.add('active');
 
-  let html = '';
-  html += `<button onclick="goPage(0)" ${currentPage===0?'disabled':''}>«</button>`;
-  html += `<button onclick="goPage(${currentPage-1})" ${currentPage===0?'disabled':''}>‹</button>`;
-  const startPage = Math.max(0, currentPage - 2);
-  const endPage = Math.min(totalPages - 1, currentPage + 2);
-  if (startPage > 0) { html += `<button onclick="goPage(0)">1</button>`; if (startPage>1) html += `<span class="info">…</span>`; }
-  for (let i = startPage; i <= endPage; i++) {
-    html += `<button class="${i===currentPage?'active':''}" onclick="goPage(${i})">${i+1}</button>`;
+  var html = '';
+  html += '<button onclick="goPage(0)" ' + (currentPage===0?'disabled':'') + '>«</button>';
+  html += '<button onclick="goPage(' + (currentPage-1) + ')" ' + (currentPage===0?'disabled':'') + '>‹</button>';
+  var startPage = Math.max(0, currentPage - 2);
+  var endPage = Math.min(totalPages - 1, currentPage + 2);
+  if (startPage > 0) {
+    html += '<button onclick="goPage(0)">1</button>';
+    if (startPage > 1) html += '<span class="info">…</span>';
   }
-  if (endPage < totalPages - 1) { if (endPage < totalPages-2) html += `<span class="info">…</span>`; html += `<button onclick="goPage(${totalPages-1})">${totalPages}</button>`; }
-  html += `<button onclick="goPage(${currentPage+1})" ${currentPage>=totalPages-1?'disabled':''}>›</button>`;
-  html += `<button onclick="goPage(${totalPages-1})" ${currentPage>=totalPages-1?'disabled':''}>»</button>`;
-  html += `<span class="info">${total} 条</span>`;
+  for (var i = startPage; i <= endPage; i++) {
+    html += '<button class="' + (i===currentPage?'active':'') + '" onclick="goPage(' + i + ')">' + (i+1) + '</button>';
+  }
+  if (endPage < totalPages - 1) {
+    if (endPage < totalPages-2) html += '<span class="info">…</span>';
+    html += '<button onclick="goPage(' + (totalPages-1) + ')">' + totalPages + '</button>';
+  }
+  html += '<button onclick="goPage(' + (currentPage+1) + ')" ' + (currentPage>=totalPages-1?'disabled':'') + '>›</button>';
+  html += '<button onclick="goPage(' + (totalPages-1) + ')" ' + (currentPage>=totalPages-1?'disabled':'') + '>»</button>';
+  html += '<span class="info">' + total + ' 条</span>';
   el.innerHTML = html;
 }
 
-function goPage(n) { currentPage = n; render(); }
+function goPage(n) { currentPage = n; loadDocs(); }
 
-// === Detail drawer ===
 async function showDetail(slug) {
-  document.getElementById('drawerBody').innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><div class="spinner-lg" style="width:28px;height:28px;border-width:3px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.7s linear infinite;margin:0 auto 10px"></div>加载中…</div>';
+  document.getElementById('ddFileName').textContent = '加载中…';
+  document.getElementById('ddType').textContent = '';
+  document.getElementById('ddPaperGroup').style.display = 'none';
+  document.getElementById('ddSize').textContent = '';
+  document.getElementById('ddTime').textContent = '';
+  document.getElementById('ddTagsGroup').style.display = 'none';
   document.getElementById('drawerTitle').textContent = '文档详情';
   openDrawer();
   try {
-    const data = await api('/api/documents/' + encodeURIComponent(slug));
+    var data = await api('/api/documents/' + encodeURIComponent(slug));
     renderDrawer(data);
   } catch (e) {
-    document.getElementById('drawerBody').innerHTML = `<div style="padding:20px;color:var(--danger)">加载失败: ${escHtml(e.message)}</div>`;
+    document.getElementById('ddFileName').textContent = '加载失败: ' + escHtml(e.message);
+    document.getElementById('ddType').textContent = '';
+    document.getElementById('ddPaperGroup').style.display = 'none';
+    document.getElementById('ddSize').textContent = '';
+    document.getElementById('ddTime').textContent = '';
+    document.getElementById('ddTagsGroup').style.display = 'none';
   }
 }
 
-function showHitDetail(slug) {
-  showDetail(slug);
-}
+function showHitDetail(slug) { showDetail(slug); }
 
 function renderDrawer(data) {
-  const meta = data.meta || {};
+  var meta = data.meta || {};
   document.getElementById('drawerTitle').textContent = meta.original_name || '文档详情';
   document.getElementById('ddFileName').textContent = meta.original_name || '-';
   document.getElementById('ddType').textContent = (meta.source_type || '') + (meta.is_paper ? ' 📄 论文' : '');
@@ -1108,17 +1219,14 @@ function renderDrawer(data) {
   } else {
     document.getElementById('ddPaperGroup').style.display = 'none';
   }
-
-  document.getElementById('ddSize').textContent = `${meta.chunk_count || 0} 分块 · ${formatSize(meta.total_chars || 0)}`;
+  document.getElementById('ddSize').textContent = (meta.chunk_count || 0) + ' 分块 · ' + formatSize(meta.total_chars || 0);
   document.getElementById('ddTime').textContent = formatTime(meta.added_at || '');
-
   if (meta.tags && meta.tags.length) {
     document.getElementById('ddTagsGroup').style.display = 'block';
     document.getElementById('ddTags').textContent = meta.tags.join(', ');
   } else {
     document.getElementById('ddTagsGroup').style.display = 'none';
   }
-
 }
 
 function openDrawer() {
@@ -1133,12 +1241,11 @@ function closeDrawer() {
   document.body.style.overflow = '';
 }
 
-// === Upload ===
 function setupDragDrop() {
-  const dz = document.getElementById('dropzone');
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-  dz.addEventListener('drop', e => {
+  var dz = document.getElementById('dropzone');
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
     e.preventDefault(); dz.classList.remove('dragover');
     if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
   });
@@ -1150,43 +1257,66 @@ function onFilesSelected(files) {
 }
 
 async function uploadFiles(fileList) {
-  const files = Array.from(fileList);
-  const progressEl = document.getElementById('uploadProgress');
+  var files = Array.from(fileList);
+  var progressEl = document.getElementById('uploadProgress');
   progressEl.innerHTML = '';
   progressEl.classList.add('active');
 
-  for (const file of files) {
-    const item = document.createElement('div');
-    item.className = 'upload-item';
-    item.innerHTML = `<div class="spinner"></div><span class="name">${escHtml(file.name)}</span><span class="status">上传中…</span>`;
+  var total = files.length;
+  var doneCount = 0;
+  var header = document.createElement('div');
+  header.className = 'upload-queue-header';
+  header.innerHTML = '<span class="queue-progress">上传队列: 0/' + total + '</span>';
+  var clearBtn = document.createElement('button');
+  clearBtn.className = 'queue-clear';
+  clearBtn.textContent = '清除';
+  clearBtn.addEventListener('click', function() {
+    progressEl.innerHTML = '';
+    progressEl.classList.remove('active');
+  });
+  header.appendChild(clearBtn);
+  progressEl.appendChild(header);
+
+  var items = files.map(function(file) {
+    var item = document.createElement('div');
+    item.className = 'upload-item pending';
+    item.innerHTML = '<div class="spinner"></div><span class="name">' + escHtml(file.name) + '</span><span class="status">等待中</span>';
     progressEl.appendChild(item);
+    return { item: item, file: file };
+  });
+
+  for (var idx = 0; idx < items.length; idx++) {
+    var entry = items[idx];
+    entry.item.className = 'upload-item';
+    entry.item.querySelector('.status').textContent = '上传中…';
 
     try {
-      const formData = new FormData();
-      formData.append('files', file);
-      const resp = await apiRaw('/api/upload', { method: 'POST', body: formData });
-      // Check individual result error (backend may return 200 with per-file errors)
-      const results = (resp.results || []);
-      const fileResult = results.find(r => r.name === file.name);
+      var formData = new FormData();
+      formData.append('files', entry.file);
+      var resp = await apiRaw('/api/upload', { method: 'POST', body: formData });
+      var results = (resp.results || []);
+      var fileResult = null;
+      for (var ri = 0; ri < results.length; ri++) {
+        if (results[ri].name === entry.file.name) { fileResult = results[ri]; break; }
+      }
       if (fileResult && fileResult.error) {
         throw new Error(fileResult.error);
       }
-      item.className = 'upload-item done';
-      item.querySelector('.status').textContent = '✅ 完成';
+      entry.item.className = 'upload-item done';
+      entry.item.querySelector('.status').textContent = '✅ 完成';
     } catch (e) {
-      item.className = 'upload-item fail';
-      item.querySelector('.status').textContent = `❌ ${e.message}`;
+      entry.item.className = 'upload-item fail';
+      entry.item.querySelector('.status').textContent = '❌ ' + e.message;
     }
+    doneCount++;
+    header.querySelector('.queue-progress').textContent = '上传队列: ' + doneCount + '/' + total;
   }
-
-  setTimeout(() => { progressEl.classList.remove('active'); }, 3000);
   loadDocs();
 }
 
-// === Delete ===
 function confirmDelete(slug, name) {
   pendingDelete = slug;
-  document.getElementById('confirmText').textContent = `确定要删除 "${name}" 吗？此操作不可撤销。`;
+  document.getElementById('confirmText').textContent = '确定要删除 "' + name + '" 吗？此操作不可撤销。';
   document.getElementById('confirmOverlay').classList.add('show');
 }
 
@@ -1197,7 +1327,7 @@ function closeConfirm() {
 
 async function doDelete() {
   if (!pendingDelete) return;
-  const btn = document.getElementById('confirmBtn');
+  var btn = document.getElementById('confirmBtn');
   btn.disabled = true; btn.textContent = '删除中…';
   try {
     await api('/api/documents/' + encodeURIComponent(pendingDelete), { method: 'DELETE' });
@@ -1213,9 +1343,8 @@ async function doDelete() {
   }
 }
 
-// === Tag filter ===
 function filterByTag(tag) {
-  currentTag = currentTag === tag ? '' : tag; // toggle: clicking the same tag clears the filter
+  currentTag = currentTag === tag ? '' : tag;
   document.getElementById('searchInput').value = '';
   document.getElementById('typeFilter').value = '';
   fulltextMode = false;
@@ -1223,34 +1352,30 @@ function filterByTag(tag) {
   fulltextQuery = '';
   document.getElementById('searchBar').classList.remove('show');
   currentPage = 0;
-  render();
+  loadDocs();
   if (currentTag) {
     showToast('标签过滤: ' + currentTag, 'success');
   }
 }
 
-// === Toast ===
 function showToast(msg, type) {
-  const el = document.getElementById('toast');
+  var el = document.getElementById('toast');
   el.textContent = msg;
   el.className = 'toast ' + type + ' show';
   clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.remove('show'), 3000);
+  el._timer = setTimeout(function() { el.classList.remove('show'); }, 3000);
 }
 
-// === Utils ===
 function escHtml(s) {
   if (!s) return '';
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function formatTime(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  const pad = n => String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  var d = new Date(iso);
+  var pad = function(n) { return String(n).padStart(2,'0'); };
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 function formatSize(chars) {
@@ -1259,7 +1384,7 @@ function formatSize(chars) {
 }
 
 function typeIcon(type) {
-  const map = { pdf:'📄', docx:'📝', md:'📝', txt:'📄', epub:'📖', html:'🌐', xlsx:'📊', pptx:'📽️' };
+  var map = { pdf:'📄', docx:'📝', md:'📝', txt:'📄', epub:'📖', html:'🌐', xlsx:'📊', pptx:'📽️' };
   return map[type] || '📄';
 }
 </script>

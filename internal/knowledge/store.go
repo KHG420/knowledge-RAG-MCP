@@ -375,6 +375,20 @@ func (s *Store) AppendChunks(slug string, chunks []string) error {
 	return nil
 }
 
+// WriteRawText writes the full raw markdown text of a document as document.md,
+// preserving the original parsed content from external API (e.g. pdf_to_md) for
+// manual inspection or re-processing.
+func (s *Store) WriteRawText(slug string, text string) error {
+	dest := filepath.Join(s.DocDir(slug), "document.md")
+	if err := os.MkdirAll(s.DocDir(slug), 0o755); err != nil {
+		return fmt.Errorf("ensure doc dir: %w", err)
+	}
+	if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
+		return fmt.Errorf("write document.md: %w", err)
+	}
+	return nil
+}
+
 // AppendChunksIndex reads the existing CHUNKS.toml for a document, appends new
 // index entries, and writes the result back. It creates a new index when none
 // exists.

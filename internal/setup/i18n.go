@@ -187,7 +187,7 @@ var zhStrs = langStr{
 	DocParserEnable: "是否配置文档解析 API",
 	DocParserURL:    "文档解析 API 地址",
 	DocParserAPIKey: "API Key（可选，回车跳过）",
-	DocParserTimeout: "请求超时时间（如 30s, 120s）",
+	DocParserTimeout: "请求超时时间（如 30s, 600s）",
 
 	// --- GPU Scheduler ---
 	GPUSchedTitle:    "\n--- GPU 调度器 ---",
@@ -298,7 +298,7 @@ var enStrs = langStr{
 	DocParserEnable: "Configure document parser API?",
 	DocParserURL:    "Document parser API endpoint",
 	DocParserAPIKey: "API Key (optional, press Enter to skip)",
-	DocParserTimeout: "Request timeout (e.g. 30s, 120s)",
+	DocParserTimeout: "Request timeout (e.g. 30s, 600s)",
 
 	// --- GPU Scheduler ---
 	GPUSchedTitle:    "\n--- GPU Scheduler ---",
