@@ -345,41 +345,47 @@ func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 
 	log.Debugf("Upload: %d files kb=%q", len(files), s.kbName)
 
-	type uploadResult struct {
+	// NDJSON streaming: write each result as a JSON line as soon as the
+	// file is processed, so the frontend can update the UI incrementally.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeManageError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	type uploadLine struct {
 		Name  string `json:"name"`
 		Slug  string `json:"slug,omitempty"`
 		Error string `json:"error,omitempty"`
+		Done  bool   `json:"done,omitempty"`
 	}
-	results := make([]uploadResult, 0, len(files))
+
+	successCount := 0
 	for _, fh := range files {
 		file, err := fh.Open()
 		if err != nil {
-			results = append(results, uploadResult{Name: fh.Filename, Error: err.Error()})
+			writeNDJSONLine(w, flusher, uploadLine{Name: fh.Filename, Error: err.Error()})
 			continue
 		}
 		meta, err := saveManageFile(s, file, fh.Filename)
 		file.Close()
 		if err != nil {
-			results = append(results, uploadResult{Name: fh.Filename, Error: err.Error()})
+			writeNDJSONLine(w, flusher, uploadLine{Name: fh.Filename, Error: err.Error()})
 		} else {
-			results = append(results, uploadResult{Name: fh.Filename, Slug: meta.Slug})
+			successCount++
+			writeNDJSONLine(w, flusher, uploadLine{Name: fh.Filename, Slug: meta.Slug})
 		}
 	}
 
-	successCount := 0
-	for _, r := range results {
-		if r.Error == "" {
-			successCount++
-		}
-	}
-	log.Infof("Upload: %d files, %d succeeded, %d failed kb=%q", len(files), successCount, len(files)-successCount, s.kbName)
-	if successCount == 0 {
-		writeManageError(w, http.StatusInternalServerError, "all files failed to upload")
-		return
-	}
-	writeManageJSON(w, http.StatusOK, map[string]any{
-		"message": "upload complete",
-		"results": results,
+	log.Infof("Upload: %d files, %d succeeded kb=%q", len(files), successCount, s.kbName)
+
+	// Terminal line signals end of stream.
+	writeNDJSONLine(w, flusher, uploadLine{
+		Done: true,
+		Name: fmt.Sprintf("%d/%d 成功", successCount, len(files)),
 	})
 }
 
@@ -851,6 +857,19 @@ func writeManageJSON(w http.ResponseWriter, status int, v any) {
 
 func writeManageError(w http.ResponseWriter, status int, msg string) {
 	writeManageJSON(w, status, manageAPIError{Error: msg})
+}
+
+// writeNDJSONLine marshals v as JSON, appends a newline, writes to w, and
+// flushes. Used for NDJSON streaming responses where each line is a
+// self-contained event.
+func writeNDJSONLine(w http.ResponseWriter, flusher http.Flusher, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	// Ignore write errors: the connection may have been closed by the client.
+	_, _ = fmt.Fprintf(w, "%s\n", data)
+	flusher.Flush()
 }
 
 // Compile-time check that *multipart.FileHeader has the expected shape.

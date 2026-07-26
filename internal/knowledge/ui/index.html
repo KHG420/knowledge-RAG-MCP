@@ -1383,86 +1383,98 @@ async function uploadFiles(fileList) {
   progressEl.classList.add('active');
 
   var total = files.length;
-  var doneCount = 0;
   var header = document.createElement('div');
   header.className = 'upload-queue-header';
-  header.innerHTML = '<span class="queue-progress">上传队列: 0/' + total + '</span>';
+  header.innerHTML = '<span class="queue-progress">上传中: ' + total + ' 个文件</span>';
   var clearBtn = document.createElement('button');
   clearBtn.className = 'queue-clear';
   clearBtn.textContent = '清除';
   clearBtn.addEventListener('click', function() {
-    // Close all active EventSource connections
-    for (var tid in activeEventSources) {
-      activeEventSources[tid].close();
-    }
-    activeEventSources = {};
     progressEl.innerHTML = '';
     progressEl.classList.remove('active');
-    clearQueue();
   });
   header.appendChild(clearBtn);
   progressEl.appendChild(header);
 
-  // Upload all files in a single request, get task IDs back
+  // Showing a spinner + counter while the request is in-flight.
+  // As NDJSON lines arrive, each completed file replaces the spinner with a result row.
+  var counterEl = document.createElement('span');
+  counterEl.id = 'uploadCounter';
+  counterEl.textContent = '0/' + total;
+  header.querySelector('.queue-progress').appendChild(document.createTextNode(' '));
+  header.querySelector('.queue-progress').appendChild(counterEl);
+
   var formData = new FormData();
   files.forEach(function(f) { formData.append('files', f); });
 
-  var url = '/api/upload?stream=true';
-  if (currentKB) url += '&kb=' + encodeURIComponent(currentKB);
+  var url = '/api/upload';
+  if (currentKB) url += '?kb=' + encodeURIComponent(currentKB);
 
-  var resp, tasksData;
-  try {
-    resp = await fetch(url, { method: 'POST', body: formData });
-    tasksData = await resp.json();
-    if (!resp.ok) throw new Error(tasksData.error || 'upload failed');
-  } catch (e) {
-    showToast('上传提交失败: ' + e.message, 'error');
+  var abortController = new AbortController();
+  window._abortUpload = abortController;
+  clearBtn.addEventListener('click', function() {
+    abortController.abort();
     progressEl.innerHTML = '';
     progressEl.classList.remove('active');
-    return;
+    delete window._abortUpload;
+  });
+
+  try {
+    var resp = await fetch(url, { method: 'POST', body: formData, signal: abortController.signal });
+    if (!resp.ok) {
+      var errText = await resp.text();
+      var errMsg = '上传失败 (HTTP ' + resp.status + ')';
+      try { var j = JSON.parse(errText); errMsg = j.error || errMsg; } catch (_) {}
+      throw new Error(errMsg);
+    }
+
+    // NDJSON streaming: read the body with a ReadableStream reader.
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+    var doneCount = 0;
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+
+      buffer += decoder.decode(chunk.value, { stream: true });
+      var lines = buffer.split('\n');
+      buffer = lines.pop(); // incomplete last line goes back to buffer
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+        try {
+          var item = JSON.parse(line);
+        } catch (ex) { continue; }
+
+        if (item.done) {
+          // Terminal line: update header to summary.
+          header.querySelector('.queue-progress').textContent = '上传完成: ' + item.name;
+          continue;
+        }
+
+        doneCount++;
+        counterEl.textContent = doneCount + '/' + total;
+
+        var ri = document.createElement('div');
+        ri.className = item.error ? 'upload-item fail' : 'upload-item done';
+        ri.innerHTML = '<div class="upload-item-row"><span class="name">' + escHtml(item.name) + '</span><span class="status">' + (item.error ? '❌ ' + escHtml(item.error) : '✅ 完成') + '</span></div>';
+        progressEl.appendChild(ri);
+      }
+    }
+
+    loadDocs();
+    loadModelInfo();
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    showToast('上传失败: ' + e.message, 'error');
+    progressEl.innerHTML = '';
+    progressEl.classList.remove('active');
+  } finally {
+    delete window._abortUpload;
   }
-
-  var tasks = tasksData.tasks || [];
-  if (tasks.length === 0) {
-    showToast('没有文件被提交', 'error');
-    return;
-  }
-
-  // Build queue from tasks
-  var queue = tasks.map(function(t) {
-    return { taskId: t.id, name: t.fileName, status: 'pending', stages: {}, currentStage: '' };
-  });
-  saveQueue(queue);
-
-  // Create DOM items for each task
-  var items = queue.map(function(q, idx) {
-    var item = document.createElement('div');
-    item.className = 'upload-item pending';
-    var stagesHtml = [
-      '<div class="upload-stage" data-stage="parsing"><span class="stage-spinner"></span>📄 解析</div>',
-      '<div class="upload-stage" data-stage="chunking"><span class="stage-spinner"></span>✂️ 分块</div>',
-      '<div class="upload-stage" data-stage="merging"><span class="stage-spinner"></span>🔗 合并</div>',
-      '<div class="upload-stage" data-stage="writing"><span class="stage-spinner"></span>💾 写入</div>',
-      '<div class="upload-stage" data-stage="indexing"><span class="stage-spinner"></span>🧮 索引</div>'
-    ].join('');
-    item.innerHTML = '<div class="upload-item-row"><div class="spinner"></div><span class="name">' + escHtml(q.name) + '</span><span class="status">等待中</span></div><div class="upload-stages" id="stages-' + idx + '">' + stagesHtml + '</div>';
-    progressEl.appendChild(item);
-    return { item: item, queueEntry: q, idx: idx };
-  });
-
-  // Subscribe to events for each task
-  items.forEach(function(entry) {
-    var statusEl = entry.item.querySelector('.status');
-    var stagesEl = entry.item.querySelector('.upload-stages');
-
-    entry.item.className = 'upload-item';
-    statusEl.textContent = '上传中…';
-    stagesEl.classList.add('active');
-    entry.queueEntry.status = 'uploading';
-    saveQueue(queue);
-
-    subscribeTaskEvents(entry.queueEntry.taskId, stagesEl, statusEl, entry.queueEntry, queue);
-  });
 }
 
 // subscribeTaskEvents connects to the task SSE endpoint and updates the UI.
