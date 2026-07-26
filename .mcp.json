@@ -4,7 +4,8 @@
       "args": [
         "stdio"
       ],
-      "command": "/Users/aq/knowledge-mcp/knowledge-mcp"
+      "command": "/home/aq/knowledge-mcp/knowledge-mcp",
+      "trusted_read_only_tools": ["knowledge_search", "knowledge_read", "knowledge_list_kbs"]
     }
   }
 }

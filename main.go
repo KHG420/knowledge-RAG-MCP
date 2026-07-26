@@ -348,6 +348,7 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 
 func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_search",
+		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`BM25/hybrid keyword search across all documents in the knowledge base.
 
 **IMPORTANT — kbName (knowledge base selection)**: Before calling, THINK about which knowledge base (KB) the user's question refers to. Infer the most likely KB from the user's context, workspace, or project context — then pass that KB name in the "kbName" parameter to scope the search and get accurate results. Only omit "kbName" when the user explicitly asks to search across ALL knowledge bases, or when absolutely no single KB can be reasonably inferred.
@@ -429,6 +430,9 @@ Examples of required rewriting:
 		}
 
 		kbName := getString(req, "kbName")
+		if kbName != "" && strings.Contains(kbName, "..") {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		}
 		searchStore := store
 		if kbName != "" {
 			searchStore = store.WithKB(kbName)
@@ -466,6 +470,7 @@ Examples of required rewriting:
 
 func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_read",
+		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
 
 **kbName**: When you have search results, pass the same kbName from the search call to scope the read to the correct KB. If you don't know the KB, you may omit it — the system will search all KBs.
@@ -498,7 +503,17 @@ If search results show multiple hits from the same section (SectionHint field is
 			return mcp.NewToolResultError("docSlug and chunkID are required"), nil
 		}
 
+		// Path-traversal guard: reject ".." in user-supplied path components.
+		for _, v := range []string{docSlug, chunkID} {
+			if strings.Contains(v, "..") {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid parameter %q: must not contain '..'", v)), nil
+			}
+		}
+
 		kbName := getString(req, "kbName")
+		if kbName != "" && strings.Contains(kbName, "..") {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		}
 
 		ctxCount := 0
 		if v, ok := req.Params.Arguments["context"].(float64); ok {
@@ -582,6 +597,7 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 
 func registerListKBs(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_list_kbs",
+		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`List all knowledge bases with their descriptions.
 
 Returns the count of knowledge bases and each KB's name and description.

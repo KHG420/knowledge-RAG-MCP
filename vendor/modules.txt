@@ -1,0 +1,53 @@
+# github.com/BurntSushi/toml v1.6.0
+## explicit; go 1.18
+github.com/BurntSushi/toml
+github.com/BurntSushi/toml/internal
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
+# github.com/mark3labs/mcp-go v0.20.0
+## explicit; go 1.23
+github.com/mark3labs/mcp-go/mcp
+github.com/mark3labs/mcp-go/server
+# github.com/otiai10/gosseract/v2 v2.4.1
+## explicit; go 1.18
+github.com/otiai10/gosseract/v2
+# github.com/tsawler/tabula v1.6.14
+## explicit; go 1.18
+github.com/tsawler/tabula
+github.com/tsawler/tabula/contentstream
+github.com/tsawler/tabula/core
+github.com/tsawler/tabula/docx
+github.com/tsawler/tabula/epubdoc
+github.com/tsawler/tabula/font
+github.com/tsawler/tabula/format
+github.com/tsawler/tabula/graphicsstate
+github.com/tsawler/tabula/htmldoc
+github.com/tsawler/tabula/imagecodec
+github.com/tsawler/tabula/internal/filters
+github.com/tsawler/tabula/layout
+github.com/tsawler/tabula/model
+github.com/tsawler/tabula/ocr
+github.com/tsawler/tabula/odt
+github.com/tsawler/tabula/pages
+github.com/tsawler/tabula/pptx
+github.com/tsawler/tabula/rag
+github.com/tsawler/tabula/reader
+github.com/tsawler/tabula/text
+github.com/tsawler/tabula/xlsx
+# github.com/yosida95/uritemplate/v3 v3.0.2
+## explicit; go 1.14
+github.com/yosida95/uritemplate/v3
+# golang.org/x/image v0.18.0
+## explicit; go 1.18
+golang.org/x/image/ccitt
+golang.org/x/image/draw
+golang.org/x/image/math/f64
+# golang.org/x/net v0.20.0
+## explicit; go 1.18
+golang.org/x/net/html
+golang.org/x/net/html/atom
+# golang.org/x/text v0.16.0
+## explicit; go 1.18
+golang.org/x/text/transform
+golang.org/x/text/unicode/norm

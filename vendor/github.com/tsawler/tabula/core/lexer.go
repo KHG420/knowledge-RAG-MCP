@@ -1,0 +1,652 @@
+package core
+
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
+)
+
+// TokenType identifies the type of a lexical token.
+type TokenType int
+
+// Token type constants for PDF lexical elements.
+const (
+	TokenEOF         TokenType = iota // End of input
+	TokenWhitespace                   // Whitespace (space, tab, newline, etc.)
+	TokenComment                      // Comment (% to end of line)
+	TokenKeyword                      // Keywords: true, false, null, obj, endobj, stream, endstream
+	TokenInteger                      // Integer literal (e.g., 123, -45)
+	TokenReal                         // Real number literal (e.g., 3.14, -0.5)
+	TokenString                       // Literal string: (hello)
+	TokenHexString                    // Hexadecimal string: <48656C6C6F>
+	TokenName                         // Name object: /Type
+	TokenArrayStart                   // Array start: [
+	TokenArrayEnd                     // Array end: ]
+	TokenDictStart                    // Dictionary start: <<
+	TokenDictEnd                      // Dictionary end: >>
+	TokenIndirectRef                  // Indirect reference marker: R
+)
+
+// Token represents a lexical token from PDF input.
+type Token struct {
+	Type         TokenType // Token type
+	Value        []byte    // Raw token value (without delimiters for strings/names)
+	Pos          int64     // Byte position in the input stream
+	SkippedBytes []byte    // Bytes skipped as whitespace before this token (for stream data recovery)
+}
+
+// Lexer performs lexical analysis of PDF content, breaking the input into tokens.
+// It handles all PDF lexical elements including strings with escape sequences,
+// hexadecimal strings, names with # escapes, and nested parentheses.
+type Lexer struct {
+	reader *bufio.Reader
+	pos    int64 // Current byte position in the input
+	line   int   // Current line number (for error reporting)
+	col    int   // Current column number
+}
+
+// NewLexer creates a new lexer for the given reader.
+func NewLexer(r io.Reader) *Lexer {
+	return &Lexer{
+		reader: bufio.NewReader(r),
+		pos:    0,
+		line:   1,
+		col:    0,
+	}
+}
+
+// NextToken returns the next token from the input.
+// It skips whitespace and returns TokenEOF when the input is exhausted.
+func (l *Lexer) NextToken() (*Token, error) {
+	// Skip whitespace but don't return it as a token
+	// Track skipped bytes for stream data recovery
+	skippedBytes, _ := l.skipWhitespace()
+
+	// Check for EOF
+	b, err := l.peek()
+	if err == io.EOF {
+		return &Token{Type: TokenEOF, Pos: l.pos, SkippedBytes: skippedBytes}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle comments
+	if b == '%' {
+		token, err := l.readComment()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	}
+
+	// Handle delimiters
+	switch b {
+	case '[':
+		l.readByte()
+		return &Token{Type: TokenArrayStart, Value: []byte{'['}, Pos: l.pos - 1, SkippedBytes: skippedBytes}, nil
+	case ']':
+		l.readByte()
+		return &Token{Type: TokenArrayEnd, Value: []byte{']'}, Pos: l.pos - 1, SkippedBytes: skippedBytes}, nil
+	case '(':
+		token, err := l.readString()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	case '<':
+		// Could be << (dict start) or <hex string>
+		next, err := l.peekN(2)
+		if err == nil && len(next) == 2 && next[1] == '<' {
+			l.readByte()
+			l.readByte()
+			return &Token{Type: TokenDictStart, Value: []byte{'<', '<'}, Pos: l.pos - 2, SkippedBytes: skippedBytes}, nil
+		}
+		token, err := l.readHexString()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	case '>':
+		// Must be >> (dict end)
+		next, err := l.peekN(2)
+		if err == nil && len(next) == 2 && next[1] == '>' {
+			l.readByte()
+			l.readByte()
+			return &Token{Type: TokenDictEnd, Value: []byte{'>', '>'}, Pos: l.pos - 2, SkippedBytes: skippedBytes}, nil
+		}
+		return nil, fmt.Errorf("unexpected '>' at position %d", l.pos)
+	case '/':
+		token, err := l.readName()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	}
+
+	// Handle numbers and keywords
+	if isDigit(b) || b == '-' || b == '+' || b == '.' {
+		token, err := l.readNumber()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	}
+
+	// Handle keywords (true, false, null, R, obj, endobj, stream, endstream, etc.)
+	if isAlpha(b) {
+		token, err := l.readKeyword()
+		if token != nil {
+			token.SkippedBytes = skippedBytes
+		}
+		return token, err
+	}
+
+	return nil, fmt.Errorf("unexpected character '%c' at position %d", b, l.pos)
+}
+
+// readByte reads a single byte, advances position, and tracks line/column.
+func (l *Lexer) readByte() (byte, error) {
+	b, err := l.reader.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	l.pos++
+	l.col++
+	if b == '\n' {
+		l.line++
+		l.col = 0
+	}
+	return b, nil
+}
+
+// peek returns the next byte without consuming it.
+func (l *Lexer) peek() (byte, error) {
+	bytes, err := l.reader.Peek(1)
+	if err != nil {
+		return 0, err
+	}
+	return bytes[0], nil
+}
+
+// peekN returns the next n bytes without consuming them.
+func (l *Lexer) peekN(n int) ([]byte, error) {
+	return l.reader.Peek(n)
+}
+
+// unreadByte pushes the last byte back onto the input.
+func (l *Lexer) unreadByte() error {
+	err := l.reader.UnreadByte()
+	if err != nil {
+		return err
+	}
+	l.pos--
+	l.col--
+	return nil
+}
+
+// skipWhitespace skips all PDF whitespace characters and returns the skipped bytes.
+// PDF whitespace includes: space (0x20), tab (0x09), LF (0x0A), CR (0x0D), FF (0x0C), null (0x00).
+func (l *Lexer) skipWhitespace() ([]byte, error) {
+	var skipped []byte
+	for {
+		b, err := l.peek()
+		if err != nil {
+			return skipped, err
+		}
+		if !isWhitespace(b) {
+			return skipped, nil
+		}
+		b, _ = l.readByte()
+		skipped = append(skipped, b)
+	}
+}
+
+// readComment reads a comment from % to end of line.
+func (l *Lexer) readComment() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+
+	// Read the %
+	b, err := l.readByte()
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteByte(b)
+
+	// Read until end of line
+	for {
+		b, err := l.peek()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Comments end at CR or LF
+		if b == '\r' || b == '\n' {
+			// Consume the newline
+			l.readByte()
+			// Handle CR LF sequence
+			if b == '\r' {
+				next, err := l.peek()
+				if err == nil && next == '\n' {
+					l.readByte()
+				}
+			}
+			break
+		}
+
+		b, err = l.readByte()
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteByte(b)
+	}
+
+	return &Token{Type: TokenComment, Value: buf.Bytes(), Pos: startPos}, nil
+}
+
+// readString reads a literal string "(hello)" with escape sequence handling.
+// Supports nested parentheses and escape sequences: \n, \r, \t, \b, \f, \\, \(, \), \ddd (octal).
+func (l *Lexer) readString() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+
+	// Read opening (
+	b, err := l.readByte()
+	if err != nil {
+		return nil, err
+	}
+	if b != '(' {
+		return nil, fmt.Errorf("expected '(' at position %d", l.pos-1)
+	}
+
+	depth := 1
+	for depth > 0 {
+		b, err := l.readByte()
+		if err != nil {
+			return nil, err
+		}
+
+		switch b {
+		case '(':
+			depth++
+			buf.WriteByte(b)
+		case ')':
+			depth--
+			if depth > 0 {
+				buf.WriteByte(b)
+			}
+		case '\\':
+			// Handle escape sequences
+			next, err := l.readByte()
+			if err != nil {
+				return nil, err
+			}
+			switch next {
+			case 'n':
+				buf.WriteByte('\n')
+			case 'r':
+				buf.WriteByte('\r')
+			case 't':
+				buf.WriteByte('\t')
+			case 'b':
+				buf.WriteByte('\b')
+			case 'f':
+				buf.WriteByte('\f')
+			case '(', ')', '\\':
+				buf.WriteByte(next)
+			case '\r', '\n':
+				// Line continuation - ignore the backslash and newline
+				if next == '\r' {
+					peek, err := l.peek()
+					if err == nil && peek == '\n' {
+						l.readByte()
+					}
+				}
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				// Octal escape \ddd
+				octal := []byte{next}
+				for i := 0; i < 2; i++ {
+					peek, err := l.peek()
+					if err != nil || !isOctalDigit(peek) {
+						break
+					}
+					b, _ := l.readByte()
+					octal = append(octal, b)
+				}
+				// Convert octal to byte
+				var val byte
+				for _, digit := range octal {
+					val = val*8 + (digit - '0')
+				}
+				buf.WriteByte(val)
+			default:
+				// Unknown escape - keep the character
+				buf.WriteByte(next)
+			}
+		default:
+			buf.WriteByte(b)
+		}
+	}
+
+	return &Token{Type: TokenString, Value: buf.Bytes(), Pos: startPos}, nil
+}
+
+// readHexString reads a hexadecimal string "<48656C6C6F>".
+// Whitespace within the string is ignored. Odd-length strings are padded with 0.
+func (l *Lexer) readHexString() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+
+	// Read opening <
+	b, err := l.readByte()
+	if err != nil {
+		return nil, err
+	}
+	if b != '<' {
+		return nil, fmt.Errorf("expected '<' at position %d", l.pos-1)
+	}
+
+	for {
+		b, err := l.peek()
+		if err != nil {
+			return nil, err
+		}
+
+		if b == '>' {
+			l.readByte()
+			break
+		}
+
+		b, err = l.readByte()
+		if err != nil {
+			return nil, err
+		}
+
+		// Skip whitespace in hex strings
+		if isWhitespace(b) {
+			continue
+		}
+
+		if !isHexDigit(b) {
+			return nil, fmt.Errorf("invalid hex digit '%c' at position %d", b, l.pos-1)
+		}
+
+		buf.WriteByte(b)
+	}
+
+	return &Token{Type: TokenHexString, Value: buf.Bytes(), Pos: startPos}, nil
+}
+
+// readName reads a name object "/Type".
+// Handles #xx escape sequences for special characters.
+func (l *Lexer) readName() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+
+	// Read the /
+	b, err := l.readByte()
+	if err != nil {
+		return nil, err
+	}
+	if b != '/' {
+		return nil, fmt.Errorf("expected '/' at position %d", l.pos-1)
+	}
+
+	for {
+		b, err := l.peek()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Names end at whitespace or delimiters
+		if isWhitespace(b) || isDelimiter(b) {
+			break
+		}
+
+		b, err = l.readByte()
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle # escape sequences in names
+		if b == '#' {
+			hex1, err := l.readByte()
+			if err != nil {
+				return nil, err
+			}
+			hex2, err := l.readByte()
+			if err != nil {
+				return nil, err
+			}
+			if !isHexDigit(hex1) || !isHexDigit(hex2) {
+				return nil, fmt.Errorf("invalid hex escape in name at position %d", l.pos-2)
+			}
+			// Convert hex to byte
+			val := hexValue(hex1)*16 + hexValue(hex2)
+			buf.WriteByte(val)
+		} else {
+			buf.WriteByte(b)
+		}
+	}
+
+	return &Token{Type: TokenName, Value: buf.Bytes(), Pos: startPos}, nil
+}
+
+// readNumber reads an integer or real number (e.g., 123, -45, 3.14).
+func (l *Lexer) readNumber() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+	hasDecimal := false
+
+	for {
+		b, err := l.peek()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		if b == '.' {
+			if hasDecimal {
+				break // Second decimal point - not part of this number
+			}
+			hasDecimal = true
+			b, _ = l.readByte()
+			buf.WriteByte(b)
+		} else if isDigit(b) || (buf.Len() == 0 && (b == '-' || b == '+')) {
+			b, _ = l.readByte()
+			buf.WriteByte(b)
+		} else {
+			break
+		}
+	}
+
+	tokenType := TokenInteger
+	if hasDecimal {
+		tokenType = TokenReal
+	}
+
+	return &Token{Type: tokenType, Value: buf.Bytes(), Pos: startPos}, nil
+}
+
+// readKeyword reads a keyword (true, false, null, R, obj, endobj, stream, endstream).
+func (l *Lexer) readKeyword() (*Token, error) {
+	startPos := l.pos
+	var buf bytes.Buffer
+
+	for {
+		b, err := l.peek()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		if !isAlpha(b) && !isDigit(b) {
+			break
+		}
+
+		b, _ = l.readByte()
+		buf.WriteByte(b)
+	}
+
+	value := buf.Bytes()
+
+	// Check if it's R (indirect reference)
+	if len(value) == 1 && value[0] == 'R' {
+		return &Token{Type: TokenIndirectRef, Value: value, Pos: startPos}, nil
+	}
+
+	return &Token{Type: TokenKeyword, Value: value, Pos: startPos}, nil
+}
+
+// isWhitespace reports whether b is a PDF whitespace character.
+func isWhitespace(b byte) bool {
+	// PDF whitespace: space, tab, LF, CR, FF, null
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == 0
+}
+
+// isDelimiter reports whether b is a PDF delimiter character.
+func isDelimiter(b byte) bool {
+	return b == '(' || b == ')' || b == '<' || b == '>' || b == '[' || b == ']' ||
+		b == '{' || b == '}' || b == '/' || b == '%'
+}
+
+// isDigit reports whether b is an ASCII digit.
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+// isOctalDigit reports whether b is an octal digit (0-7).
+func isOctalDigit(b byte) bool {
+	return b >= '0' && b <= '7'
+}
+
+// isHexDigit reports whether b is a hexadecimal digit.
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+// isAlpha reports whether b is an ASCII letter.
+func isAlpha(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// hexValue returns the numeric value of a hex digit.
+func hexValue(b byte) byte {
+	if b >= '0' && b <= '9' {
+		return b - '0'
+	}
+	if b >= 'a' && b <= 'f' {
+		return b - 'a' + 10
+	}
+	if b >= 'A' && b <= 'F' {
+		return b - 'A' + 10
+	}
+	return 0
+}
+
+// SkipStreamEOL skips the mandatory end-of-line marker after the 'stream' keyword.
+// Per PDF spec, this is either a single LF (0x0A) or CR+LF (0x0D 0x0A).
+func (l *Lexer) SkipStreamEOL() error {
+	b, err := l.readByte()
+	if err != nil {
+		return fmt.Errorf("failed to read EOL after stream: %w", err)
+	}
+
+	if b == '\r' {
+		// CR - check for following LF
+		next, err := l.peek()
+		if err == nil && next == '\n' {
+			l.readByte() // consume the LF
+		}
+	} else if b != '\n' {
+		return fmt.Errorf("expected EOL after stream keyword, got 0x%02X", b)
+	}
+
+	return nil
+}
+
+// ReadBytes reads exactly n bytes from the underlying reader.
+// Used for reading binary stream data where tokenization is not appropriate.
+func (l *Lexer) ReadBytes(n int) ([]byte, error) {
+	data := make([]byte, n)
+	totalRead := 0
+
+	for totalRead < n {
+		bytesRead, err := l.reader.Read(data[totalRead:])
+		totalRead += bytesRead
+		l.pos += int64(bytesRead)
+
+		if err == io.EOF && totalRead < n {
+			return data[:totalRead], fmt.Errorf("unexpected EOF: expected %d bytes, got %d", n, totalRead)
+		}
+		if err != nil && err != io.EOF {
+			return data[:totalRead], err
+		}
+		if err == io.EOF {
+			break
+		}
+	}
+
+	return data, nil
+}
+
+// ReadUntilEndstream reads forward until the 'endstream' keyword, returning the
+// stream data that precedes it with the single trailing EOL stripped. It is used
+// to recover streams whose /Length is missing or invalid; the lexer is left
+// positioned just after 'endstream'.
+func (l *Lexer) ReadUntilEndstream() ([]byte, error) {
+	marker := []byte("endstream")
+	var buf []byte
+	for {
+		b, err := l.reader.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("unexpected EOF searching for endstream")
+		}
+		l.pos++
+		buf = append(buf, b)
+		if len(buf) >= len(marker) && bytes.HasSuffix(buf, marker) {
+			data := buf[:len(buf)-len(marker)]
+			// Strip the single EOL (LF or CR+LF) that precedes 'endstream'.
+			if n := len(data); n > 0 && data[n-1] == '\n' {
+				data = data[:n-1]
+			}
+			if n := len(data); n > 0 && data[n-1] == '\r' {
+				data = data[:n-1]
+			}
+			return data, nil
+		}
+	}
+}
+
+// SkipBytes discards exactly n bytes from the underlying reader.
+func (l *Lexer) SkipBytes(n int) error {
+	for i := 0; i < n; i++ {
+		_, err := l.readByte()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Peek returns the next byte without consuming it.
+func (l *Lexer) Peek() (byte, error) {
+	return l.peek()
+}
+
+// ReadByte reads and returns a single byte, advancing the position.
+func (l *Lexer) ReadByte() (byte, error) {
+	return l.readByte()
+}

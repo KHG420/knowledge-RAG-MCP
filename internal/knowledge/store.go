@@ -56,11 +56,31 @@ func (s *Store) WithDataDir(dir string) *Store {
 	return s
 }
 
+// validateComponent rejects path components that contain parent-directory
+// references ("..") or absolute paths, preventing path-traversal attacks
+// when user-supplied strings are joined into filesystem paths.
+func validateComponent(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("invalid path component %q: must not contain '..'", name)
+	}
+	if filepath.IsAbs(name) {
+		return fmt.Errorf("invalid path component %q: must not be an absolute path", name)
+	}
+	return nil
+}
+
 // WithKB returns a Store view scoped to the named knowledge base.
 // When name is empty, the store operates on the flat knowledge directory (legacy mode).
 // The returned Store shares the same embedder, reranker, logger, and other
 // configuration but reads/writes from a KB-scoped subdirectory.
 func (s *Store) WithKB(name string) *Store {
+	if err := validateComponent(name); err != nil {
+		s.logger.Warnf("WithKB: %v", err)
+		return s // return unscoped store; the caller will fail on subsequent operations
+	}
 	cp := *s
 	cp.kbName = name
 	return &cp
@@ -284,7 +304,12 @@ func (s *Store) WriteIndex(content string) error {
 }
 
 // DocDir returns the path for a document's directory.
+// Returns empty string when slug fails validation (path-traversal guard).
 func (s *Store) DocDir(slug string) string {
+	if err := validateComponent(slug); err != nil {
+		s.logger.Warnf("DocDir: %v", err)
+		return ""
+	}
 	return filepath.Join(s.kbDir(), slug)
 }
 
@@ -299,7 +324,12 @@ func (s *Store) ChunksDir(slug string) string {
 }
 
 // ChunkPath returns the path to a chunk file (e.g. "005" → ".../chunks/005.md").
+// Returns empty string when slug or chunkID fails validation (path-traversal guard).
 func (s *Store) ChunkPath(slug, chunkID string) string {
+	if err := validateComponent(chunkID); err != nil {
+		s.logger.Warnf("ChunkPath: %v", err)
+		return ""
+	}
 	return filepath.Join(s.ChunksDir(slug), chunkID+".md")
 }
 
@@ -309,7 +339,12 @@ func (s *Store) SectionsDir(slug string) string {
 }
 
 // SectionChunkPath returns the path to a section-level chunk file (e.g. "S00" → ".../chunks/sections/S00.md").
+// Returns empty string when slug or sectionID fails validation (path-traversal guard).
 func (s *Store) SectionChunkPath(slug, sectionID string) string {
+	if err := validateComponent(sectionID); err != nil {
+		s.logger.Warnf("SectionChunkPath: %v", err)
+		return ""
+	}
 	return filepath.Join(s.SectionsDir(slug), sectionID+".md")
 }
 
