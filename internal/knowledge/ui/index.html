@@ -90,6 +90,24 @@
     font-family: SFMono-Regular, Consolas, monospace; font-size: 11px; word-break: break-all;
     padding: 0;
   }
+  .model-card .test-row {
+    margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .model-card .test-btn {
+    font-size: 11px; padding: 2px 10px; border: 1px solid var(--border);
+    background: transparent; border-radius: 0px; cursor: pointer;
+    transition: all var(--transition); color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  .model-card .test-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .model-card .test-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .model-card .test-btn.testing { opacity: 0.6; cursor: wait; }
+  .model-card .test-result {
+    font-size: 11px; display: inline-flex; align-items: center; gap: 3px;
+  }
+  .model-card .test-result.ok { color: var(--success); }
+  .model-card .test-result.fail { color: var(--danger); }
+  .model-card .test-result.loading { color: var(--text-muted); }
 
   /* Upload zone */
   .dropzone {
@@ -119,10 +137,13 @@
   .upload-progress { margin-bottom: 16px; display: none; }
   .upload-progress.active { display: block; }
   .upload-item {
-    display: flex; align-items: center; gap: 10px;
+    display: flex; flex-direction: column; gap: 4px;
     padding: 8px 14px; background: var(--card); border-bottom: 1px solid var(--border);
     border-radius: var(--radius-sm); margin-bottom: 0px; font-size: 14px;
     box-shadow: var(--shadow);
+  }
+  .upload-item .upload-item-row {
+    display: flex; align-items: center; gap: 10px;
   }
   .upload-item .spinner {
     width: 14px; height: 14px; border: 2px solid var(--border);
@@ -138,6 +159,32 @@
 
   .upload-item.pending .spinner { border-color: var(--text-muted); animation: none; }
   .upload-item.pending .status { color: var(--text-muted); }
+
+  /* Upload stages indicator */
+  .upload-item .upload-stages { display: none; gap: 3px; flex-wrap: wrap; padding-left: 24px; }
+  .upload-item .upload-stages.active { display: flex; }
+  .upload-item .upload-stage {
+    font-size: 10px; padding: 1px 6px; border: 1px solid var(--border);
+    border-radius: 0px; color: var(--text-muted); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 3px;
+    transition: all var(--transition); line-height: 1.5;
+  }
+  .upload-item .upload-stage.active {
+    border-color: var(--primary); color: var(--primary); background: var(--primary-light);
+  }
+  .upload-item .upload-stage.done {
+    border-color: var(--success); color: var(--success); background: var(--primary-light);
+  }
+  .upload-item .upload-stage.error {
+    border-color: var(--danger); color: var(--danger); background: #FEF2F2;
+  }
+  .upload-item .stage-spinner {
+    display: none; width: 8px; height: 8px;
+    border: 1.5px solid var(--border); border-top-color: var(--primary); border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .upload-item .upload-stage.active .stage-spinner { display: inline-block; }
+  .upload-item .upload-stage.done .stage-spinner { display: none; }
 
   .upload-queue-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -537,6 +584,10 @@
           <span class="url" id="embedderUrl"></span>
           <span id="embedderDim"></span>
         </div>
+        <div class="test-row">
+          <button class="test-btn" id="testBtnEmbedder" onclick="testModel('embedder')">🧪 测试</button>
+          <span class="test-result" id="testResultEmbedder"></span>
+        </div>
       </div>
       <div class="model-card" id="statReranker">
         <div class="model-header">
@@ -548,6 +599,10 @@
           <span class="url" id="rerankerUrl"></span>
           <span id="rerankerLimit"></span>
         </div>
+        <div class="test-row">
+          <button class="test-btn" id="testBtnReranker" onclick="testModel('reranker')">🧪 测试</button>
+          <span class="test-result" id="testResultReranker"></span>
+        </div>
       </div>
       <div class="model-card" id="statDocParser">
         <div class="model-header">
@@ -557,6 +612,10 @@
         <div class="model-name" id="docParserModel">—</div>
         <div class="model-detail">
           <span class="url" id="docParserUrl"></span>
+        </div>
+        <div class="test-row">
+          <button class="test-btn" id="testBtnDocParser" onclick="testModel('docParser')">🧪 测试</button>
+          <span class="test-result" id="testResultDocParser"></span>
         </div>
       </div>
     </div>
@@ -718,6 +777,27 @@ var fulltextQuery = '';
 var currentTag = '';
 var isLoading = false;
 
+// Upload queue persistence
+var UPLOAD_QUEUE_KEY = 'upload_queue';
+
+function saveQueue(items) {
+  try {
+    sessionStorage.setItem(UPLOAD_QUEUE_KEY, JSON.stringify(items));
+  } catch(e) {}
+}
+
+function loadQueue() {
+  try {
+    return JSON.parse(sessionStorage.getItem(UPLOAD_QUEUE_KEY)) || [];
+  } catch(e) {
+    return [];
+  }
+}
+
+function clearQueue() {
+  sessionStorage.removeItem(UPLOAD_QUEUE_KEY);
+}
+
 // === Init ===
 document.addEventListener('DOMContentLoaded', async function() {
   setupDragDrop();
@@ -728,6 +808,20 @@ document.addEventListener('DOMContentLoaded', async function() {
   } else {
     renderKBHome();
   }
+
+  // Warn before leaving if uploads are in progress
+  window.addEventListener('beforeunload', function(e) {
+    var queue = loadQueue();
+    var active = queue.filter(function(q) { return q.status === 'uploading' || q.status === 'pending'; });
+    if (active.length > 0) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+  });
+
+  // Restore upload queue from previous session
+  restoreUploadQueue();
 });
 
 // === Knowledge Bases ===
@@ -1273,45 +1367,234 @@ async function uploadFiles(fileList) {
   clearBtn.addEventListener('click', function() {
     progressEl.innerHTML = '';
     progressEl.classList.remove('active');
+    clearQueue();
   });
   header.appendChild(clearBtn);
   progressEl.appendChild(header);
 
-  var items = files.map(function(file) {
+  // Initialize queue before upload loop
+  var queue = files.map(function(file) {
+    return { name: file.name, status: 'pending', stages: {}, currentStage: '' };
+  });
+  saveQueue(queue);
+
+  var items = files.map(function(file, idx) {
     var item = document.createElement('div');
     item.className = 'upload-item pending';
-    item.innerHTML = '<div class="spinner"></div><span class="name">' + escHtml(file.name) + '</span><span class="status">等待中</span>';
+    var stagesHtml = [
+      '<div class="upload-stage" data-stage="parsing"><span class="stage-spinner"></span>📄 解析</div>',
+      '<div class="upload-stage" data-stage="chunking"><span class="stage-spinner"></span>✂️ 分块</div>',
+      '<div class="upload-stage" data-stage="merging"><span class="stage-spinner"></span>🔗 合并</div>',
+      '<div class="upload-stage" data-stage="writing"><span class="stage-spinner"></span>💾 写入</div>',
+      '<div class="upload-stage" data-stage="indexing"><span class="stage-spinner"></span>🧮 索引</div>'
+    ].join('');
+    item.innerHTML = '<div class="upload-item-row"><div class="spinner"></div><span class="name">' + escHtml(file.name) + '</span><span class="status">等待中</span></div><div class="upload-stages" id="stages-' + idx + '">' + stagesHtml + '</div>';
     progressEl.appendChild(item);
-    return { item: item, file: file };
+    return { item: item, file: file, idx: idx };
   });
 
   for (var idx = 0; idx < items.length; idx++) {
     var entry = items[idx];
+    var row = entry.item.querySelector('.upload-item-row');
+    var statusEl = entry.item.querySelector('.status');
+    var stagesEl = entry.item.querySelector('.upload-stages');
+
     entry.item.className = 'upload-item';
-    entry.item.querySelector('.status').textContent = '上传中…';
+    statusEl.textContent = '上传中…';
+    stagesEl.classList.add('active');
+    // Persist status change
+    queue[idx].status = 'uploading';
+    saveQueue(queue);
 
     try {
       var formData = new FormData();
       formData.append('files', entry.file);
-      var resp = await apiRaw('/api/upload', { method: 'POST', body: formData });
-      var results = (resp.results || []);
-      var fileResult = null;
-      for (var ri = 0; ri < results.length; ri++) {
-        if (results[ri].name === entry.file.name) { fileResult = results[ri]; break; }
+
+      // Use SSE streaming for progress
+      var url = '/api/upload?stream=true';
+      if (currentKB) url += '&kb=' + encodeURIComponent(currentKB);
+      var res = await fetch(url, { method: 'POST', body: formData });
+      if (!res.ok) {
+        var errData = await res.json().catch(function() { return {error: 'upload failed'}; });
+        throw new Error(errData.error || 'upload failed (HTTP ' + res.status + ')');
       }
-      if (fileResult && fileResult.error) {
-        throw new Error(fileResult.error);
+
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      var completeData = null;
+
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+        buffer += decoder.decode(result.value, {stream: true});
+
+        var lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (var li = 0; li < lines.length; li++) {
+          var line = lines[li];
+          if (line.startsWith('data: ')) {
+            try {
+              var ev = JSON.parse(line.slice(6));
+              if (ev.stage) {
+                updateUploadStage(stagesEl, ev.stage, ev.status, ev.detail, statusEl);
+                // Persist stage progress
+                if (ev.status === 'started') {
+                  queue[idx].currentStage = ev.stage;
+                } else if (ev.status === 'done') {
+                  queue[idx].stages[ev.stage] = 'done';
+                  queue[idx].currentStage = ev.stage;
+                }
+                saveQueue(queue);
+              }
+              if (ev.slug) {
+                completeData = ev;
+              }
+            } catch (e) {}
+          }
+        }
       }
-      entry.item.className = 'upload-item done';
-      entry.item.querySelector('.status').textContent = '✅ 完成';
+
+      if (completeData) {
+        entry.item.className = 'upload-item done';
+        statusEl.textContent = '✅ 完成';
+        queue[idx].status = 'done';
+        saveQueue(queue);
+      } else {
+        throw new Error('上传未完成');
+      }
     } catch (e) {
       entry.item.className = 'upload-item fail';
-      entry.item.querySelector('.status').textContent = '❌ ' + e.message;
+      statusEl.textContent = '❌ ' + e.message;
+      queue[idx].status = 'fail';
+      queue[idx].error = e.message;
+      saveQueue(queue);
+      stagesEl.querySelectorAll('.upload-stage.active').forEach(function(el) {
+        el.classList.remove('active');
+        el.classList.add('error');
+      });
     }
     doneCount++;
     header.querySelector('.queue-progress').textContent = '上传队列: ' + doneCount + '/' + total;
   }
   loadDocs();
+}
+
+// restoreUploadQueue restores the upload queue UI from sessionStorage on page load.
+function restoreUploadQueue() {
+  var queue = loadQueue();
+  if (queue.length === 0) return;
+
+  var progressEl = document.getElementById('uploadProgress');
+  progressEl.innerHTML = '';
+  progressEl.classList.add('active');
+
+  var total = queue.length;
+  var doneCount = queue.filter(function(q) { return q.status === 'done' || q.status === 'fail'; }).length;
+
+  var header = document.createElement('div');
+  header.className = 'upload-queue-header';
+  header.innerHTML = '<span class="queue-progress">上传队列: ' + doneCount + '/' + total + '</span>';
+  var clearBtn = document.createElement('button');
+  clearBtn.className = 'queue-clear';
+  clearBtn.textContent = '清除';
+  clearBtn.addEventListener('click', function() {
+    progressEl.innerHTML = '';
+    progressEl.classList.remove('active');
+    clearQueue();
+  });
+  header.appendChild(clearBtn);
+  progressEl.appendChild(header);
+
+  queue.forEach(function(q, idx) {
+    var item = document.createElement('div');
+    item.className = 'upload-item';
+
+    var stagesHtml = [
+      '<div class="upload-stage" data-stage="parsing"><span class="stage-spinner"></span>📄 解析</div>',
+      '<div class="upload-stage" data-stage="chunking"><span class="stage-spinner"></span>✂️ 分块</div>',
+      '<div class="upload-stage" data-stage="merging"><span class="stage-spinner"></span>🔗 合并</div>',
+      '<div class="upload-stage" data-stage="writing"><span class="stage-spinner"></span>💾 写入</div>',
+      '<div class="upload-stage" data-stage="indexing"><span class="stage-spinner"></span>🧮 索引</div>'
+    ].join('');
+    item.innerHTML = '<div class="upload-item-row"><div class="spinner"></div><span class="name">' + escHtml(q.name) + '</span><span class="status"></span></div><div class="upload-stages active" id="stages-restore-' + idx + '">' + stagesHtml + '</div>';
+    progressEl.appendChild(item);
+
+    var statusEl = item.querySelector('.status');
+    var stagesEl = item.querySelector('.upload-stages');
+
+    if (q.status === 'done') {
+      item.className = 'upload-item done';
+      statusEl.textContent = '✅ 完成';
+      // Mark all stages as done
+      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
+        el.classList.add('done');
+      });
+    } else if (q.status === 'fail') {
+      item.className = 'upload-item fail';
+      statusEl.textContent = '❌ ' + (q.error || '上传失败');
+      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
+        el.classList.add('error');
+      });
+    } else {
+      // uploading or pending: page was refreshed, consider interrupted
+      item.className = 'upload-item fail';
+      statusEl.textContent = '⏸️ 已中断（刷新页面导致）';
+      // Mark completed stages as done, current as error, future as pending
+      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
+        var stage = el.getAttribute('data-stage');
+        if (q.stages[stage] === 'done') {
+          el.classList.add('done');
+        } else if (stage === q.currentStage || !q.currentStage) {
+          el.classList.add('error');
+        }
+      });
+    }
+  });
+
+  // Auto-collapse if all done
+  var remaining = queue.filter(function(q) { return q.status !== 'done' && q.status !== 'fail'; });
+  if (remaining.length === 0) {
+    // Leave visible so user can see the history and clear it
+  }
+}
+
+// updateUploadStage updates a single stage indicator within an upload-stages container.
+function updateUploadStage(stagesEl, stage, status, detail, statusEl) {
+  var stageEl = stagesEl.querySelector('[data-stage="' + stage + '"]');
+  if (!stageEl) return;
+
+  // Clear active/error from previous stage, mark it done
+  var prevActive = stagesEl.querySelector('.upload-stage.active');
+  if (prevActive && prevActive !== stageEl) {
+    prevActive.classList.remove('active');
+    if (status !== 'error') {
+      prevActive.classList.add('done');
+    }
+  }
+
+  if (status === 'started') {
+    // Clear previous state
+    stageEl.classList.remove('done', 'error');
+    stageEl.classList.add('active');
+    if (detail) {
+      statusEl.textContent = detail;
+    } else {
+      var stageLabels = { parsing:'正在解析文档…', chunking:'正在分块…', merging:'正在语义合并…', metadata:'正在提取元数据…', writing:'正在写入分块…', indexing:'正在建立索引…', complete:'完成' };
+      statusEl.textContent = stageLabels[stage] || stage;
+    }
+  } else if (status === 'done') {
+    stageEl.classList.remove('active');
+    stageEl.classList.add('done');
+    if (stage === 'indexing' && detail) {
+      statusEl.textContent = detail;
+    }
+  } else if (status === 'error') {
+    stageEl.classList.remove('active');
+    stageEl.classList.add('error');
+    statusEl.textContent = '❌ ' + (detail || '错误');
+  }
 }
 
 function confirmDelete(slug, name) {
@@ -1364,6 +1647,34 @@ function showToast(msg, type) {
   el.className = 'toast ' + type + ' show';
   clearTimeout(el._timer);
   el._timer = setTimeout(function() { el.classList.remove('show'); }, 3000);
+}
+
+// === Model Probe ===
+async function testModel(type) {
+  var btn = document.getElementById('testBtn' + type.charAt(0).toUpperCase() + type.slice(1));
+  var resultEl = document.getElementById('testResult' + type.charAt(0).toUpperCase() + type.slice(1));
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ 测试中…';
+  resultEl.className = 'test-result loading';
+  resultEl.textContent = '连接中…';
+  try {
+    var data = await api('/api/models/probe', { method: 'POST' });
+    var r = data[type];
+    if (r && r.ok) {
+      resultEl.className = 'test-result ok';
+      resultEl.textContent = '✅ 可用 (' + r.latencyMs + 'ms)';
+    } else {
+      resultEl.className = 'test-result fail';
+      resultEl.textContent = '❌ ' + (r ? r.error : '未知错误');
+    }
+  } catch (e) {
+    resultEl.className = 'test-result fail';
+    resultEl.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧪 测试';
+  }
 }
 
 function escHtml(s) {

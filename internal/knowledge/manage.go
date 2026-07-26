@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"knowledge-mcp/internal/logging"
 )
 
 //go:embed ui/index.html
@@ -113,6 +116,9 @@ func (s *Store) StartManageServer(port string) error {
 			"docParser":           DocParserInfo(),
 		})
 	})
+
+	// API: probe model connectivity (embedder, reranker, doc parser)
+	mux.HandleFunc("POST /api/models/probe", s.handleModelProbe)
 
 	// Listen on the port with per-family fallback.
 	// On macOS, Go's net.Listen("tcp", ":port") can return EADDRINUSE even when
@@ -280,6 +286,12 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) handleManageUpload(w http.ResponseWriter, r *http.Request) {
+	// SSE streaming mode for real-time upload progress.
+	if r.URL.Query().Get("stream") == "true" {
+		s.handleManageUploadSSE(w, r)
+		return
+	}
+
 	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	if kb != "" {
@@ -379,6 +391,114 @@ func saveManageFile(s *Store, src io.Reader, filename string) (DocumentMeta, err
 	return s.UploadDocument(tmpPath)
 }
 
+// --- SSE streaming upload ---
+
+// handleManageUploadSSE handles file upload with real-time progress via SSE.
+func (s *Store) handleManageUploadSSE(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeManageError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		log.Errorf("UploadSSE: parse multipart form failed: %v", err)
+		sendSSEEvent(w, flusher, "error", map[string]string{"error": "failed to parse form: " + err.Error()})
+		return
+	}
+
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		// Single file via `file` field (curl-friendly)
+		file, header, err := r.FormFile("file")
+		if err == nil {
+			defer file.Close()
+			log.Debugf("UploadSSE: single file name=%q kb=%q", header.Filename, s.kbName)
+			processFileSSE(w, flusher, s, file, header.Filename)
+			return
+		}
+		sendSSEEvent(w, flusher, "error", map[string]string{"error": "no files uploaded"})
+		return
+	}
+
+	log.Debugf("UploadSSE: %d files kb=%q", len(files), s.kbName)
+	for _, fh := range files {
+		file, err := fh.Open()
+		if err != nil {
+			log.Errorf("UploadSSE: open file %q failed: %v", fh.Filename, err)
+			sendSSEEvent(w, flusher, "error", map[string]string{"file": fh.Filename, "error": err.Error()})
+			continue
+		}
+		processFileSSE(w, flusher, s, file, fh.Filename)
+		file.Close()
+	}
+
+	sendSSEEvent(w, flusher, "done", map[string]string{"message": "all files processed"})
+}
+
+// processFileSSE saves a single uploaded file and streams progress via SSE.
+func processFileSSE(w http.ResponseWriter, flusher http.Flusher, s *Store, src io.Reader, filename string) {
+	tmpDir, err := os.MkdirTemp("", "knowledge-upload-*")
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpPath := filepath.Join(tmpDir, filename)
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
+		return
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
+		return
+	}
+	dst.Close()
+
+	meta, err := s.UploadDocumentWithProgress(tmpPath, func(ev ProgressEvent) {
+		sendSSEEvent(w, flusher, "progress", map[string]any{
+			"file":   filename,
+			"stage":  ev.Stage,
+			"status": ev.Status,
+			"detail": ev.Detail,
+		})
+	})
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
+		return
+	}
+
+	sendSSEEvent(w, flusher, "complete", map[string]any{
+		"file": filename,
+		"slug": meta.Slug,
+		"name": meta.OriginalName,
+	})
+}
+
+// sendSSEEvent writes an SSE-formatted event and flushes the response.
+func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+	flusher.Flush()
+}
+
 func (s *Store) handleManageDelete(w http.ResponseWriter, r *http.Request) {
 	log := s.logger.WithModule("manage")
 	kb := r.URL.Query().Get("kb")
@@ -468,6 +588,93 @@ func (s *Store) handleManageSearch(w http.ResponseWriter, r *http.Request) {
 		"hits":  hits,
 		"count": len(hits),
 	})
+}
+
+// --- probe helpers ---
+
+type probeResult struct {
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	LatencyMs int64  `json:"latencyMs"`
+}
+
+// handleModelProbe probes connectivity to all configured models.
+// Returns a JSON map of { embedder, reranker, docParser } probe results.
+// Uses a 10-second context timeout per probe to avoid hanging.
+func (s *Store) handleModelProbe(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+
+	results := map[string]probeResult{}
+
+	// Probe embedder
+	results["embedder"] = s.probeEmbedder(r.Context(), log)
+
+	// Probe reranker
+	results["reranker"] = s.probeReranker(r.Context(), log)
+
+	// Probe doc parser
+	results["docParser"] = probeDocParser(r.Context(), log)
+
+	writeManageJSON(w, http.StatusOK, results)
+}
+
+func (s *Store) probeEmbedder(ctx context.Context, log *logging.Logger) probeResult {
+	if s.embedder == nil {
+		return probeResult{OK: false, Error: "未配置"}
+	}
+	// MockEmbedder has no Probe method — assume always available.
+	if _, ok := s.embedder.(*MockEmbedder); ok {
+		return probeResult{OK: true, LatencyMs: 0}
+	}
+	if oe, ok := s.embedder.(*OpenAIEmbedder); ok {
+		pCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := oe.Probe(pCtx)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			log.Errorf("[probe] embedder FAIL: %v", err)
+			return probeResult{OK: false, Error: err.Error(), LatencyMs: latency}
+		}
+		return probeResult{OK: true, LatencyMs: latency}
+	}
+	return probeResult{OK: false, Error: "未知嵌入器类型"}
+}
+
+func (s *Store) probeReranker(ctx context.Context, log *logging.Logger) probeResult {
+	if s.reranker == nil {
+		return probeResult{OK: false, Error: "未配置"}
+	}
+	// MockReranker has no Probe method — assume always available.
+	if _, ok := s.reranker.(*MockReranker); ok {
+		return probeResult{OK: true, LatencyMs: 0}
+	}
+	if ir, ok := s.reranker.(*InfinityReranker); ok {
+		pCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := ir.Probe(pCtx)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			log.Errorf("[probe] reranker FAIL: %v", err)
+			return probeResult{OK: false, Error: err.Error(), LatencyMs: latency}
+		}
+		return probeResult{OK: true, LatencyMs: latency}
+	}
+	return probeResult{OK: false, Error: "未知重排序器类型"}
+}
+
+func probeDocParser(ctx context.Context, log *logging.Logger) probeResult {
+	pCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := ProbeDocParser(pCtx)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		log.Errorf("[probe] docParser FAIL: %v", err)
+		return probeResult{OK: false, Error: err.Error(), LatencyMs: latency}
+	}
+	return probeResult{OK: true, LatencyMs: latency}
 }
 
 // --- helpers ---

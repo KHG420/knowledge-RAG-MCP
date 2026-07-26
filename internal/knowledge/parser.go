@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -300,6 +301,43 @@ func DocParserInfo() map[string]any {
 		}
 	}
 	return map[string]any{"type": "custom"}
+}
+
+// ProbeDocParser checks connectivity to the configured document parser.
+// It sends a lightweight HEAD request to the parser endpoint to verify
+// the service is reachable. Returns nil if the doc parser uses the local
+// Tabula fallback (always available).
+func ProbeDocParser(ctx context.Context) error {
+	if docParser == nil {
+		return fmt.Errorf("未配置文档解析服务（使用本地 Tabula 解析）")
+	}
+	hp, ok := docParser.(*HTTPDocParser)
+	if !ok || hp.endpoint == "" {
+		// Custom non-HTTP parser — assume available.
+		return nil
+	}
+
+	// Send a HEAD request to the endpoint to check connectivity.
+	// Any 2xx/3xx/4xx response means the service is reachable;
+	// only transport-level errors are failures.
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, hp.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+	if hp.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+hp.apiKey)
+	}
+
+	resp, err := hp.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("连接文档解析服务失败: %w", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+		return nil
+	}
+	return fmt.Errorf("文档解析服务返回状态码 %d", resp.StatusCode)
 }
 
 // ---------------------------------------------------------------------------

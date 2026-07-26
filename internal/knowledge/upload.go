@@ -9,16 +9,45 @@ import (
 	"time"
 )
 
-// UploadDocument ingests a file into the knowledge base:
-//  1. ParseFile extracts the full text.
-//  2. ChunkText splits it into paragraph-level chunks with position metadata.
-//  3. Chunks are written as NNN.md under ~/knowledge_base/<slug>/chunks/.
-//  4. Metadata is written to meta.json.
-//  5. CHUNKS.toml search index is written with position metadata.
-//  6. The original file is copied as source.<ext> for traceability.
-//  7. The full raw markdown text is saved as document.md.
-//  8. INDEX.md is updated with a link to the new document.
+// ProgressEvent describes a single stage of document upload processing.
+type ProgressEvent struct {
+	Stage  string `json:"stage"`
+	Status string `json:"status"` // "started" | "done" | "error"
+	Detail string `json:"detail,omitempty"`
+}
+
+// ProgressFunc is a callback invoked during UploadDocumentWithProgress.
+// It receives ProgressEvent values describing each processing stage.
+type ProgressFunc func(ProgressEvent)
+
+// Stage constants used by UploadDocumentWithProgress.
+const (
+	StageParsing  = "parsing"
+	StageChunking = "chunking"
+	StageMerging  = "merging"
+	StageMetadata = "metadata"
+	StageWriting  = "writing"
+	StageIndexing = "indexing"
+	StageComplete = "complete"
+)
+
+// UploadDocument ingests a file into the knowledge base.
+// It is a convenience wrapper around UploadDocumentWithProgress with no progress callback.
 func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
+	return s.UploadDocumentWithProgress(path, nil, tags...)
+}
+
+// UploadDocumentWithProgress ingests a file into the knowledge base and calls
+// progress for each processing stage:
+//
+//	1. parsing   — ParseFile extracts the full text.
+//	2. chunking  — ChunkText splits it into paragraph-level chunks.
+//	3. merging   — Optional semantic merging (skipped without embedder).
+//	4. metadata  — Slug, paper metadata extraction.
+//	5. writing   — Persist chunks, section chunks, and meta.json.
+//	6. indexing  — Write CHUNKS.toml search index with vector embeddings.
+//	7. complete  — Copy source, write raw text, update INDEX.md.
+func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, tags ...string) (DocumentMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -26,23 +55,36 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 	log.Infof("UploadDocument path=%q kb=%q", path, s.kbName)
 	start := time.Now()
 
+	emit := func(stage, status, detail string) {
+		if progress != nil {
+			progress(ProgressEvent{Stage: stage, Status: status, Detail: detail})
+		}
+	}
+
 	// Step 1: parse.
+	emit(StageParsing, "started", "")
 	text, err := ParseFile(path)
 	if err != nil {
 		log.Errorf("UploadDocument %q: parse failed: %v", path, err)
+		emit(StageParsing, "error", err.Error())
 		return DocumentMeta{}, fmt.Errorf("upload: parse: %w", err)
 	}
+	emit(StageParsing, "done", fmt.Sprintf("%d 字符", len(text)))
 
 	// Step 2: hierarchical chunking (fine + coarse section-level chunks).
+	emit(StageChunking, "started", "")
 	fineChunks, coarseChunks := ChunkTextHierarchical(text)
 	if len(fineChunks) == 0 {
 		log.Errorf("UploadDocument %q: no chunks produced", path)
+		emit(StageChunking, "error", "文档未产生任何分块")
 		return DocumentMeta{}, fmt.Errorf("upload: document produced no chunks (empty after parsing)")
 	}
 	log.Debugf("chunked %d chars → %d fine + %d coarse chunks", len(text), len(fineChunks), len(coarseChunks))
+	emit(StageChunking, "done", fmt.Sprintf("%d 个段落分块", len(fineChunks)))
 
 	// Step 2a: optional semantic merging to combine topically adjacent chunks.
 	if s.embedder != nil {
+		emit(StageMerging, "started", "")
 		// Coordinate GPU: sleep reranker, wake embedding.
 		var restoreEmbed func()
 		if s.gpuScheduler != nil {
@@ -56,6 +98,7 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		if restoreEmbed != nil {
 			restoreEmbed()
 		}
+		emit(StageMerging, "done", fmt.Sprintf("%d 个分块（合并后）", len(fineChunks)))
 	}
 
 	// Extract content strings for writing chunk files.
@@ -65,6 +108,7 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 	}
 
 	// Step 3: derive slug and metadata.
+	emit(StageMetadata, "started", "")
 	slug := SlugFromPath(path)
 	sourceType := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 
@@ -85,9 +129,12 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		meta.Abstract = abstract
 		meta.IsPaper = true
 	}
+	emit(StageMetadata, "done", slug)
 
 	// Step 4: persist chunks, section chunks, and metadata.
+	emit(StageWriting, "started", "")
 	if err := s.WriteChunks(slug, chunks); err != nil {
+		emit(StageWriting, "error", err.Error())
 		return DocumentMeta{}, fmt.Errorf("upload: write chunks: %w", err)
 	}
 	if len(coarseChunks) > 0 {
@@ -97,10 +144,13 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		}
 	}
 	if err := s.WriteMeta(slug, meta); err != nil {
+		emit(StageWriting, "error", err.Error())
 		return DocumentMeta{}, fmt.Errorf("upload: write meta: %w", err)
 	}
+	emit(StageWriting, "done", fmt.Sprintf("%d 分块已写入", len(chunks)))
 
 	// Step 5: write CHUNKS.toml search index with section chunk links.
+	emit(StageIndexing, "started", "")
 	if err := s.writeChunksIndexFromMetaWithSections(slug, fineChunks, coarseChunks); err != nil {
 		log.Warnf("writeChunksIndexFromMetaWithSections for %q: %v", slug, err)
 	}
@@ -122,8 +172,10 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 		// Non-fatal: re-index can be rebuilt.
 		_ = err
 	}
+	emit(StageIndexing, "done", "搜索索引已建立")
 
 	log.Infof("UploadDocument %q done: slug=%q chunks=%d chars=%d in %v", path, slug, meta.ChunkCount, meta.TotalChars, time.Since(start))
+	emit(StageComplete, "done", slug)
 	return meta, nil
 }
 
