@@ -40,6 +40,7 @@ type Store struct {
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
 	logger *logging.Logger
 	mu     *sync.Mutex
+	taskManager *UploadTaskManager
 }
 
 // NewStore returns a Store. The data directory defaults to ~/knowledge_base/;
@@ -69,6 +70,19 @@ func (s *Store) WithKB(name string) *Store {
 func (s *Store) SetLogger(l *logging.Logger) {
 	s.logger = l
 	SetParserLogger(l)
+}
+
+// TaskManager returns the store's UploadTaskManager, creating it lazily if needed.
+// Tasks are persisted to a tasks/ subdirectory under the knowledge base directory.
+func (s *Store) TaskManager() *UploadTaskManager {
+	if s.taskManager == nil {
+		// Use the base knowledge directory (not KB-scoped) for task storage.
+		base := *s
+		base.kbName = ""
+		tasksDir := filepath.Join(base.knowledgeDir(), "tasks")
+		s.taskManager = NewUploadTaskManager(tasksDir, s.logger)
+	}
+	return s.taskManager
 }
 
 // SetDocParser configures the document parser used by ParseFile for

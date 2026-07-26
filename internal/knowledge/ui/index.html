@@ -199,6 +199,18 @@
     transition: all var(--transition);
   }
   .upload-queue-header .queue-clear:hover { color: var(--danger); background: #FEF2F2; }
+  .upload-item .queue-clear-small {
+    background: none; border: 1px solid var(--border); color: var(--text-muted); cursor: pointer;
+    font-size: 12px; padding: 2px 10px; border-radius: var(--radius-sm);
+    margin-left: 10px; transition: all var(--transition); vertical-align: middle;
+  }
+  .upload-item .queue-clear-small:hover { color: var(--danger); background: #FEF2F2; }
+  .upload-item .queue-retry {
+    background: var(--primary); border: none; color: #fff; cursor: pointer;
+    font-size: 12px; padding: 2px 10px; border-radius: var(--radius-sm);
+    margin-left: 10px; transition: all var(--transition); vertical-align: middle;
+  }
+  .upload-item .queue-retry:hover { opacity: 0.8; }
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -779,6 +791,7 @@ var isLoading = false;
 
 // Upload queue persistence
 var UPLOAD_QUEUE_KEY = 'upload_queue';
+var activeEventSources = {}; // taskId -> EventSource, for cleanup
 
 function saveQueue(items) {
   try {
@@ -796,6 +809,19 @@ function loadQueue() {
 
 function clearQueue() {
   sessionStorage.removeItem(UPLOAD_QUEUE_KEY);
+}
+
+function removeQueueItem(id) {
+  if (!id) return;
+  var queue = loadQueue();
+  var idx = -1;
+  for (var i = 0; i < queue.length; i++) {
+    if (queue[i].taskId === id || queue[i].id === id) { idx = i; break; }
+  }
+  if (idx !== -1) {
+    queue.splice(idx, 1);
+    sessionStorage.setItem(UPLOAD_QUEUE_KEY, JSON.stringify(queue));
+  }
 }
 
 // === Init ===
@@ -1365,6 +1391,11 @@ async function uploadFiles(fileList) {
   clearBtn.className = 'queue-clear';
   clearBtn.textContent = '清除';
   clearBtn.addEventListener('click', function() {
+    // Close all active EventSource connections
+    for (var tid in activeEventSources) {
+      activeEventSources[tid].close();
+    }
+    activeEventSources = {};
     progressEl.innerHTML = '';
     progressEl.classList.remove('active');
     clearQueue();
@@ -1372,13 +1403,39 @@ async function uploadFiles(fileList) {
   header.appendChild(clearBtn);
   progressEl.appendChild(header);
 
-  // Initialize queue before upload loop
-  var queue = files.map(function(file) {
-    return { name: file.name, status: 'pending', stages: {}, currentStage: '' };
+  // Upload all files in a single request, get task IDs back
+  var formData = new FormData();
+  files.forEach(function(f) { formData.append('files', f); });
+
+  var url = '/api/upload?stream=true';
+  if (currentKB) url += '&kb=' + encodeURIComponent(currentKB);
+
+  var resp, tasksData;
+  try {
+    resp = await fetch(url, { method: 'POST', body: formData });
+    tasksData = await resp.json();
+    if (!resp.ok) throw new Error(tasksData.error || 'upload failed');
+  } catch (e) {
+    showToast('上传提交失败: ' + e.message, 'error');
+    progressEl.innerHTML = '';
+    progressEl.classList.remove('active');
+    return;
+  }
+
+  var tasks = tasksData.tasks || [];
+  if (tasks.length === 0) {
+    showToast('没有文件被提交', 'error');
+    return;
+  }
+
+  // Build queue from tasks
+  var queue = tasks.map(function(t) {
+    return { taskId: t.id, name: t.fileName, status: 'pending', stages: {}, currentStage: '' };
   });
   saveQueue(queue);
 
-  var items = files.map(function(file, idx) {
+  // Create DOM items for each task
+  var items = queue.map(function(q, idx) {
     var item = document.createElement('div');
     item.className = 'upload-item pending';
     var stagesHtml = [
@@ -1388,100 +1445,85 @@ async function uploadFiles(fileList) {
       '<div class="upload-stage" data-stage="writing"><span class="stage-spinner"></span>💾 写入</div>',
       '<div class="upload-stage" data-stage="indexing"><span class="stage-spinner"></span>🧮 索引</div>'
     ].join('');
-    item.innerHTML = '<div class="upload-item-row"><div class="spinner"></div><span class="name">' + escHtml(file.name) + '</span><span class="status">等待中</span></div><div class="upload-stages" id="stages-' + idx + '">' + stagesHtml + '</div>';
+    item.innerHTML = '<div class="upload-item-row"><div class="spinner"></div><span class="name">' + escHtml(q.name) + '</span><span class="status">等待中</span></div><div class="upload-stages" id="stages-' + idx + '">' + stagesHtml + '</div>';
     progressEl.appendChild(item);
-    return { item: item, file: file, idx: idx };
+    return { item: item, queueEntry: q, idx: idx };
   });
 
-  for (var idx = 0; idx < items.length; idx++) {
-    var entry = items[idx];
-    var row = entry.item.querySelector('.upload-item-row');
+  // Subscribe to events for each task
+  items.forEach(function(entry) {
     var statusEl = entry.item.querySelector('.status');
     var stagesEl = entry.item.querySelector('.upload-stages');
 
     entry.item.className = 'upload-item';
     statusEl.textContent = '上传中…';
     stagesEl.classList.add('active');
-    // Persist status change
-    queue[idx].status = 'uploading';
+    entry.queueEntry.status = 'uploading';
     saveQueue(queue);
 
+    subscribeTaskEvents(entry.queueEntry.taskId, stagesEl, statusEl, entry.queueEntry, queue);
+  });
+}
+
+// subscribeTaskEvents connects to the task SSE endpoint and updates the UI.
+function subscribeTaskEvents(taskId, stagesEl, statusEl, queueEntry, queue) {
+  if (activeEventSources[taskId]) {
+    activeEventSources[taskId].close();
+  }
+
+  var es = new EventSource('/api/tasks/' + encodeURIComponent(taskId) + '/events');
+  activeEventSources[taskId] = es;
+
+  es.addEventListener('progress', function(e) {
     try {
-      var formData = new FormData();
-      formData.append('files', entry.file);
-
-      // Use SSE streaming for progress
-      var url = '/api/upload?stream=true';
-      if (currentKB) url += '&kb=' + encodeURIComponent(currentKB);
-      var res = await fetch(url, { method: 'POST', body: formData });
-      if (!res.ok) {
-        var errData = await res.json().catch(function() { return {error: 'upload failed'}; });
-        throw new Error(errData.error || 'upload failed (HTTP ' + res.status + ')');
+      var ev = JSON.parse(e.data);
+      updateUploadStage(stagesEl, ev.stage, ev.status, ev.detail, statusEl);
+      if (ev.status === 'started') {
+        queueEntry.currentStage = ev.stage;
+      } else if (ev.status === 'done') {
+        queueEntry.stages[ev.stage] = 'done';
+        queueEntry.currentStage = ev.stage;
       }
-
-      var reader = res.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var completeData = null;
-
-      while (true) {
-        var result = await reader.read();
-        if (result.done) break;
-        buffer += decoder.decode(result.value, {stream: true});
-
-        var lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (var li = 0; li < lines.length; li++) {
-          var line = lines[li];
-          if (line.startsWith('data: ')) {
-            try {
-              var ev = JSON.parse(line.slice(6));
-              if (ev.stage) {
-                updateUploadStage(stagesEl, ev.stage, ev.status, ev.detail, statusEl);
-                // Persist stage progress
-                if (ev.status === 'started') {
-                  queue[idx].currentStage = ev.stage;
-                } else if (ev.status === 'done') {
-                  queue[idx].stages[ev.stage] = 'done';
-                  queue[idx].currentStage = ev.stage;
-                }
-                saveQueue(queue);
-              }
-              if (ev.slug) {
-                completeData = ev;
-              }
-            } catch (e) {}
-          }
-        }
-      }
-
-      if (completeData) {
-        entry.item.className = 'upload-item done';
-        statusEl.textContent = '✅ 完成';
-        queue[idx].status = 'done';
-        saveQueue(queue);
-      } else {
-        throw new Error('上传未完成');
-      }
-    } catch (e) {
-      entry.item.className = 'upload-item fail';
-      statusEl.textContent = '❌ ' + e.message;
-      queue[idx].status = 'fail';
-      queue[idx].error = e.message;
       saveQueue(queue);
+    } catch (ex) {}
+  });
+
+  es.addEventListener('complete', function(e) {
+    try {
+      var ev = JSON.parse(e.data);
+      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('done'); });
+      stagesEl.querySelectorAll('.upload-stage.active').forEach(function(el) { el.classList.remove('active'); });
+      stagesEl.parentElement.className = 'upload-item done';
+      statusEl.textContent = '✅ 完成';
+      queueEntry.status = 'done';
+      queueEntry.slug = ev.slug;
+      saveQueue(queue);
+      loadDocs();
+      loadModelInfo();
+    } catch (ex) {}
+    es.close();
+    delete activeEventSources[taskId];
+  });
+
+  es.addEventListener('error', function(e) {
+    try {
+      var ev = JSON.parse(e.data);
       stagesEl.querySelectorAll('.upload-stage.active').forEach(function(el) {
         el.classList.remove('active');
         el.classList.add('error');
       });
-    }
-    doneCount++;
-    header.querySelector('.queue-progress').textContent = '上传队列: ' + doneCount + '/' + total;
-  }
-  loadDocs();
+      statusEl.textContent = '❌ ' + (ev.error || '上传失败');
+      queueEntry.status = 'fail';
+      queueEntry.error = ev.error || '上传失败';
+      saveQueue(queue);
+    } catch (ex) {}
+    es.close();
+    delete activeEventSources[taskId];
+  });
 }
 
 // restoreUploadQueue restores the upload queue UI from sessionStorage on page load.
+// For entries with taskId, it fetches current status from the server.
 function restoreUploadQueue() {
   var queue = loadQueue();
   if (queue.length === 0) return;
@@ -1500,6 +1542,10 @@ function restoreUploadQueue() {
   clearBtn.className = 'queue-clear';
   clearBtn.textContent = '清除';
   clearBtn.addEventListener('click', function() {
+    for (var tid in activeEventSources) {
+      activeEventSources[tid].close();
+    }
+    activeEventSources = {};
     progressEl.innerHTML = '';
     progressEl.classList.remove('active');
     clearQueue();
@@ -1524,39 +1570,137 @@ function restoreUploadQueue() {
     var statusEl = item.querySelector('.status');
     var stagesEl = item.querySelector('.upload-stages');
 
-    if (q.status === 'done') {
-      item.className = 'upload-item done';
-      statusEl.textContent = '✅ 完成';
-      // Mark all stages as done
-      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
-        el.classList.add('done');
-      });
-    } else if (q.status === 'fail') {
-      item.className = 'upload-item fail';
-      statusEl.textContent = '❌ ' + (q.error || '上传失败');
-      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
-        el.classList.add('error');
-      });
-    } else {
-      // uploading or pending: page was refreshed, consider interrupted
-      item.className = 'upload-item fail';
-      statusEl.textContent = '⏸️ 已中断（刷新页面导致）';
-      // Mark completed stages as done, current as error, future as pending
-      stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
-        var stage = el.getAttribute('data-stage');
-        if (q.stages[stage] === 'done') {
-          el.classList.add('done');
-        } else if (stage === q.currentStage || !q.currentStage) {
-          el.classList.add('error');
-        }
-      });
+    // If entry has a taskId, try to fetch live status from the server
+    if (q.taskId && q.status !== 'done' && q.status !== 'fail') {
+      fetchTaskStatus(q, item, stagesEl, statusEl, queue);
+      return;
     }
-  });
 
-  // Auto-collapse if all done
-  var remaining = queue.filter(function(q) { return q.status !== 'done' && q.status !== 'fail'; });
-  if (remaining.length === 0) {
-    // Leave visible so user can see the history and clear it
+    // Otherwise render from saved state
+    renderQueueItem(q, item, stagesEl, statusEl);
+  });
+}
+
+// fetchTaskStatus queries the server for task state and renders accordingly.
+function fetchTaskStatus(q, item, stagesEl, statusEl, queue) {
+  fetch('/api/tasks/' + encodeURIComponent(q.taskId))
+    .then(function(resp) {
+      if (!resp.ok) {
+        // Task not found (expired, cleaned up, or tasks dir missing)
+        item.className = 'upload-item fail';
+        statusEl.textContent = '⏸️ 任务已失效（可能已过期或被清理）';
+        stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('error'); });
+        q.status = 'fail';
+        q.error = '任务失效';
+        saveQueue(queue);
+
+        // Add a "清除" button to just remove the stale entry
+        var nameSpan = item.querySelector('.name');
+        var clearBtn = document.createElement('button');
+        clearBtn.className = 'queue-clear-small';
+        clearBtn.textContent = '清除';
+        clearBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          removeQueueItem(q.id || q.taskId);
+          item.remove();
+        });
+        nameSpan.parentNode.insertBefore(clearBtn, nameSpan.nextSibling);
+
+        // Add a "retry upload" button for failed tasks
+        var retryBtn = document.createElement('button');
+        retryBtn.className = 'queue-retry';
+        retryBtn.textContent = '重新上传';
+        retryBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          // Re-trigger upload for this file by adding to a file input
+          // For now, just remove the item and suggest re-uploading
+          var fi = document.createElement('input');
+          fi.type = 'file';
+          fi.style.display = 'none';
+          document.body.appendChild(fi);
+          fi.addEventListener('change', function() {
+            if (fi.files && fi.files.length > 0) {
+              addToUploadQueue(fi.files);
+            }
+            document.body.removeChild(fi);
+            removeQueueItem(q.id || q.taskId);
+            item.remove();
+          });
+          fi.click();
+        });
+        nameSpan.parentNode.insertBefore(retryBtn, nameSpan.nextSibling);
+        return null;
+      }
+      return resp.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+
+      if (data.status === 'done') {
+        item.className = 'upload-item done';
+        statusEl.textContent = '✅ 完成';
+        stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('done'); });
+        q.status = 'done';
+        q.slug = data.slug || '';
+        saveQueue(queue);
+      } else if (data.status === 'error') {
+        item.className = 'upload-item fail';
+        statusEl.textContent = '❌ ' + (data.error || '上传失败');
+        stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('error'); });
+        q.status = 'fail';
+        q.error = data.error || '上传失败';
+        saveQueue(queue);
+      } else {
+        // Task is still processing — subscribe to events
+        item.className = 'upload-item';
+        statusEl.textContent = '处理中…';
+        stagesEl.classList.add('active');
+        q.status = 'uploading';
+        saveQueue(queue);
+
+        // Replay completed stages from saved state
+        stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
+          var stage = el.getAttribute('data-stage');
+          if (q.stages[stage] === 'done') {
+            el.classList.add('done');
+          }
+        });
+
+        // Subscribe to future events
+        subscribeTaskEvents(q.taskId, stagesEl, statusEl, q, queue);
+      }
+    })
+    .catch(function(err) {
+      item.className = 'upload-item fail';
+      statusEl.textContent = '⏸️ 查询任务状态失败';
+      q.status = 'fail';
+      q.error = err.message;
+      saveQueue(queue);
+    });
+}
+
+// renderQueueItem renders a queue entry from saved state (for done/fail cases).
+function renderQueueItem(q, item, stagesEl, statusEl) {
+  if (q.status === 'done') {
+    item.className = 'upload-item done';
+    statusEl.textContent = '✅ 完成';
+    stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('done'); });
+  } else if (q.status === 'fail') {
+    item.className = 'upload-item fail';
+    statusEl.textContent = '❌ ' + (q.error || '上传失败');
+    stagesEl.querySelectorAll('.upload-stage').forEach(function(el) { el.classList.add('error'); });
+  } else {
+    // uploading or pending without taskId: refreshed or interrupted
+    item.className = 'upload-item fail';
+    statusEl.textContent = '⏸️ 已中断（刷新页面导致）';
+    stagesEl.querySelectorAll('.upload-stage').forEach(function(el) {
+      var stage = el.getAttribute('data-stage');
+      if (q.stages[stage] === 'done') {
+        el.classList.add('done');
+      } else if (stage === q.currentStage || !q.currentStage) {
+        el.classList.add('error');
+      }
+    });
   }
 }
 

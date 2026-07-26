@@ -120,6 +120,19 @@ func (s *Store) StartManageServer(port string) error {
 	// API: probe model connectivity (embedder, reranker, doc parser)
 	mux.HandleFunc("POST /api/models/probe", s.handleModelProbe)
 
+	// API: task status and SSE events for async upload
+	mux.HandleFunc("GET /api/tasks/{id}", s.handleTaskStatus)
+	mux.HandleFunc("GET /api/tasks/{id}/events", s.handleTaskEvents)
+
+	// Background cleanup of old tasks every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.TaskManager().Cleanup(30 * time.Minute)
+		}
+	}()
+
 	// Listen on the port with per-family fallback.
 	// On macOS, Go's net.Listen("tcp", ":port") can return EADDRINUSE even when
 	// binding succeeds on one address family. This happens because getaddrinfo
@@ -391,10 +404,154 @@ func saveManageFile(s *Store, src io.Reader, filename string) (DocumentMeta, err
 	return s.UploadDocument(tmpPath)
 }
 
-// --- SSE streaming upload ---
+// --- Async upload (task-based) ---
 
-// handleManageUploadSSE handles file upload with real-time progress via SSE.
+// handleManageUploadSSE handles file upload asynchronously.
+// Instead of streaming progress inline, it creates tasks and returns
+// immediately with task IDs. The frontend then subscribes to
+// /api/tasks/{id}/events for real-time progress.
 func (s *Store) handleManageUploadSSE(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		log.Errorf("Upload: parse multipart form failed: %v", err)
+		writeManageError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
+		return
+	}
+
+	// Collect files from both "files" (multiple) and "file" (single) fields.
+	fileHeaders := r.MultipartForm.File["files"]
+	if len(fileHeaders) == 0 {
+		f, h, err := r.FormFile("file")
+		if err == nil {
+			f.Close()
+			fileHeaders = []*multipart.FileHeader{h}
+		}
+	}
+	if len(fileHeaders) == 0 {
+		writeManageError(w, http.StatusBadRequest, "no files uploaded")
+		return
+	}
+
+	log.Debugf("Upload: %d files kb=%q", len(fileHeaders), s.kbName)
+	type taskInfo struct {
+		ID       string `json:"id"`
+		FileName string `json:"fileName"`
+	}
+	tasks := make([]taskInfo, 0, len(fileHeaders))
+
+	for _, fh := range fileHeaders {
+		file, err := fh.Open()
+		if err != nil {
+			log.Errorf("Upload: open file %q failed: %v", fh.Filename, err)
+			continue
+		}
+
+		// Save uploaded file to a temp directory (cleanup managed by task).
+		tmpDir, err := os.MkdirTemp("", "knowledge-upload-*")
+		if err != nil {
+			log.Errorf("Upload: create tmp dir for %q failed: %v", fh.Filename, err)
+			file.Close()
+			continue
+		}
+		tmpPath := filepath.Join(tmpDir, fh.Filename)
+		dst, err := os.Create(tmpPath)
+		if err != nil {
+			log.Errorf("Upload: create tmp file %q failed: %v", tmpPath, err)
+			os.RemoveAll(tmpDir)
+			file.Close()
+			continue
+		}
+		if _, err := io.Copy(dst, file); err != nil {
+			log.Errorf("Upload: copy %q failed: %v", fh.Filename, err)
+			dst.Close()
+			os.RemoveAll(tmpDir)
+			file.Close()
+			continue
+		}
+		dst.Close()
+		file.Close()
+
+		// Create task and launch background processing.
+		tm := s.TaskManager()
+		task := tm.Create(fh.Filename, s.kbName, tmpDir)
+
+		go func(t *UploadTask, store *Store, path, kbName string) {
+			// Apply KB scope for this task.
+			var taskStore *Store = store
+			if kbName != "" {
+				taskStore = store.WithKB(kbName)
+			}
+
+			t.mu.Lock()
+			t.Status = "processing"
+			t.mu.Unlock()
+			if t.mgr != nil {
+				t.mgr.saveTask(t)
+			}
+
+			meta, err := taskStore.UploadDocumentWithProgress(path, func(ev ProgressEvent) {
+				t.RecordEvent(ev)
+			})
+			if err != nil {
+				t.RecordEvent(ProgressEvent{Stage: "error", Status: "error", Detail: err.Error()})
+				t.MarkError(err)
+			} else {
+				t.RecordEvent(ProgressEvent{Stage: StageComplete, Status: "done", Detail: meta.Slug})
+				t.MarkDone(meta.Slug)
+			}
+		}(task, s, tmpPath, s.kbName)
+
+		tasks = append(tasks, taskInfo{ID: task.ID, FileName: fh.Filename})
+	}
+
+	if len(tasks) == 0 {
+		writeManageError(w, http.StatusInternalServerError, "all files failed to submit")
+		return
+	}
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"message": "tasks created",
+		"tasks":   tasks,
+	})
+}
+
+// --- Task status & SSE handlers ---
+
+func (s *Store) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task := s.TaskManager().Get(id)
+	if task == nil {
+		writeManageError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"id":        task.ID,
+		"fileName":  task.FileName,
+		"kbName":    task.KBName,
+		"status":    task.Status,
+		"slug":      task.Slug,
+		"error":     task.Error,
+		"createdAt": task.CreatedAt,
+		"events":    task.Events(),
+	})
+}
+
+// handleTaskEvents streams task progress events via SSE.
+// On connect it replays all recorded events, then waits for new ones
+// until the task completes or the client disconnects.
+func (s *Store) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task := s.TaskManager().Get(id)
+	if task == nil {
+		writeManageError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -405,88 +562,91 @@ func (s *Store) handleManageUploadSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log := s.logger.WithModule("manage")
-	kb := r.URL.Query().Get("kb")
-	if kb != "" {
-		s = s.WithKB(kb)
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
-
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		log.Errorf("UploadSSE: parse multipart form failed: %v", err)
-		sendSSEEvent(w, flusher, "error", map[string]string{"error": "failed to parse form: " + err.Error()})
-		return
-	}
-
-	files := r.MultipartForm.File["files"]
-	if len(files) == 0 {
-		// Single file via `file` field (curl-friendly)
-		file, header, err := r.FormFile("file")
-		if err == nil {
-			defer file.Close()
-			log.Debugf("UploadSSE: single file name=%q kb=%q", header.Filename, s.kbName)
-			processFileSSE(w, flusher, s, file, header.Filename)
-			return
-		}
-		sendSSEEvent(w, flusher, "error", map[string]string{"error": "no files uploaded"})
-		return
-	}
-
-	log.Debugf("UploadSSE: %d files kb=%q", len(files), s.kbName)
-	for _, fh := range files {
-		file, err := fh.Open()
-		if err != nil {
-			log.Errorf("UploadSSE: open file %q failed: %v", fh.Filename, err)
-			sendSSEEvent(w, flusher, "error", map[string]string{"file": fh.Filename, "error": err.Error()})
-			continue
-		}
-		processFileSSE(w, flusher, s, file, fh.Filename)
-		file.Close()
-	}
-
-	sendSSEEvent(w, flusher, "done", map[string]string{"message": "all files processed"})
-}
-
-// processFileSSE saves a single uploaded file and streams progress via SSE.
-func processFileSSE(w http.ResponseWriter, flusher http.Flusher, s *Store, src io.Reader, filename string) {
-	tmpDir, err := os.MkdirTemp("", "knowledge-upload-*")
-	if err != nil {
-		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
-		return
-	}
-	defer os.RemoveAll(tmpDir)
-
-	tmpPath := filepath.Join(tmpDir, filename)
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
-		return
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
-		return
-	}
-	dst.Close()
-
-	meta, err := s.UploadDocumentWithProgress(tmpPath, func(ev ProgressEvent) {
+	// Replay all existing events.
+	events := task.Events()
+	for _, ev := range events {
 		sendSSEEvent(w, flusher, "progress", map[string]any{
-			"file":   filename,
 			"stage":  ev.Stage,
 			"status": ev.Status,
 			"detail": ev.Detail,
 		})
-	})
-	if err != nil {
-		sendSSEEvent(w, flusher, "error", map[string]string{"file": filename, "error": err.Error()})
+	}
+
+	// If already in a terminal state, send final event and return.
+	task.mu.RLock()
+	terminal := task.Status == "done" || task.Status == "error"
+	task.mu.RUnlock()
+	if terminal {
+		sendTaskFinalEvent(w, flusher, task)
 		return
 	}
 
-	sendSSEEvent(w, flusher, "complete", map[string]any{
-		"file": filename,
-		"slug": meta.Slug,
-		"name": meta.OriginalName,
-	})
+	// Poll for new events until task completes or client disconnects.
+	lastCount := len(events)
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-task.Done():
+			// Send any remaining events then final event.
+			allEvents := task.Events()
+			for i := lastCount; i < len(allEvents); i++ {
+				ev := allEvents[i]
+				sendSSEEvent(w, flusher, "progress", map[string]any{
+					"stage":  ev.Stage,
+					"status": ev.Status,
+					"detail": ev.Detail,
+				})
+			}
+			sendTaskFinalEvent(w, flusher, task)
+			return
+		case <-ticker.C:
+			allEvents := task.Events()
+			if len(allEvents) > lastCount {
+				for i := lastCount; i < len(allEvents); i++ {
+					ev := allEvents[i]
+					sendSSEEvent(w, flusher, "progress", map[string]any{
+						"stage":  ev.Stage,
+						"status": ev.Status,
+						"detail": ev.Detail,
+					})
+				}
+				lastCount = len(allEvents)
+
+				// Check if task just completed.
+				task.mu.RLock()
+				done := task.Status == "done" || task.Status == "error"
+				task.mu.RUnlock()
+				if done {
+					sendTaskFinalEvent(w, flusher, task)
+					return
+				}
+			}
+		}
+	}
+}
+
+// sendTaskFinalEvent sends the terminal SSE event (complete or error) for a task.
+func sendTaskFinalEvent(w http.ResponseWriter, flusher http.Flusher, task *UploadTask) {
+	task.mu.RLock()
+	status := task.Status
+	slug := task.Slug
+	errMsg := task.Error
+	task.mu.RUnlock()
+
+	if status == "done" {
+		sendSSEEvent(w, flusher, "complete", map[string]any{
+			"slug": slug,
+			"name": task.FileName,
+		})
+	} else {
+		sendSSEEvent(w, flusher, "error", map[string]string{
+			"error": errMsg,
+		})
+	}
 }
 
 // sendSSEEvent writes an SSE-formatted event and flushes the response.
