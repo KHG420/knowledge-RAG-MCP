@@ -19,6 +19,7 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 - **Paper metadata extraction** — title, authors, abstract, section-role detection for academic papers
 - **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
 - **KB descriptions** — assign a brief description when creating a KB; view all KBs and their descriptions via `knowledge_list_kbs` tool
+- **MySQL/MariaDB backend** — optional database storage backend replacing the default filesystem, configurable via DSN, env vars, or TOML
 
 ## Installation
 
@@ -70,6 +71,13 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy) |
 | `log_file` | `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | Log file path |
 | `log_level` | `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | Log level: `debug` or `info` |
+| `mysql_dsn` | `MYSQL_DSN` | — | MySQL DSN, e.g. `user:pass@tcp(host:3306)/db?parseTime=true`. When set, enables MySQL backend |
+| `mysql_user` | `MYSQL_USER` | `root` | MySQL user (used when DSN not set) |
+| `mysql_password` | `MYSQL_PASSWORD` | — | MySQL password |
+| `mysql_host` | `MYSQL_HOST` | `127.0.0.1` | MySQL host |
+| `mysql_port` | `MYSQL_PORT` | `3306` | MySQL port |
+| `mysql_database` | `MYSQL_DATABASE` | `knowledge_rag` | MySQL database name |
+| `mysql_socket_path` | `MYSQL_SOCKET_PATH` | — | MySQL Unix socket path (takes precedence over host:port) |
 
 ## Quick Start
 
@@ -123,6 +131,31 @@ RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
   knowledge-mcp serve
 ```
+
+### MySQL/MariaDB backend (alternative to file storage)
+
+knowledge-mcp supports MySQL or MariaDB as an alternative storage backend.
+All document data (metadata, chunks, search indices) is stored in database tables,
+making it easier to integrate with existing infrastructure.
+
+```bash
+# Connect via DSN
+MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
+  knowledge-mcp serve
+
+# Connect via Unix socket
+MYSQL_SOCKET_PATH=/var/run/mysqld/mysqld.sock \
+  MYSQL_DATABASE=knowledge_rag \
+  knowledge-mcp serve
+
+# Via TOML config:
+#   mysql_host = "127.0.0.1"
+#   mysql_port = "3306"
+#   mysql_user = "root"
+#   mysql_database = "knowledge_rag"
+```
+
+On first startup, the required tables are created automatically. Switching backend types requires re-importing existing data.
 
 ## Web Management UI
 
@@ -284,6 +317,20 @@ When configured, all non-plain-text formats (PDF, DOCX, ODT, EPUB, HTML, XLSX, P
 | `DOC_PARSER_API_KEY` | — | Bearer token (optional) |
 | `DOC_PARSER_TIMEOUT` | `600s` | HTTP request timeout |
 
+### MySQL Backend
+
+When the MySQL backend is enabled, all knowledge base data is stored in database tables instead of the filesystem. Set `MYSQL_DSN` or any `MYSQL_*` variable to enable.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MYSQL_DSN` | — | MySQL DSN, e.g. `user:pass@tcp(host:3306)/db?parseTime=true`. When set, enables the backend |
+| `MYSQL_USER` | `root` | Username (used when DSN not set) |
+| `MYSQL_PASSWORD` | — | Password |
+| `MYSQL_HOST` | `127.0.0.1` | Host address |
+| `MYSQL_PORT` | `3306` | Port |
+| `MYSQL_DATABASE` | `knowledge_rag` | Database name |
+| `MYSQL_SOCKET_PATH` | — | Unix socket path (takes precedence over host:port) |
+
 ## MCP Tools
 
 ### `knowledge_search`
@@ -386,6 +433,9 @@ internal/
     logger.go            — Structured file logger (DEBUG/INFO/WARN/ERROR, module-scoped)
   knowledge/
     store.go             — Store struct, data dir management, CHUNKS.toml I/O, KB CRUD
+    storage.go           — StorageBackend interface (storage backend abstraction)
+    file_backend.go      — Filesystem storage backend (default)
+    mysql_backend.go     — MySQL/MariaDB storage backend (optional)
     search.go            — Search, HybridSearch, SearchDocuments, coarseToFine, rerankTop
     chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge
     doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit, ChunksIndex

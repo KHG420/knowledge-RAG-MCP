@@ -179,18 +179,14 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	return meta, nil
 }
 
-// copySource copies the original file into the document directory as source.<ext>.
+// copySource stores the original file via the backend.
 func (s *Store) copySource(srcPath, slug string) error {
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		return err
 	}
 	ext := filepath.Ext(srcPath)
-	dest := filepath.Join(s.DocDir(slug), "source"+ext)
-	if err := os.MkdirAll(s.DocDir(slug), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, data, 0o644)
+	return s.backend.WriteSource(s.kbName, slug, data, ext)
 }
 
 // updateIndex appends a line to INDEX.md for the newly uploaded document.

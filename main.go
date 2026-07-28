@@ -97,9 +97,46 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	log := logger.WithModule("startup")
 	log.Infof("log file: %s level=%s", logPath, []string{"debug", "info"}[logLevel])
 
-	store := knowledge.NewStore()
-	if dataDir != "" {
-		store = store.WithDataDir(dataDir)
+	// Create the appropriate storage backend.
+	useMySQL := cfg.MySQLDSN != "" || cfg.MySQLHost != "" || cfg.MySQLSocketPath != ""
+	var store *knowledge.Store
+	if useMySQL {
+		mysqlCfg := knowledge.MySQLBackendConfig{
+			DSN:        cfg.MySQLDSN,
+			User:       cfg.MySQLUser,
+			Password:   cfg.MySQLPassword,
+			Host:       cfg.MySQLHost,
+			Port:       cfg.MySQLPort,
+			Database:   cfg.MySQLDatabase,
+			SocketPath: cfg.MySQLSocketPath,
+		}
+		// Apply defaults for empty fields.
+		if mysqlCfg.User == "" {
+			mysqlCfg.User = "root"
+		}
+		if mysqlCfg.Host == "" && mysqlCfg.SocketPath == "" {
+			mysqlCfg.Host = "127.0.0.1"
+		}
+		if mysqlCfg.Port == "" && mysqlCfg.Host != "" {
+			mysqlCfg.Port = "3306"
+		}
+		if mysqlCfg.Database == "" {
+			mysqlCfg.Database = "knowledge_rag"
+		}
+
+		backend, err := knowledge.NewMySQLBackend(mysqlCfg)
+		if err != nil {
+			log.Errorf("failed to connect to MySQL: %v", err)
+			os.Exit(1)
+		}
+		store = knowledge.NewStoreWithBackend(backend)
+		log.Infof("MySQL backend: %s/%s", mysqlCfg.Host, mysqlCfg.Database)
+	} else {
+		store = knowledge.NewStore()
+		if dataDir != "" {
+			store = store.WithDataDir(dataDir)
+		}
+		log.Infof("File backend: %s", dataDir)
 	}
 	store.SetLogger(logger.WithModule("store"))
 	if defaultKB != "" {
@@ -348,7 +385,6 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 
 func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_search",
-		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`BM25/hybrid keyword search across all documents in the knowledge base.
 
 **IMPORTANT — kbName (knowledge base selection)**: Before calling, THINK about which knowledge base (KB) the user's question refers to. Infer the most likely KB from the user's context, workspace, or project context — then pass that KB name in the "kbName" parameter to scope the search and get accurate results. Only omit "kbName" when the user explicitly asks to search across ALL knowledge bases, or when absolutely no single KB can be reasonably inferred.
@@ -470,7 +506,6 @@ Examples of required rewriting:
 
 func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_read",
-		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
 
 **kbName**: When you have search results, pass the same kbName from the search call to scope the read to the correct KB. If you don't know the KB, you may omit it — the system will search all KBs.
@@ -597,7 +632,6 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 
 func registerListKBs(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_list_kbs",
-		mcp.WithReadOnlyHint(true),
 		mcp.WithDescription(`List all knowledge bases with their descriptions.
 
 Returns the count of knowledge bases and each KB's name and description.

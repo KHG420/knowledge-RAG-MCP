@@ -1,7 +1,6 @@
 package knowledge
 
 import (
-	"fmt"
 	"os"
 	"strings"
 )
@@ -32,15 +31,9 @@ func (s *Store) RemoveDocument(slug string) error {
 	return nil
 }
 
-// removeDir deletes the document directory.
+// removeDir delegates document removal to the backend.
 func (s *Store) removeDir(slug string) error {
-	// Delegates to the lower-level implementation. The original implementation
-	// in store.go was inlined; we keep the logic here.
-	dir := s.DocDir(slug)
-	if err := osRemoveAll(dir); err != nil {
-		return fmt.Errorf("remove document %q: %w", slug, err)
-	}
-	return nil
+	return s.backend.RemoveDocument(s.kbName, slug)
 }
 
 // removeFromIndex rewrites INDEX.md without the entry for the given slug.

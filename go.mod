@@ -4,11 +4,13 @@ go 1.23
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/mark3labs/mcp-go v0.20.0
 	github.com/tsawler/tabula v1.6.14
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/otiai10/gosseract/v2 v2.4.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

@@ -46,6 +46,16 @@ type Config struct {
 	ServeBaseURL         string `toml:"serve_base_url"`
 	LogFile              string `toml:"log_file"`
 	LogLevel             string `toml:"log_level"`
+
+	// MySQL backend configuration (alternative to file-based storage).
+	// When mysql_dsn or mysql_host is set, the MySQL backend is used instead of FileBackend.
+	MySQLDSN       string `toml:"mysql_dsn"`
+	MySQLUser      string `toml:"mysql_user"`
+	MySQLPassword  string `toml:"mysql_password"`
+	MySQLHost      string `toml:"mysql_host"`
+	MySQLPort      string `toml:"mysql_port"`
+	MySQLDatabase  string `toml:"mysql_database"`
+	MySQLSocketPath string `toml:"mysql_socket_path"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -143,6 +153,13 @@ func LoadWithEnvFallback(path string) *Config {
 		ServeBaseURL:        envOr("KNOWLEDGE_MCP_SERVE_BASE_URL", def.ServeBaseURL),
 		LogFile:             envOr("KNOWLEDGE_MCP_LOG_FILE", def.LogFile),
 		LogLevel:            envOr("KNOWLEDGE_MCP_LOG_LEVEL", def.LogLevel),
+		MySQLDSN:            envOr("MYSQL_DSN", ""),
+		MySQLUser:           envOr("MYSQL_USER", ""),
+		MySQLPassword:       os.Getenv("MYSQL_PASSWORD"),
+		MySQLHost:           envOr("MYSQL_HOST", ""),
+		MySQLPort:           envOr("MYSQL_PORT", ""),
+		MySQLDatabase:       envOr("MYSQL_DATABASE", ""),
+		MySQLSocketPath:     envOr("MYSQL_SOCKET_PATH", ""),
 	}
 }
 

@@ -71,8 +71,6 @@ type Tool struct {
 	Name string `json:"name"`
 	// A human-readable description of the tool.
 	Description string `json:"description,omitempty"`
-	// readOnlyHint indicates the tool is read-only and should not produce side effects.
-	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
 	// A JSON Schema object defining the expected parameters for the tool.
 	InputSchema ToolInputSchema `json:"inputSchema"`
 	// Alternative to InputSchema - allows arbitrary JSON Schema to be provided
@@ -83,15 +81,12 @@ type Tool struct {
 // It handles marshaling either InputSchema or RawInputSchema based on which is set.
 func (t Tool) MarshalJSON() ([]byte, error) {
 	// Create a map to build the JSON structure
-	m := make(map[string]interface{}, 4)
+	m := make(map[string]interface{}, 3)
 
 	// Add the name and description
 	m["name"] = t.Name
 	if t.Description != "" {
 		m["description"] = t.Description
-	}
-	if t.ReadOnlyHint {
-		m["readOnlyHint"] = true
 	}
 
 	// Determine which schema to use
@@ -168,14 +163,6 @@ func NewToolWithRawSchema(name, description string, schema json.RawMessage) Tool
 func WithDescription(description string) ToolOption {
 	return func(t *Tool) {
 		t.Description = description
-	}
-}
-
-// WithReadOnlyHint marks the tool as read-only in the MCP protocol.
-// Read-only tools cannot produce side effects.
-func WithReadOnlyHint(readOnly bool) ToolOption {
-	return func(t *Tool) {
-		t.ReadOnlyHint = readOnly
 	}
 }
 

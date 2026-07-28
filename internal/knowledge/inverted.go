@@ -1,10 +1,6 @@
 package knowledge
 
 import (
-	"encoding/gob"
-	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -26,44 +22,13 @@ func NewInvertedIndex() *InvertedIndex {
 	return &InvertedIndex{Index: make(map[string][]Posting)}
 }
 
-func (s *Store) invertedIndexPath() string {
-	return filepath.Join(s.kbDir(), "INVERTED.gob")
-}
-
-// loadInvertedIndex reads the gob-encoded inverted index from disk.
-// Returns nil when the file does not exist.
 func (s *Store) loadInvertedIndex() (*InvertedIndex, error) {
-	f, err := os.Open(s.invertedIndexPath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("open INVERTED.gob: %w", err)
-	}
-	defer f.Close()
-	var idx InvertedIndex
-	if err := gob.NewDecoder(f).Decode(&idx); err != nil {
-		return nil, fmt.Errorf("decode INVERTED.gob: %w", err)
-	}
-	return &idx, nil
+	return s.backend.ReadInvertedIndex(s.kbName)
 }
 
-// saveInvertedIndex persists the inverted index as gob.
+// saveInvertedIndex persists the inverted index via the backend.
 func (s *Store) saveInvertedIndex(idx *InvertedIndex) error {
-	termCount := len(idx.Index)
-	s.logger.WithModule("store").Debugf("saveInvertedIndex: terms=%d path=%s", termCount, s.invertedIndexPath())
-	if err := os.MkdirAll(s.kbDir(), 0o755); err != nil {
-		return fmt.Errorf("ensure knowledge dir: %w", err)
-	}
-	f, err := os.Create(s.invertedIndexPath())
-	if err != nil {
-		return fmt.Errorf("create INVERTED.gob: %w", err)
-	}
-	defer f.Close()
-	if err := gob.NewEncoder(f).Encode(idx); err != nil {
-		return fmt.Errorf("encode INVERTED.gob: %w", err)
-	}
-	return nil
+	return s.backend.WriteInvertedIndex(s.kbName, idx)
 }
 
 // updateInvertedIndex adds postings for a document's chunks and removes any
@@ -111,13 +76,12 @@ func (s *Store) updateInvertedIndex(slug string, entries []ChunkIndexEntry) erro
 // inverted index from scratch.
 func (s *Store) rebuildInvertedIndex() error {
 	start := time.Now()
-	kd := s.kbDir()
-	docDirs, err := listDocDirs(kd)
+	slugs, err := s.backend.ListDocSlugs(s.kbName)
 	if err != nil {
-		return fmt.Errorf("list documents: %w", err)
+		return err
 	}
 	idx := NewInvertedIndex()
-	for _, slug := range docDirs {
+	for _, slug := range slugs {
 		index, idxErr := s.ReadChunksIndex(slug)
 		if idxErr != nil || index == nil {
 			continue
@@ -132,7 +96,7 @@ func (s *Store) rebuildInvertedIndex() error {
 			}
 		}
 	}
-	s.logger.WithModule("store").Debugf("rebuildInvertedIndex: docs=%d terms=%d elapsed=%v", len(docDirs), len(idx.Index), time.Since(start))
+	s.logger.WithModule("store").Debugf("rebuildInvertedIndex: docs=%d terms=%d elapsed=%v", len(slugs), len(idx.Index), time.Since(start))
 	return s.saveInvertedIndex(idx)
 }
 

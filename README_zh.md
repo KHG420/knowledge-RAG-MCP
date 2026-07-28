@@ -19,6 +19,7 @@
 - **论文元数据提取** — 自动提取标题、作者、摘要，识别章节角色
 - **多知识库** — 将文档组织到独立的知识库中；跨知识库搜索和列表；通过管理页面创建/删除知识库
 - **KB 描述** — 创建知识库时可填写简要描述；通过 `knowledge_list_kbs` 工具查看所有 KB 及其描述
+- **MySQL/MariaDB 后端** — 可选的数据库存储后端，替代默认的文件系统存储，支持 DSN/环境变量/Toml 配置
 
 ## 安装
 
@@ -70,6 +71,13 @@ knowledge-mcp setup
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景） |
 | `log_file` | `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | 日志文件路径 |
 | `log_level` | `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | 日志级别：`debug` 或 `info` |
+| `mysql_dsn` | `MYSQL_DSN` | — | MySQL 连接 DSN，如 `user:pass@tcp(host:3306)/db?parseTime=true`。设置后启用 MySQL 后端 |
+| `mysql_user` | `MYSQL_USER` | `root` | MySQL 用户名（DSN 未设置时使用） |
+| `mysql_password` | `MYSQL_PASSWORD` | — | MySQL 密码 |
+| `mysql_host` | `MYSQL_HOST` | `127.0.0.1` | MySQL 主机地址 |
+| `mysql_port` | `MYSQL_PORT` | `3306` | MySQL 端口 |
+| `mysql_database` | `MYSQL_DATABASE` | `knowledge_rag` | MySQL 数据库名 |
+| `mysql_socket_path` | `MYSQL_SOCKET_PATH` | — | MySQL Unix Socket 路径（设置后优先于 host:port） |
 
 ## 快速开始
 
@@ -123,6 +131,31 @@ RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
   knowledge-mcp serve
 ```
+
+### MySQL/MariaDB 后端（替代文件系统存储）
+
+knowledge-mcp 支持使用 MySQL 或 MariaDB 作为存储后端，替代默认的文件系统存储。
+所有文档数据（元数据、分块、搜索索引）存储在数据库表中，便于集成到现有基础设施中。
+
+```bash
+# 通过 DSN 连接
+MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
+  knowledge-mcp serve
+
+# 通过 Unix Socket 连接
+MYSQL_SOCKET_PATH=/var/run/mysqld/mysqld.sock \
+  MYSQL_DATABASE=knowledge_rag \
+  knowledge-mcp serve
+
+# 通过知识库 TOML 配置
+# knowledge-mcp.toml:
+#   mysql_host = "127.0.0.1"
+#   mysql_port = "3306"
+#   mysql_user = "root"
+#   mysql_database = "knowledge_rag"
+```
+
+首次启动时，系统会自动创建所需的表结构。切换后端后已有数据需要重新导入。
 
 ## Web 管理页面
 
@@ -281,6 +314,21 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 | `DOC_PARSER_API_KEY` | — | Bearer token（可选） |
 | `DOC_PARSER_TIMEOUT` | `600s` | HTTP 请求超时 |
 
+### MySQL 后端
+
+启用 MySQL 后端后，所有知识库数据存储在数据库表中，而非文件系统。
+设置 `MYSQL_DSN` 或任意 `MYSQL_*` 变量即可启用。
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `MYSQL_DSN` | — | MySQL DSN，如 `user:pass@tcp(host:3306)/db?parseTime=true`。设置后自动启用 |
+| `MYSQL_USER` | `root` | 用户名（DSN 未设置时使用） |
+| `MYSQL_PASSWORD` | — | 密码 |
+| `MYSQL_HOST` | `127.0.0.1` | 主机地址 |
+| `MYSQL_PORT` | `3306` | 端口 |
+| `MYSQL_DATABASE` | `knowledge_rag` | 数据库名 |
+| `MYSQL_SOCKET_PATH` | — | Unix Socket 路径（设置后优先于 host:port） |
+
 ## MCP 工具
 
 ### `knowledge_search`
@@ -380,6 +428,9 @@ internal/
     logger.go            — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，模块化)
   knowledge/
     store.go             — Store 结构体、数据目录管理、CHUNKS.toml I/O、KB CRUD
+    storage.go           — StorageBackend 接口（存储后端抽象层）
+    file_backend.go      — 文件系统存储后端（默认实现）
+    mysql_backend.go     — MySQL/MariaDB 存储后端（可选）
     search.go            — Search、HybridSearch、SearchDocuments、coarseToFine、rerankTop
     chunker.go           — ChunkText、ChunkTextHierarchical、语义合并
     doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit、ChunksIndex

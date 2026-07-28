@@ -7,31 +7,73 @@
 knowledge-mcp
 knowledge-mcp.toml
 
-# Test binary
+# Backup config files
+knowledge-mcp.toml~
+
+# Test binary, profile, and output
 *.test
+*.prof
+*.out
+/tmp/
 
 # Go workspace
 go.work
+go.work.sum
 
-# IDE
+# Go module cache (local)
+.go-cache/
+.go-bin/
+
+# Go vendor
+vendor/
+
+# IDE / editor
 .idea/
 .vscode/
 *.swp
 *.swo
+*.swn
+*.bak
+*.orig
+*~
+
+# Reasonix / agent artifacts
 .reasonix/
 .codegraph/
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Build output
 bin/
 dist/
 node_modules/
 
+# Python virtual env / model files
 .venv/
 .ollama_persist/
 .infinity_cache/
 
+# Log files
 *.log
+
+# Environment / secrets
+.env
+.env.local
+.env.*
+
+# MariaDB / MySQL data (local development)
+mariadb-data/
+mariadb-bin/
+mariadb-root/
+mariadb-extract/
+
+# Temp files from downloads / extractions
+*.tar.gz
+*.tgz
+*.deb
+
+# Documentation build artifacts
+docs/_build/

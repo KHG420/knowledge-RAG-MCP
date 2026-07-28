@@ -6,15 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/BurntSushi/toml"
 
 	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/retrieval"
@@ -25,11 +21,12 @@ const maxTermsPerChunk = 50 // top-N frequent terms retained in CHUNKS.toml
 const boundaryMergeN = 5 // G12: number of old tail chunks for incremental boundary merge
 const boundaryMergeM = 5 // G12: number of new head chunks for incremental boundary merge
 
-// Store manages the on-disk knowledge base. By default data is stored under
-// ~/knowledge_base/; call WithDataDir to use a custom directory.
+// Store manages the knowledge base with a pluggable storage backend.
+// By default uses FileBackend rooted at ~/knowledge_base/; call
+// NewStoreWithBackend to use an alternative backend (e.g. MySQL).
 type Store struct {
-	dataDir string // if set, overrides the default knowledge dir path (~/knowledge_base/)
-	kbName  string // knowledge base name; empty means flat legacy mode (no subdirectory)
+	backend StorageBackend // pluggable storage (default: FileBackend)
+	kbName  string         // knowledge base name; empty means flat legacy mode (no subdirectory)
 	rewriter           QueryRewriter
 	embedder           Embedder
 	reranker           Reranker
@@ -43,16 +40,35 @@ type Store struct {
 	taskManager *UploadTaskManager
 }
 
-// NewStore returns a Store. The data directory defaults to ~/knowledge_base/;
-// call WithDataDir to override.
+// NewStore returns a Store backed by the local filesystem under ~/knowledge_base/.
 func NewStore() *Store {
-	return &Store{AbstractBoost: 1.1, logger: logging.NewNopLogger(), mu: &sync.Mutex{}}
+	return &Store{
+		backend:       NewFileBackend(""),
+		AbstractBoost: 1.1,
+		logger:        logging.NewNopLogger(),
+		mu:            &sync.Mutex{},
+	}
 }
 
-// WithDataDir sets an explicit data directory for the knowledge base,
-// overriding the default ~/knowledge_base/ path.
+// NewStoreWithBackend returns a Store using the given StorageBackend.
+// The caller is responsible for calling backend.Init() and backend.Close().
+func NewStoreWithBackend(backend StorageBackend) *Store {
+	return &Store{
+		backend:       backend,
+		AbstractBoost: 1.1,
+		logger:        logging.NewNopLogger(),
+		mu:            &sync.Mutex{},
+	}
+}
+
+// Backend returns the underlying StorageBackend for inspection.
+func (s *Store) Backend() StorageBackend { return s.backend }
+
+// WithDataDir sets an explicit data directory for the knowledge base (FileBackend only).
 func (s *Store) WithDataDir(dir string) *Store {
-	s.dataDir = dir
+	if _, ok := s.backend.(*FileBackend); ok {
+		s.backend = NewFileBackend(dir)
+	}
 	return s
 }
 
@@ -120,37 +136,11 @@ func (s *Store) SetGPUScheduler(g *GPUScheduler) {
 	SetParserGPUScheduler(g)
 }
 
-// kbDir returns the KB-scoped data directory.
-// When kbName is empty, it returns the base knowledge dir (legacy flat mode).
 func (s *Store) kbDir() string {
-	return filepath.Join(s.knowledgeDir(), s.kbName)
+	return ""
 }
 
-// ListKBs returns knowledge base names found under the knowledge directory.
-// Each subdirectory containing an INDEX.md is considered a KB.
-// If no KB subdirectories exist (legacy flat structure), returns an empty list.
-func (s *Store) ListKBs() ([]string, error) {
-	kd := s.knowledgeDir()
-	entries, err := os.ReadDir(kd)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("read knowledge dir: %w", err)
-	}
-	var kbs []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		// Check if this directory has INDEX.md to confirm it's a KB.
-		indexPath := filepath.Join(kd, e.Name(), "INDEX.md")
-		if _, err := os.Stat(indexPath); err == nil {
-			kbs = append(kbs, e.Name())
-		}
-	}
-	return kbs, nil
-}
+
 
 // KBInfo holds metadata about a knowledge base.
 type KBInfo struct {
@@ -158,120 +148,56 @@ type KBInfo struct {
 	Description string `json:"description"`
 }
 
-// ListKBsInfo returns knowledge base names with descriptions.
-// Each KB's description is read from kb.json; if the file does not exist
-// (legacy KB), the description is empty.
-func (s *Store) ListKBsInfo() ([]KBInfo, error) {
-	kd := s.knowledgeDir()
-	entries, err := os.ReadDir(kd)
+// ListKBs returns knowledge base names from the backend.
+func (s *Store) ListKBs() ([]string, error) {
+	kbs, err := s.backend.ListKBs()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []KBInfo{}, nil
-		}
-		return nil, fmt.Errorf("read knowledge dir: %w", err)
+		return nil, err
 	}
-	var infos []KBInfo
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		// Check if this directory has INDEX.md to confirm it's a KB.
-		indexPath := filepath.Join(kd, e.Name(), "INDEX.md")
-		if _, err := os.Stat(indexPath); err != nil {
-			continue
-		}
-		info := KBInfo{Name: e.Name()}
-		// Read description from kb.json if it exists.
-		kbJSONPath := filepath.Join(kd, e.Name(), "kb.json")
-		if data, readErr := os.ReadFile(kbJSONPath); readErr == nil {
-			var kbMeta struct {
-				Description string `json:"description"`
-			}
-			if json.Unmarshal(data, &kbMeta) == nil {
-				info.Description = kbMeta.Description
-			}
-		}
-		infos = append(infos, info)
+	names := make([]string, len(kbs))
+	for i, kb := range kbs {
+		names[i] = kb.Name
 	}
-	return infos, nil
+	return names, nil
 }
 
-// CreateKB creates a new empty knowledge base directory with an INDEX.md
-// and a kb.json file containing the KB metadata.
+// ListKBsInfo delegates to the backend.
+func (s *Store) ListKBsInfo() ([]KBInfo, error) {
+	return s.backend.ListKBs()
+}
+
+// CreateKB delegates to the backend.
 func (s *Store) CreateKB(name, description string) error {
 	s.logger.Infof("KB %q: creating", name)
-	kbDir := filepath.Join(s.knowledgeDir(), name)
-	if err := os.MkdirAll(kbDir, 0o755); err != nil {
-		s.logger.Errorf("KB %q: create dir failed: %v", name, err)
-		return fmt.Errorf("create KB dir: %w", err)
-	}
-	indexPath := filepath.Join(kbDir, "INDEX.md")
-	if err := os.WriteFile(indexPath, []byte("# "+name+"\n"), 0o644); err != nil {
-		s.logger.Errorf("KB %q: write INDEX.md failed: %v", name, err)
-		return fmt.Errorf("create INDEX.md: %w", err)
-	}
-	// Write kb.json with the description.
-	kbMeta := struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}{Name: name, Description: description}
-	metaData, err := json.MarshalIndent(kbMeta, "", "  ")
+	err := s.backend.CreateKB(name, description)
 	if err != nil {
-		s.logger.Errorf("KB %q: marshal kb.json failed: %v", name, err)
-		return fmt.Errorf("marshal kb.json: %w", err)
-	}
-	kbJSONPath := filepath.Join(kbDir, "kb.json")
-	if err := os.WriteFile(kbJSONPath, metaData, 0o644); err != nil {
-		s.logger.Errorf("KB %q: write kb.json failed: %v", name, err)
-		return fmt.Errorf("create kb.json: %w", err)
+		s.logger.Errorf("KB %q: create failed: %v", name, err)
+		return err
 	}
 	s.logger.Infof("KB %q: created (description=%q)", name, description)
 	return nil
 }
 
-// DeleteKB removes an entire knowledge base directory.
+// DeleteKB delegates to the backend.
 func (s *Store) DeleteKB(name string) error {
 	s.logger.Infof("KB %q: deleting", name)
-	kbDir := filepath.Join(s.knowledgeDir(), name)
-	if err := os.RemoveAll(kbDir); err != nil {
+	err := s.backend.DeleteKB(name)
+	if err != nil {
 		s.logger.Errorf("KB %q: delete failed: %v", name, err)
-		return fmt.Errorf("delete KB dir: %w", err)
+		return err
 	}
 	s.logger.Infof("KB %q: deleted", name)
 	return nil
 }
 
-// knowledgeDir returns the data directory path. When dataDir is set it is used
-// directly; otherwise it falls back to ~/knowledge_base/.
-// The returned path is always absolute with ~ expanded (Go does not expand
-// ~ natively), so the knowledge base location stays stable regardless of
-// the current working directory.
+// knowledgeDir returns the data directory path (FileBackend only).
 func (s *Store) knowledgeDir() string {
-	if s.dataDir != "" {
-		dir := s.dataDir
-		// Expand ~/ to the user's home directory.
-		if strings.HasPrefix(dir, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				dir = filepath.Join(home, dir[2:])
-			}
-		}
-		// Resolve to an absolute path.
-		if abs, err := filepath.Abs(dir); err == nil {
-			return abs
-		}
-		return dir
-	}
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, "knowledge_base")
+	return ""
 }
 
-// EnsureDir creates the knowledge directory tree if it doesn't exist.
+// EnsureDir initializes the storage backend.
 func (s *Store) EnsureDir() error {
-	if err := os.MkdirAll(s.knowledgeDir(), 0o755); err != nil {
-		return err
-	}
-	s.logger.Infof("knowledge dir ready: %s", s.knowledgeDir())
-	return nil
+	return s.backend.Init()
 }
 
 // IndexPath returns the path to INDEX.md.
@@ -279,32 +205,17 @@ func (s *Store) IndexPath() string {
 	return filepath.Join(s.kbDir(), "INDEX.md")
 }
 
-// ReadIndex returns the raw content of INDEX.md. It returns an empty string
-// if the file doesn't exist.
+// ReadIndex delegates to the backend.
 func (s *Store) ReadIndex() (string, error) {
-	data, err := os.ReadFile(s.IndexPath())
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read INDEX.md: %w", err)
-	}
-	return string(data), nil
+	return s.backend.ReadIndex(s.kbName)
 }
 
-// WriteIndex overwrites INDEX.md with the given content.
+// WriteIndex delegates to the backend.
 func (s *Store) WriteIndex(content string) error {
-	if err := os.MkdirAll(s.kbDir(), 0o755); err != nil {
-		return fmt.Errorf("ensure knowledge dir: %w", err)
-	}
-	if err := os.WriteFile(s.IndexPath(), []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write INDEX.md: %w", err)
-	}
-	return nil
+	return s.backend.WriteIndex(s.kbName, content)
 }
 
-// DocDir returns the path for a document's directory.
-// Returns empty string when slug fails validation (path-traversal guard).
+// DocDir always returns empty (path helpers retained for backward compat only).
 func (s *Store) DocDir(slug string) string {
 	if err := validateComponent(slug); err != nil {
 		s.logger.Warnf("DocDir: %v", err)
@@ -348,94 +259,53 @@ func (s *Store) SectionChunkPath(slug, sectionID string) string {
 	return filepath.Join(s.SectionsDir(slug), sectionID+".md")
 }
 
-// WriteMeta writes a DocumentMeta as JSON to the document's meta.json.
+// WriteMeta delegates to the backend.
 func (s *Store) WriteMeta(slug string, meta DocumentMeta) error {
-	if err := os.MkdirAll(s.DocDir(slug), 0o755); err != nil {
-		return fmt.Errorf("ensure doc dir: %w", err)
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal meta: %w", err)
-	}
-	if err := os.WriteFile(s.MetaPath(slug), data, 0o644); err != nil {
-		return fmt.Errorf("write meta.json: %w", err)
-	}
-	return nil
+	return s.backend.WriteMeta(s.kbName, slug, &meta)
 }
 
-// ReadMeta reads and unmarshals a document's meta.json.
+// ReadMeta delegates to the backend.
 func (s *Store) ReadMeta(slug string) (DocumentMeta, error) {
-	var meta DocumentMeta
-	data, err := os.ReadFile(s.MetaPath(slug))
+	meta, err := s.backend.ReadMeta(s.kbName, slug)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return meta, fmt.Errorf("document %q not found", slug)
-		}
-		return meta, fmt.Errorf("read meta.json for %q: %w", slug, err)
+		return DocumentMeta{}, err
 	}
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return meta, fmt.Errorf("unmarshal meta.json for %q: %w", slug, err)
-	}
-	return meta, nil
+	return *meta, nil
 }
 
-// WriteChunks creates the chunks/ directory and writes each chunk as NNN.md.
+// WriteChunks delegates to the backend.
 func (s *Store) WriteChunks(slug string, chunks []string) error {
-	dir := s.ChunksDir(slug)
-	// Start fresh: remove existing chunks dir if present.
-	if err := os.RemoveAll(dir); err != nil {
+	if err := s.backend.DeleteChunks(s.kbName, slug); err != nil {
 		return fmt.Errorf("remove old chunks: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create chunks dir: %w", err)
 	}
 	for i, content := range chunks {
 		chunkID := fmt.Sprintf("%03d", i)
-		path := s.ChunkPath(slug, chunkID)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := s.backend.WriteChunk(s.kbName, slug, chunkID, content); err != nil {
 			return fmt.Errorf("write chunk %s: %w", chunkID, err)
 		}
 	}
 	return nil
 }
 
-// AppendChunks writes additional chunks to an existing document's chunks/
-// directory, picking up IDs where the existing chunks leave off. It does NOT
-// remove existing chunks.
+// AppendChunks delegates to the backend.
 func (s *Store) AppendChunks(slug string, chunks []string) error {
-	dir := s.ChunksDir(slug)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create chunks dir: %w", err)
-	}
-	// Determine the starting ID from existing chunks.
-	existing, err := s.ListChunks(slug)
+	existing, err := s.backend.ListChunkIDs(s.kbName, slug)
 	if err != nil {
-		// Document doesn't exist yet; start from 0.
 		existing = nil
 	}
 	startID := len(existing)
 	for i, content := range chunks {
 		chunkID := fmt.Sprintf("%03d", startID+i)
-		path := s.ChunkPath(slug, chunkID)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := s.backend.WriteChunk(s.kbName, slug, chunkID, content); err != nil {
 			return fmt.Errorf("write chunk %s: %w", chunkID, err)
 		}
 	}
 	return nil
 }
 
-// WriteRawText writes the full raw markdown text of a document as document.md,
-// preserving the original parsed content from external API (e.g. pdf_to_md) for
-// manual inspection or re-processing.
+// WriteRawText delegates to the backend.
 func (s *Store) WriteRawText(slug string, text string) error {
-	dest := filepath.Join(s.DocDir(slug), "document.md")
-	if err := os.MkdirAll(s.DocDir(slug), 0o755); err != nil {
-		return fmt.Errorf("ensure doc dir: %w", err)
-	}
-	if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
-		return fmt.Errorf("write document.md: %w", err)
-	}
-	return nil
+	return s.backend.WriteRawText(s.kbName, slug, text)
 }
 
 // AppendChunksIndex reads the existing CHUNKS.toml for a document, appends new
@@ -519,7 +389,7 @@ func (s *Store) AppendDocumentText(slug string, newText string) (int, error) {
 
 				// Rewrite modified old chunk files.
 				for idx, content := range oldModified {
-					if writeErr := os.WriteFile(s.ChunkPath(slug, idx), []byte(content), 0o644); writeErr != nil {
+					if writeErr := s.backend.WriteChunk(s.kbName, slug, idx, content); writeErr != nil {
 						// Non-fatal: continue with best-effort merge.
 						delete(oldModified, idx)
 					}
@@ -684,97 +554,38 @@ func rebuildCoarseFromFine(fine []ChunkWithMeta) []ChunkWithMeta {
 	return coarse
 }
 
-// WriteSectionChunks writes section-level chunks into chunks/sections/.
-// Each section chunk is stored as S00.md, S01.md, etc.
+// WriteSectionChunks delegates to the backend.
 func (s *Store) WriteSectionChunks(slug string, sections []ChunkWithMeta) error {
-	dir := s.SectionsDir(slug)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create sections dir: %w", err)
-	}
-	// Remove old section chunks.
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		os.Remove(filepath.Join(dir, e.Name()))
+	if err := s.backend.DeleteSectionChunks(s.kbName, slug); err != nil {
+		return fmt.Errorf("delete old section chunks: %w", err)
 	}
 	for i, sec := range sections {
 		id := fmt.Sprintf("S%02d", i)
-		path := s.SectionChunkPath(slug, id)
-		if err := os.WriteFile(path, []byte(sec.Content), 0o644); err != nil {
+		if err := s.backend.WriteSectionChunk(s.kbName, slug, id, sec.Content); err != nil {
 			return fmt.Errorf("write section chunk %s: %w", id, err)
 		}
 	}
 	return nil
 }
 
-// ReadSectionChunk reads a single section-level chunk and returns its content.
+// ReadSectionChunk delegates to the backend.
 func (s *Store) ReadSectionChunk(slug, sectionID string) (string, error) {
-	data, err := os.ReadFile(s.SectionChunkPath(slug, sectionID))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("section chunk %q not found in document %q", sectionID, slug)
-		}
-		return "", fmt.Errorf("read section chunk %q in %q: %w", sectionID, slug, err)
-	}
-	return string(data), nil
+	return s.backend.ReadSectionChunk(s.kbName, slug, sectionID)
 }
 
-// ReadChunk reads a single chunk file and returns its content.
+// ReadChunk delegates to the backend.
 func (s *Store) ReadChunk(slug, chunkID string) (string, error) {
-	data, err := os.ReadFile(s.ChunkPath(slug, chunkID))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("chunk %q not found in document %q", chunkID, slug)
-		}
-		return "", fmt.Errorf("read chunk %q in %q: %w", chunkID, slug, err)
-	}
-	return string(data), nil
+	return s.backend.ReadChunk(s.kbName, slug, chunkID)
 }
 
-// ListChunks returns all chunk IDs for a document, sorted by name.
+// ListChunks delegates to the backend.
 func (s *Store) ListChunks(slug string) ([]string, error) {
-	dir := s.ChunksDir(slug)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("document %q not found", slug)
-		}
-		return nil, fmt.Errorf("read chunks dir for %q: %w", slug, err)
-	}
-	var ids []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasSuffix(name, ".md") {
-			ids = append(ids, strings.TrimSuffix(name, ".md"))
-		}
-	}
-	return ids, nil
+	return s.backend.ListChunkIDs(s.kbName, slug)
 }
 
-// ListSectionChunks returns all section chunk IDs for a document, sorted.
+// ListSectionChunks delegates to the backend.
 func (s *Store) ListSectionChunks(slug string) ([]string, error) {
-	dir := s.SectionsDir(slug)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read sections dir for %q: %w", slug, err)
-	}
-	var ids []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasSuffix(name, ".md") {
-			ids = append(ids, strings.TrimSuffix(name, ".md"))
-		}
-	}
-	sort.Strings(ids)
-	return ids, nil
+	return s.backend.ListSectionChunkIDs(s.kbName, slug)
 }
 
 // SlugFromPath derives a filesystem-safe document slug from a file path.
@@ -802,27 +613,20 @@ func SlugFromPath(path string) string {
 	return name + "-" + suffix
 }
 
-// ListDocuments returns metadata for all documents in the knowledge base.
+// ListDocuments delegates to the backend.
 func (s *Store) ListDocuments() ([]DocumentMeta, error) {
-	kd := s.kbDir()
-	entries, err := os.ReadDir(kd)
+	slugs, err := s.backend.ListDocSlugs(s.kbName)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read knowledge dir: %w", err)
+		return nil, err
 	}
 	var docs []DocumentMeta
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, slug := range slugs {
+		meta, err := s.backend.ReadMeta(s.kbName, slug)
+		if err != nil {
 			continue
 		}
-		meta, err := s.ReadMeta(e.Name())
-		if err != nil {
-			continue // skip invalid entries
-		}
-		meta.Slug = e.Name()
-		docs = append(docs, meta)
+		meta.Slug = slug
+		docs = append(docs, *meta)
 	}
 	s.logger.WithModule("store").Debugf("ListDocuments: kb=%q docs=%d", s.kbName, len(docs))
 	return docs, nil
@@ -868,9 +672,9 @@ func (s *Store) ListPreviewAll(n int) (display []DocumentMeta, full []DocumentMe
 	return display, full, nil
 }
 
-// SnapshotPath returns the path to the list snapshot file.
+// SnapshotPath kept for backward compatibility.
 func (s *Store) SnapshotPath() string {
-	return filepath.Join(s.kbDir(), "LIST_SNAPSHOT.json")
+	return ""
 }
 
 // ListChecksum computes a SHA256 checksum over the full list of DocumentMeta
@@ -882,79 +686,30 @@ func ListChecksum(docs []DocumentMeta) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// WriteListSnapshot saves the full document list and its checksum to the
-// snapshot file. If docs is nil or empty, the file is removed.
+// WriteListSnapshot delegates to the backend.
 func (s *Store) WriteListSnapshot(docs []DocumentMeta) error {
-	if len(docs) == 0 {
-		os.Remove(s.SnapshotPath())
-		return nil
-	}
-	cs := ListChecksum(docs)
-	snapshot := struct {
-		Checksum  string         `json:"checksum"`
-		UpdatedAt time.Time      `json:"updated_at"`
-		Documents []DocumentMeta `json:"documents"`
-	}{
-		Checksum:  cs,
-		UpdatedAt: time.Now(),
-		Documents: docs,
-	}
-	data, err := json.MarshalIndent(snapshot, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal snapshot: %w", err)
-	}
-	if err := os.WriteFile(s.SnapshotPath(), data, 0o644); err != nil {
-		return fmt.Errorf("write snapshot: %w", err)
-	}
-	return nil
+	return s.backend.WriteSnapshot(s.kbName, docs)
 }
 
-// ReadListSnapshot reads the snapshot file and returns the saved checksum
-// and document list. Returns empty checksum and nil docs if the file doesn't
-// exist, so callers can treat "no snapshot" as "needs refresh".
+// ReadListSnapshot delegates to the backend.
 func (s *Store) ReadListSnapshot() (checksum string, docs []DocumentMeta, err error) {
-	data, readErr := os.ReadFile(s.SnapshotPath())
-	if os.IsNotExist(readErr) {
-		return "", nil, nil
-	}
-	if readErr != nil {
-		return "", nil, fmt.Errorf("read snapshot: %w", readErr)
-	}
-	var snapshot struct {
-		Checksum  string         `json:"checksum"`
-		UpdatedAt time.Time      `json:"updated_at"`
-		Documents []DocumentMeta `json:"documents"`
-	}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return "", nil, fmt.Errorf("unmarshal snapshot: %w", err)
-	}
-	return snapshot.Checksum, snapshot.Documents, nil
+	return s.backend.ReadSnapshot(s.kbName)
 }
 
-// ListWithSnapshot returns the full document list. On first call or when the
-// knowledge base has changed (checksum mismatch), it regenerates the snapshot
-// file. On subsequent calls with no changes, it returns cached data without
-// writing to disk.
+// ListWithSnapshot returns the full document list using backend snapshots.
 func (s *Store) ListWithSnapshot() ([]DocumentMeta, error) {
 	docs, err := s.ListDocuments()
 	if err != nil {
 		return nil, err
 	}
-
-	// If no documents, clean up and return.
 	if len(docs) == 0 {
-		os.Remove(s.SnapshotPath())
 		return docs, nil
 	}
-
 	cs := ListChecksum(docs)
-	savedCS, _, _ := s.ReadListSnapshot()
-
+	savedCS, _, _ := s.backend.ReadSnapshot(s.kbName)
 	if savedCS != cs {
-		// Knowledge base changed: regenerate snapshot.
-		_ = s.WriteListSnapshot(docs)
+		_ = s.backend.WriteSnapshot(s.kbName, docs)
 	}
-
 	return docs, nil
 }
 
@@ -970,10 +725,10 @@ func (s *Store) ListWithLimit(n int) ([]DocumentMeta, error) {
 	return docs, nil
 }
 
-// Exists checks whether a document slug exists.
+// Exists delegates to the backend.
 func (s *Store) Exists(slug string) bool {
-	_, err := os.Stat(s.DocDir(slug))
-	return err == nil
+	ok, err := s.backend.Exists(s.kbName, slug)
+	return err == nil && ok
 }
 
 // ChunksIndexPath returns the path to a document's CHUNKS.toml.
@@ -981,113 +736,21 @@ func (s *Store) ChunksIndexPath(slug string) string {
 	return filepath.Join(s.DocDir(slug), "CHUNKS.toml")
 }
 
-// WriteChunksIndex persists a ChunksIndex as TOML. It ensures the document
-// directory exists before writing.
+// WriteChunksIndex delegates to the backend and updates the inverted index.
 func (s *Store) WriteChunksIndex(slug string, index *ChunksIndex) error {
-	if err := os.MkdirAll(s.DocDir(slug), 0o755); err != nil {
-		return fmt.Errorf("ensure doc dir: %w", err)
+	if err := s.backend.WriteChunksIndex(s.kbName, slug, index); err != nil {
+		return err
 	}
-	f, err := os.Create(s.ChunksIndexPath(slug))
-	if err != nil {
-		return fmt.Errorf("create CHUNKS.toml: %w", err)
-	}
-	defer f.Close()
-	if err := toml.NewEncoder(f).Encode(index); err != nil {
-		return fmt.Errorf("encode CHUNKS.toml: %w", err)
-	}
-	// G7: update the global inverted index. Non-fatal: a failure here doesn't
-	// block search; it falls back to the full-scan path.
+	// G7: update the global inverted index. Non-fatal.
 	if err := s.updateInvertedIndex(slug, index.Chunks); err != nil {
 		// Non-fatal: inverted index update failure doesn't block search.
-		// The next search will fall back to full scan.
 	}
 	return nil
 }
 
-// ReadChunksIndex reads and decodes a document's CHUNKS.toml. It returns nil
-// and no error when the file does not exist, so callers can fall back to a
-// full scan of chunk files.
-//
-// Backward compatibility: old-format indices (with map[string]int Terms) are
-// detected and converted to the current []termFreq format on read.
-// When a checksum is present (G10), chunk files are verified and the index
-// is automatically rebuilt if they have drifted.
+// ReadChunksIndex delegates to the backend.
 func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
-	data, err := os.ReadFile(s.ChunksIndexPath(slug))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read CHUNKS.toml: %w", err)
-	}
-
-	// Try new format first ([]termFreq Terms).
-	var index ChunksIndex
-	if _, err := toml.Decode(string(data), &index); err == nil {
-		// G10: verify checksum if present; on mismatch, fall back to full scan.
-		if index.Checksum != "" {
-			actualCS, csErr := s.computeChunksChecksum(slug)
-			if csErr == nil && actualCS != index.Checksum {
-				return nil, nil // checksum drift → fall back to full scan
-			}
-		}
-
-		return &index, nil
-	}
-
-	// Fall back to old format (map[string]int Terms).
-	type ChunkIndexEntryV1 struct {
-		ID             string         `toml:"id"`
-		TermCount      int            `toml:"term_count"`
-		Terms          map[string]int `toml:"terms"`
-		Section        string         `toml:"section"`
-		Offset         int            `toml:"offset"`
-		Vector         []float64      `toml:"vector,omitempty"`
-		SectionChunkID string         `toml:"section_chunk_id,omitempty"`
-		SectionRole    string         `toml:"section_role,omitempty"`
-	}
-	type ChunksIndexV1 struct {
-		Slug       string              `toml:"slug"`
-		ChunkCount int                 `toml:"chunk_count"`
-		VectorDim  int                 `toml:"vector_dim,omitempty"`
-		HasVectors bool                `toml:"has_vectors,omitempty"`
-		Chunks     []ChunkIndexEntryV1 `toml:"chunks"`
-	}
-
-	var indexV1 ChunksIndexV1
-	if _, err := toml.Decode(string(data), &indexV1); err != nil {
-		return nil, fmt.Errorf("decode CHUNKS.toml (tried both formats): %w", err)
-	}
-
-	// Convert V1 (map[string]int) to current format ([]termFreq).
-	index = ChunksIndex{
-		Slug:       indexV1.Slug,
-		ChunkCount: indexV1.ChunkCount,
-		VectorDim:  indexV1.VectorDim,
-		HasVectors: indexV1.HasVectors,
-		Chunks:     make([]ChunkIndexEntry, len(indexV1.Chunks)),
-	}
-	for i, c := range indexV1.Chunks {
-		terms := make([]termFreq, 0, len(c.Terms))
-		for term, count := range c.Terms {
-			terms = append(terms, termFreq{Term: term, Count: count})
-		}
-		sort.Slice(terms, func(i, j int) bool {
-			return terms[i].Count > terms[j].Count
-		})
-		index.Chunks[i] = ChunkIndexEntry{
-			ID:             c.ID,
-			TermCount:      c.TermCount,
-			Terms:          terms,
-			Section:        c.Section,
-			Offset:         c.Offset,
-			Vector:         c.Vector,
-			SectionChunkID: c.SectionChunkID,
-			SectionRole:    c.SectionRole,
-		}
-	}
-
-	return &index, nil
+	return s.backend.ReadChunksIndex(s.kbName, slug)
 }
 
 // writeChunksIndexFromMeta builds and persists a ChunksIndex from chunk
@@ -1312,25 +975,7 @@ func trimTopTerms(counts map[string]int, n int) []termFreq {
 	return out
 }
 
-// computeChunksChecksum computes a SHA256 checksum over all chunk files for a
-// document, sorted by chunk ID. Returns the hex-encoded hash.
+// computeChunksChecksum delegates checksum computation to the backend.
 func (s *Store) computeChunksChecksum(slug string) (string, error) {
-	ids, err := s.ListChunks(slug)
-	if err != nil {
-		return "", fmt.Errorf("list chunks: %w", err)
-	}
-	sort.Strings(ids)
-	h := sha256.New()
-	for _, id := range ids {
-		data, readErr := os.ReadFile(s.ChunkPath(slug, id))
-		if readErr != nil {
-			return "", fmt.Errorf("read chunk %s: %w", id, readErr)
-		}
-		io.WriteString(h, id)
-		h.Write(data)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return s.backend.ComputeChunksChecksum(s.kbName, slug)
 }
-
-// computeChunksChecksum computes a SHA256 checksum over all chunk files for a
-// document, sorted by chunk ID. Returns the hex-encoded hash.
