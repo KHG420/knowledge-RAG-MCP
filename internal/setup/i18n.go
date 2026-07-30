@@ -97,6 +97,29 @@ type langStr struct {
 	ManagePortDesc   string
 	ManagePortPrompt string
 
+	// --- Serve port ---
+	ServePortTitle  string
+	ServePortDesc   string
+	ServePortPrompt string
+
+	// --- MySQL backend ---
+	MySQLTitle   string
+	MySQLDesc    string
+	MySQLEnable  string
+	MySQLDSN     string
+	MySQLDSNHelp string
+	MySQLUser    string
+	MySQLPass    string
+	MySQLHost    string
+	MySQLPort    string
+	MySQLDB      string
+	MySQLSocket  string
+
+	// --- MinerU ---
+	MinerUTitle  string
+	MinerUDesc   string
+	MinerUEnable string
+
 	// --- Logging ---
 	LogTitle       string
 	LogFilePath    string
@@ -106,11 +129,13 @@ type langStr struct {
 	SummaryHeader  string
 	SummaryDataDir string
 	SummaryDefaultKB string
+	SummaryStorage    string
 	SummaryEmbedding string
 	SummaryReranker  string
 	SummaryRerankLimit string
 	SummaryGPUSched   string
 	SummaryManagePort string
+	SummaryServePort  string
 	SummaryLogLevel   string
 	SummaryEnabled    string
 	SummaryNotCfg     string
@@ -119,6 +144,7 @@ type langStr struct {
 	SummaryRerankSleep string
 	SummaryDocParser   string
 	SummaryDocParserSleep string
+	SummaryMinerU     string
 }
 
 var zhStrs = langStr{
@@ -208,6 +234,29 @@ var zhStrs = langStr{
 	ManagePortDesc:   "知识库的管理 UI 监听端口",
 	ManagePortPrompt: "管理端口",
 
+	// --- Serve port ---
+	ServePortTitle:  "\n--- MCP 服务端口 ---",
+	ServePortDesc:   "HTTP SSE MCP 服务监听端口。设为 0 可仅使用管理界面",
+	ServePortPrompt: "MCP 服务端口",
+
+	// --- MySQL backend ---
+	MySQLTitle:   "\n--- MySQL 存储后端 ---",
+	MySQLDesc:    "使用 MySQL/MariaDB 替代默认的文件系统存储。适合多实例部署或需要高可用的场景",
+	MySQLEnable:  "是否使用 MySQL 存储后端",
+	MySQLDSN:     "MySQL DSN 连接串（填写后跳过以下逐项配置）",
+	MySQLDSNHelp: "   格式: user:password@tcp(host:port)/dbname\n   留空则逐项输入",
+	MySQLUser:    "MySQL 用户名",
+	MySQLPass:    "MySQL 密码",
+	MySQLHost:    "MySQL 主机地址",
+	MySQLPort:    "MySQL 端口",
+	MySQLDB:      "数据库名称",
+	MySQLSocket:  "Unix socket 路径（使用 TCP 则留空）",
+
+	// --- MinerU ---
+	MinerUTitle:  "\n--- MinerU 文档解析 ---",
+	MinerUDesc:   "启用 MinerU 作为文档解析引擎（需单独部署 MinerU 服务）",
+	MinerUEnable: "是否启用 MinerU",
+
 	// --- Logging ---
 	LogTitle:       "\n--- 日志配置 ---",
 	LogFilePath:    "日志文件路径（留空自动选择）",
@@ -217,11 +266,13 @@ var zhStrs = langStr{
 	SummaryHeader:     "\n===========================================\n   配置摘要\n===========================================",
 	SummaryDataDir:    "  数据目录:            %s\n",
 	SummaryDefaultKB:  "  默认知识库:          %s\n",
+	SummaryStorage:    "  存储后端:            %s\n",
 	SummaryEmbedding:  "  Embedding:           %s\n",
 	SummaryReranker:   "  Reranker:            %s\n",
 	SummaryRerankLimit: "  Rerank 候选数:        %d\n",
 	SummaryGPUSched:   "  GPU 调度器:          %s\n",
 	SummaryManagePort: "  管理端口:            %s\n",
+	SummaryServePort:  "  MCP 服务端口:        %s\n",
 	SummaryLogLevel:   "  日志级别:            %s\n",
 	SummaryEnabled:    "✓ 已启用",
 	SummaryNotCfg:     "✗ 未配置",
@@ -230,6 +281,7 @@ var zhStrs = langStr{
 	SummaryRerankSleep: "    - Reranker 睡眠:   %s\n",
 	SummaryDocParser:   "  文档解析 API:       %s\n",
 	SummaryDocParserSleep: "    - 文档解析睡眠:   %s\n",
+	SummaryMinerU:       "    - MinerU:            %s\n",
 }
 
 var enStrs = langStr{
@@ -319,6 +371,29 @@ var enStrs = langStr{
 	ManagePortDesc:   "Port for the knowledge base management UI",
 	ManagePortPrompt: "Management port",
 
+	// --- Serve port ---
+	ServePortTitle:  "\n--- MCP Serve Port ---",
+	ServePortDesc:   "HTTP SSE MCP server port. Set to 0 to disable and use management UI only",
+	ServePortPrompt: "MCP serve port",
+
+	// --- MySQL backend ---
+	MySQLTitle:   "\n--- MySQL Storage Backend ---",
+	MySQLDesc:    "Use MySQL/MariaDB instead of the default filesystem storage. Suitable for multi-instance or HA deployments",
+	MySQLEnable:  "Use MySQL storage backend?",
+	MySQLDSN:     "MySQL DSN (fill to skip per-field input below)",
+	MySQLDSNHelp: "   Format: user:password@tcp(host:port)/dbname\n   Leave blank for per-field input",
+	MySQLUser:    "MySQL user",
+	MySQLPass:    "MySQL password",
+	MySQLHost:    "MySQL host",
+	MySQLPort:    "MySQL port",
+	MySQLDB:      "Database name",
+	MySQLSocket:  "Unix socket path (leave blank for TCP)",
+
+	// --- MinerU ---
+	MinerUTitle:  "\n--- MinerU Document Parser ---",
+	MinerUDesc:   "Enable MinerU as the document parsing engine (requires a separately deployed MinerU service)",
+	MinerUEnable: "Enable MinerU?",
+
 	// --- Logging ---
 	LogTitle:       "\n--- Logging Configuration ---",
 	LogFilePath:    "Log file path (Enter for auto)",
@@ -328,11 +403,13 @@ var enStrs = langStr{
 	SummaryHeader:     "\n===========================================\n   Configuration Summary\n===========================================",
 	SummaryDataDir:    "  Data Directory:       %s\n",
 	SummaryDefaultKB:  "  Default KB:           %s\n",
+	SummaryStorage:    "  Storage Backend:      %s\n",
 	SummaryEmbedding:  "  Embedding:            %s\n",
 	SummaryReranker:   "  Reranker:             %s\n",
 	SummaryRerankLimit: "  Rerank Candidate Limit: %d\n",
 	SummaryGPUSched:   "  GPU Scheduler:        %s\n",
 	SummaryManagePort: "  Management Port:      %s\n",
+	SummaryServePort:  "  MCP Serve Port:       %s\n",
 	SummaryLogLevel:   "  Log Level:            %s\n",
 	SummaryEnabled:    "✓ Enabled",
 	SummaryNotCfg:     "✗ Not configured",
@@ -341,6 +418,7 @@ var enStrs = langStr{
 	SummaryRerankSleep: "    - Reranker Sleep:   %s\n",
 	SummaryDocParser:   "  Doc Parser API:       %s\n",
 	SummaryDocParserSleep: "    - Doc Parser Sleep: %s\n",
+	SummaryMinerU:       "    - MinerU:            %s\n",
 }
 
 // currentLang is the language selected by the user at the start of the wizard.

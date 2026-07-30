@@ -32,7 +32,7 @@ func Tokens(s string) []string {
 			out = append(out, string(r))
 			// Bigram: combine with previous CJK character.
 			if prevCJK != 0 {
-				out = append(out, string(prevCJK)+string(r))
+				out = append(out, string([]rune{prevCJK, r}))
 			}
 			prevCJK = r
 		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_':
@@ -228,18 +228,17 @@ func snippetAround(text string, byteIdx, maxRunes int) string {
 	return prefix + string(runes[start:end]) + suffix
 }
 
-// sentenceEndRunes are the punctuation marks that end a sentence.
-var sentenceEndRunes = []rune{'.', '!', '?', '。', '！', '？'}
-
 // isSentenceEnd reports whether r is a sentence-ending punctuation mark.
 func isSentenceEnd(r rune) bool {
-	for _, e := range sentenceEndRunes {
-		if r == e {
-			return true
-		}
+	switch r {
+	case '.', '!', '?', '。', '！', '？':
+		return true
 	}
 	return false
 }
+
+// sentenceEndRunes are the punctuation marks that end a sentence (kept for API compat).
+var sentenceEndRunes = []rune{'.', '!', '?', '。', '！', '？'}
 
 // sentenceWindow tries to find a full-sentence window around pos (in runes)
 // that fits within maxRunes. It returns (-1, -1) if no sentence boundary is

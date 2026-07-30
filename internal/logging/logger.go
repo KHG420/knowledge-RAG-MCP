@@ -38,10 +38,11 @@ func ParseLevel(s string) Level {
 
 // Logger is a thread-safe, level-aware logger that writes to a file.
 type Logger struct {
-	mu     sync.Mutex
-	out    io.WriteCloser
-	level  Level
-	module string
+	mu      sync.Mutex
+	out     io.WriteCloser
+	level   Level
+	module  string
+	logPath string // path to the log file on disk (empty for nop/stderr loggers)
 }
 
 // NewLogger creates a Logger writing to the given log file path.
@@ -56,9 +57,10 @@ func NewLogger(logPath string, level Level) (*Logger, error) {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 	return &Logger{
-		out:    f,
-		level:  level,
-		module: "",
+		out:     f,
+		level:   level,
+		module:  "",
+		logPath: logPath,
 	}, nil
 }
 
@@ -130,6 +132,11 @@ func (l *Logger) Errorf(format string, args ...interface{}) {
 // Close flushes and closes the log file.
 func (l *Logger) Close() error {
 	return l.out.Close()
+}
+
+// Path returns the path to the log file, or empty string if not writing to a file.
+func (l *Logger) Path() string {
+	return l.logPath
 }
 
 // Write implements io.Writer for compatibility with the standard log package.

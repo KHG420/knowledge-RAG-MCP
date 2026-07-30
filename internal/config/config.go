@@ -32,6 +32,10 @@ type Config struct {
 	GPUSchedulerDocParserSleepURL string `toml:"gpu_scheduler_doc_parser_sleep_url"`
 	MinerUEnabled                bool   `toml:"mineru_enabled"`
 
+	// APIToken is an optional Bearer token for management API authentication.
+	// When empty, the management API is open (no auth required).
+	APIToken string `toml:"api_token"`
+
 	// DocParserEndpoint is the URL of an external HTTP API for document parsing.
 	// When set, ParseFile will send documents to this API before falling back
 	// to the local tabula parser. Example: "http://localhost:8000/parse"
@@ -46,6 +50,23 @@ type Config struct {
 	ServeBaseURL         string `toml:"serve_base_url"`
 	LogFile              string `toml:"log_file"`
 	LogLevel             string `toml:"log_level"`
+
+	// ── Runtime search parameters (hot-reloadable, persisted) ──
+	SearchMode              string  `toml:"search_mode"`
+	RerankEnabled           bool    `toml:"rerank_enabled"`
+	RRFK                    int     `toml:"rrf_k"`
+	BM25K1                  float64 `toml:"bm25_k1"`
+	BM25B                   float64 `toml:"bm25_b"`
+	AbstractBoost           float64 `toml:"abstract_boost"`
+
+	// ── Runtime chunking parameters (hot-reloadable, persisted) ──
+	ChunkMinChars          int     `toml:"chunk_min_chars"`
+	ChunkMaxChars          int     `toml:"chunk_max_chars"`
+	ChunkOverlapChars      int     `toml:"chunk_overlap_chars"`
+	ChunkSemanticThreshold float64 `toml:"chunk_semantic_threshold"`
+
+	// ── Runtime upload parameters ──
+	UploadMaxSizeMB int `toml:"upload_max_size_mb"`
 
 	// MySQL backend configuration (alternative to file-based storage).
 	// When mysql_dsn or mysql_host is set, the MySQL backend is used instead of FileBackend.
@@ -86,6 +107,18 @@ func DefaultConfig() *Config {
 		ServeBaseURL:         "",
 		LogFile:              "",
 		LogLevel:             "info",
+
+		SearchMode:              "hybrid",
+		RerankEnabled:           true,
+		RRFK:                    60,
+		BM25K1:                  1.2,
+		BM25B:                   0.75,
+		AbstractBoost:           1.1,
+		ChunkMinChars:           200,
+		ChunkMaxChars:           2000,
+		ChunkOverlapChars:       200,
+		ChunkSemanticThreshold:  0.75,
+		UploadMaxSizeMB:         500,
 	}
 }
 

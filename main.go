@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -139,6 +142,7 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		log.Infof("File backend: %s", dataDir)
 	}
 	store.SetLogger(logger.WithModule("store"))
+	store.SetConfig(cfg, findConfigPath())
 	if defaultKB != "" {
 		store = store.WithKB(defaultKB)
 		log.Infof("default KB: %s", defaultKB)
@@ -263,6 +267,56 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	return store, logger
 }
 
+// streamableHTTPHandler returns an HTTP handler for the MCP Streamable HTTP
+// transport (POST /mcp). It processes JSON-RPC requests from the body and
+// returns the JSON-RPC response directly. This is the modern alternative to
+// the legacy SSE transport and is compatible with clients that require
+// type="http" (Streamable HTTP).
+func streamableHTTPHandler(mcpServer *server.MCPServer, log *logging.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// GET can be used for SSE upgrade (server→client notifications).
+			// Without active sessions this is a no-op; clients that need
+			// notifications can fall back to the legacy SSE endpoint.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			// Keep the connection open briefly then close — signals no events.
+			w.(http.Flusher).Flush()
+			return
+		}
+		if r.Method == http.MethodDelete {
+			// DELETE closes the session (no-op in stateless mode).
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST, DELETE")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
+
+		ctx := r.Context()
+		response := mcpServer.HandleMessage(ctx, body)
+
+		if response == nil {
+			// Notification — accepted, no content.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}
+}
+
 // registerAllTools registers all MCP tool handlers on the given server.
 func registerAllTools(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	registerSearch(s, store, logger)
@@ -291,14 +345,14 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 			managePort = "8085"
 		}
 		go func() {
-			log.Infof("management UI starting on http://localhost:%s", managePort)
+			log.Infof("management UI starting on %s", formatManageURL(managePort))
 			if err := store.StartManageServer(managePort); err != nil {
 				log.Errorf("management UI failed to start on port %s: %v", managePort, err)
 			}
 		}()
 	}
 
-	// Create the SSE server.
+	// Create the SSE server (legacy transport for backward compatibility).
 	sseServer := server.NewSSEServer(s)
 	if cfg.ServeBaseURL != "" {
 		sseServer = server.NewSSEServer(s, server.WithBaseURL(cfg.ServeBaseURL))
@@ -307,6 +361,17 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 	servePort := cfg.ServePort
 	if servePort == "" {
 		servePort = "8086"
+	}
+
+	// Combined mux: SSE (legacy) + Streamable HTTP on the same port.
+	mux := http.NewServeMux()
+	mux.Handle("/sse", sseServer)
+	mux.Handle("/message", sseServer)
+	mux.HandleFunc("/mcp", streamableHTTPHandler(s, log))
+
+	httpServer := &http.Server{
+		Addr:    ":" + servePort,
+		Handler: mux,
 	}
 
 	// Set up signal handling for graceful shutdown.
@@ -324,11 +389,14 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 		if err := sseServer.Shutdown(shutdownCtx); err != nil {
 			log.Errorf("SSE server shutdown error: %v", err)
 		}
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Errorf("HTTP server shutdown error: %v", err)
+		}
 	}()
 
-	log.Infof("SSE MCP server starting on :%s (mcpOnly=%v)", servePort, mcpOnly)
-	if err := sseServer.Start(":" + servePort); err != nil {
-		log.Errorf("SSE server error: %v", err)
+	log.Infof("MCP server starting on :%s (SSE + Streamable HTTP, mcpOnly=%v)", servePort, mcpOnly)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Errorf("HTTP server error: %v", err)
 		os.Exit(1)
 	}
 }
@@ -374,7 +442,7 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 		os.Exit(0)
 	}()
 
-	log.Infof("management UI starting on http://localhost:%s", managePort)
+	log.Infof("management UI starting on %s", formatManageURL(managePort))
 	if err := store.StartManageServer(managePort); err != nil {
 		log.Errorf("management UI error: %v", err)
 		os.Exit(1)
@@ -567,7 +635,8 @@ If search results show multiple hits from the same section (SectionHint field is
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			logger.WithModule("tool").Debugf("knowledge_read: section slug=%q chunk=%q kb=%q ok", docSlug, chunkID, kbName)
-			return mcp.NewToolResultText(text), nil
+			evidence, _ := buildEvidenceJSON(store, kbName, docSlug, chunkID, text)
+			return mcp.NewToolResultText(evidence), nil
 		}
 
 		text, err := tryReadChunk(store, kbName, docSlug, chunkID, ctxCount)
@@ -575,7 +644,8 @@ If search results show multiple hits from the same section (SectionHint field is
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		logger.WithModule("tool").Debugf("knowledge_read: chunk slug=%q chunk=%q ctx=%d kb=%q textlen=%d", docSlug, chunkID, ctxCount, kbName, len(text))
-		return mcp.NewToolResultText(text), nil
+		evidence, _ := buildEvidenceJSON(store, kbName, docSlug, chunkID, text)
+		return mcp.NewToolResultText(evidence), nil
 	})
 }
 
@@ -628,6 +698,79 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 		}
 	}
 	return "", fmt.Errorf("document %q not found in any KB", docSlug)
+}
+
+// buildEvidenceJSON constructs an EvidenceChunk JSON string that wraps the
+// content with full source attribution so the LLM never loses context.
+func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text string) (string, error) {
+	// Resolve the correct store view.
+	s := store
+	if kbName != "" {
+		s = store.WithKB(kbName)
+	} else {
+		// Try to find the document across all KBs to get metadata.
+		kbs, err := store.ListKBs()
+		if err == nil {
+			for _, kb := range kbs {
+				if _, metaErr := store.WithKB(kb).ReadMeta(docSlug); metaErr == nil {
+					s = store.WithKB(kb)
+					break
+				}
+			}
+		}
+	}
+
+	meta, metaErr := s.ReadMeta(docSlug)
+	if metaErr != nil {
+		// Degrade gracefully: return content without metadata.
+		data, _ := json.MarshalIndent(knowledge.EvidenceChunk{
+			Document: knowledge.DocumentInfo{ID: docSlug},
+			Location: knowledge.LocationInfo{ChunkID: chunkID},
+			Content:  text,
+			CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
+		}, "", "  ")
+		return string(data), nil
+	}
+
+	// Try to get section/offset/page from the chunks index.
+	sec := ""
+	off := 0
+	ps := 0
+	pe := 0
+	if index, idxErr := s.ReadChunksIndex(docSlug); idxErr == nil && index != nil {
+		for _, entry := range index.Chunks {
+			if entry.ID == chunkID {
+				sec = entry.Section
+				off = entry.Offset
+				ps = entry.PageStart
+				pe = entry.PageEnd
+				break
+			}
+		}
+	}
+
+	evidence := knowledge.EvidenceChunk{
+		Document: knowledge.DocumentInfo{
+			ID:           meta.Slug,
+			Title:        meta.Title,
+			OriginalName: meta.OriginalName,
+			Type:         meta.SourceType,
+		},
+		Location: knowledge.LocationInfo{
+			ChunkID:   chunkID,
+			Section:   sec,
+			Offset:    off,
+			PageStart: ps,
+			PageEnd:   pe,
+		},
+		Content:    text,
+		CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
+	}
+	data, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func registerListKBs(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
@@ -749,6 +892,9 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 			if filePath != "" {
 				return mcp.NewToolResultError("filePath and directory are mutually exclusive"), nil
 			}
+			if strings.Contains(directory, "..") {
+				return mcp.NewToolResultError("invalid directory path"), nil
+			}
 			tlog.Debugf("knowledge_upload: directory=%q recursive=%v kb=%q", directory, recursive, kbName)
 			summary, err := uploadStore.UploadDirectory(directory, recursive, tags...)
 			if err != nil {
@@ -760,9 +906,11 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 		if filePath == "" {
 			return mcp.NewToolResultError("filePath or directory is required for upload"), nil
 		}
+		if strings.Contains(filePath, "..") {
+			return mcp.NewToolResultError("invalid file path"), nil
+		}
 		meta, err := uploadStore.UploadDocument(filePath, tags...)
 		if err != nil {
-			tlog.Errorf("knowledge_upload: file=%q failed: %v", filePath, err)
 			return mcp.NewToolResultError(fmt.Sprintf("upload failed: %v", err)), nil
 		}
 		tlog.Debugf("knowledge_upload: file=%q slug=%q chunks=%d chars=%d", filePath, meta.Slug, meta.ChunkCount, meta.TotalChars)
@@ -789,6 +937,10 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging
 		docSlug := getString(req, "docSlug")
 		if docSlug == "" {
 			return mcp.NewToolResultError("docSlug is required for remove"), nil
+		}
+
+		if strings.Contains(docSlug, "..") {
+			return mcp.NewToolResultError("invalid docSlug"), nil
 		}
 
 		kbName := getString(req, "kbName")
@@ -851,14 +1003,43 @@ func parseTags(raw string) []string {
 	return out
 }
 
+// localIP returns the preferred outbound LAN IP (e.g. 192.168.x.x).
+// Falls back to "localhost" if no suitable non-loopback IPv4 address is found.
+func localIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "localhost"
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			return ipnet.IP.String()
+		}
+	}
+	return "localhost"
+}
+
+// formatManageURL returns a human-readable startup message showing both
+// localhost and LAN addresses the management UI is reachable at.
+func formatManageURL(port string) string {
+	ip := localIP()
+	if ip == "localhost" {
+		return fmt.Sprintf("http://localhost:%s", port)
+	}
+	return fmt.Sprintf("http://localhost:%s  (LAN: http://%s:%s)", port, ip, port)
+}
+
 // findConfigPath returns the path to the config file.
-// It only looks for knowledge-mcp.toml in the same directory as the executable.
-// This is the single source of truth — no fallback to home dir config.
+// It first checks the executable directory; if no config exists there (e.g. go run),
+// it falls back to knowledge-mcp.toml in the current working directory.
 func findConfigPath() string {
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
+		p := filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
-	return "knowledge-mcp.toml"
+	// go run / dev mode: use CWD
+	return filepath.Join(".", "knowledge-mcp.toml")
 }
 
 // parseTime parses an ISO 8601 date string, supporting both date-only

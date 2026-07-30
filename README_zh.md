@@ -371,6 +371,54 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 |-----------|----------|-------------|
 | _(无)_ | — | 返回 KB 数量及每个 KB 的名称 + 描述 |
 
+### 证据格式
+
+`knowledge_search` 和 `knowledge_read` 返回结构化证据，包含完整的来源追踪信息：
+
+```json
+{
+  "score": 12.45,
+  "document": {
+    "id": "1706-03762v7",
+    "title": "Attention Is All You Need",
+    "original_name": "1706.03762v7.pdf",
+    "type": "pdf"
+  },
+  "location": {
+    "chunk_id": "003",
+    "section": "## Attention Mechanism",
+    "offset": 4521,
+    "page_start": 5,
+    "page_end": 6
+  },
+  "content": {
+    "snippet": "An attention function can be described as mapping...",
+    "section_role": "body"
+  },
+  "citation_id": "1706-03762v7_003"
+}
+```
+
+- **`citation_id`**：`{slug}_{chunkID}`，在整个知识库中稳定唯一，可用于前端引用标注、审计追踪和调试
+- **`page_start` / `page_end`**：PDF 页码（1-based），由上游 PDF 解析器在分块时注入。未注入时省略（`omitempty`）
+
+### PDF 页码支持
+
+分块器提供 `ChunkTextWithPages` 和 `ChunkTextHierarchicalWithPages` 两个接口，接受 `PageOffsets` 参数——由 PDF 解析器生成的页边界映射：
+
+```go
+// PDF 解析器构建页边界
+breaks := knowledge.PageOffsets{
+    {Offset: 0, Page: 1},
+    {Offset: 3500, Page: 2},
+    {Offset: 7200, Page: 3},
+}
+chunks := knowledge.ChunkTextWithPages(text, breaks)
+// 每个 chunk 的 PageStart/PageEnd 自动填充
+```
+
+页信息随分块一起存入 `CHUNKS.toml`，搜索时透传到 `SearchHit.Location`，`knowledge_read` 展开时保留在 `EvidenceChunk.Location` 中。
+
 ## 搜索流程
 
 ```
@@ -401,7 +449,7 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 │   ├── .searchlog.jsonl
 │   └── <document-slug>/
 │       ├── meta.json          # 原始文件名、来源类型、添加时间、标题、作者、摘要
-│       ├── CHUNKS.toml        # 每块：词项、向量、章节、偏移、章节角色
+│       ├── CHUNKS.toml        # 每块：词项、向量、章节、偏移、页码、章节角色
 │       ├── source.<ext>       # 原始文件副本
 │       └── chunks/
 │           ├── 000.md         # 细粒度分块

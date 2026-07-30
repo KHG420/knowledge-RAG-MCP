@@ -90,7 +90,7 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 		if s.gpuScheduler != nil {
 			restoreEmbed = s.gpuScheduler.PrepareForEmbedding()
 		}
-		if merged, err := MergeSemanticNeighbors(context.Background(), fineChunks, s.embedder, defaultSemanticThreshold); err == nil && len(merged) > 0 {
+		if merged, err := MergeSemanticNeighbors(context.Background(), fineChunks, s.embedder, chunkSemanticThreshold); err == nil && len(merged) > 0 {
 			fineChunks = merged
 			// Regenerate coarse chunks to reflect the merged fine chunks.
 			_, coarseChunks = ChunkTextHierarchical(text)
@@ -113,6 +113,7 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	sourceType := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 
 	meta := DocumentMeta{
+		Slug:         slug,
 		OriginalName: filepath.Base(path),
 		SourceType:   sourceType,
 		AddedAt:      time.Now().Truncate(time.Second),

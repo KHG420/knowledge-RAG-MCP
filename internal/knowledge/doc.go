@@ -44,10 +44,36 @@ type DocumentMeta struct {
 	Tags         []string  `json:"tags,omitempty"`     // user-assigned labels for filtering (G15)
 }
 
-// Chunk is a single paragraph-level slice of a document, stored as 000.md etc.
-type Chunk struct {
-	ID      string // e.g. "005"
-	Content string // raw Markdown content of the chunk file
+// DocumentInfo carries human-readable document identity for attribution.
+type DocumentInfo struct {
+	ID           string `json:"id"`                      // internal slug
+	Title        string `json:"title,omitempty"`         // human-readable title (e.g. paper title)
+	OriginalName string `json:"original_name,omitempty"` // original filename (e.g. "paper.pdf")
+	Type         string `json:"type,omitempty"`          // source type (e.g. "pdf", "md")
+}
+
+// LocationInfo pinpoints where a chunk sits inside its source document.
+type LocationInfo struct {
+	ChunkID   string `json:"chunk_id"`            // e.g. "005"
+	Section   string `json:"section,omitempty"`   // nearest markdown heading
+	Offset    int    `json:"offset,omitempty"`    // character offset in the original text (0-based)
+	PageStart int    `json:"page_start,omitempty"` // PDF page number (future; requires PDF parser support)
+	PageEnd   int    `json:"page_end,omitempty"`   // PDF page number (future; requires PDF parser support)
+}
+
+// HitContent wraps the textual content of a search hit.
+type HitContent struct {
+	Snippet     string `json:"snippet"`                // whitespace-compacted excerpt centered on the query
+	SectionRole string `json:"section_role,omitempty"` // e.g. "abstract", "introduction"
+}
+
+// EvidenceChunk is a full read result with complete source attribution —
+// returned by knowledge_read so the LLM never loses track of where text came from.
+type EvidenceChunk struct {
+	Document   DocumentInfo `json:"document"`
+	Location   LocationInfo `json:"location"`
+	Content    string       `json:"content"`
+	CitationID string       `json:"citation_id"` // stable reference, e.g. "{slug}_{chunkID}"
 }
 
 // ChunkWithMeta is a chunk bundled with position metadata: which section of the
@@ -59,24 +85,27 @@ type ChunkWithMeta struct {
 	Offset      int    // character offset in the original document text (0-based)
 	SectionID   string // section identifier for grouping coarse-level chunks (e.g. "# Introduction")
 	SectionRole string // classified role: "abstract", "introduction", etc. (C2)
+	PageStart   int    // PDF page number where this chunk starts (1-based, 0 = unknown)
+	PageEnd     int    // PDF page number where this chunk ends (1-based, 0 = unknown)
 }
 
-// SearchHit is one ranked result from a BM25 search over chunks.
+// SearchHit is one ranked result from a search over chunks. It carries
+// enough source attribution (document identity + location + stable citation id)
+// that an LLM can correctly attribute every piece of evidence.
 type SearchHit struct {
-	Score       float64
-	DocSlug     string
-	ChunkID     string
-	Snippet     string // whitespace-compacted excerpt centered on the query
-	Section     string // nearest markdown heading above this chunk (from CHUNKS.toml)
-	Offset      int    // character offset in the original document text (0-based)
-	SectionRole string // classified section role, e.g. "abstract", "introduction" (C2)
-	DuplicateOf string // if non-empty, this hit is an approximate duplicate of chunkID (G9)
+	Score      float64      `json:"score"`
+	Document   DocumentInfo `json:"document"`
+	Location   LocationInfo `json:"location"`
+	Content    HitContent   `json:"content"`
+	CitationID string       `json:"citation_id,omitempty"` // "{slug}_{chunkID}"
+
+	// DuplicateOf is non-empty when this hit is an approximate duplicate of another chunkID (G9).
+	DuplicateOf string `json:"duplicate_of,omitempty"`
 
 	// SectionHint is non-empty when multiple chunks from the same section
 	// appear in the search results. It suggests reading the full section for
-	// complete context, e.g. "Multiple hits in section 'Introduction'.
-	// Consider reading with level=section for full context."
-	SectionHint string
+	// complete context.
+	SectionHint string `json:"section_hint,omitempty"`
 }
 
 // SearchFilter holds optional filters for narrowing a knowledge base search.
@@ -140,6 +169,8 @@ type ChunkIndexEntry struct {
 	Terms          []termFreq `toml:"terms"`
 	Section        string     `toml:"section"`
 	Offset         int        `toml:"offset"`
+	PageStart      int        `toml:"page_start,omitempty"` // PDF page number (1-based, 0 = unknown)
+	PageEnd        int        `toml:"page_end,omitempty"`   // PDF page number (1-based, 0 = unknown)
 	Vector         []float64  `toml:"vector,omitempty"`
 	SectionChunkID string     `toml:"section_chunk_id,omitempty"` // points to the parent section-level chunk (e.g. "S00")
 	SectionRole    string     `toml:"section_role,omitempty"`     // classified role: "abstract", "introduction", etc. (C2)

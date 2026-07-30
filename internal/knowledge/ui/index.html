@@ -258,7 +258,7 @@
   .card-grid.active { display: grid; }
   .doc-card {
     background: var(--card); border: none; border-radius: var(--radius);
-    padding: 18px; box-shadow: var(--shadow); cursor: pointer;
+    padding: 20px; box-shadow: var(--shadow); cursor: pointer;
     transition: all var(--transition); position: relative;
     border-bottom: 1px solid var(--border);
   }
@@ -266,11 +266,11 @@
     border-left: 3px solid var(--primary);
     transform: none;
   }
-  .doc-card .card-top { display: flex; align-items: flex-start; gap: 12px; }
-  .doc-card .type-icon { font-size: 28px; flex-shrink: 0; line-height: 1; }
+  .doc-card .card-top { display: flex; align-items: center; gap: 14px; }
+  .doc-card .type-icon { font-size: 32px; flex-shrink: 0; line-height: 1; }
   .doc-card .card-info { flex: 1; min-width: 0; }
   .doc-card .card-title {
-    font-weight: 600; font-size: 14px; line-height: 1.4;
+    font-weight: 600; font-size: 15px; line-height: 1.4;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .doc-card .card-meta {
@@ -278,7 +278,7 @@
     font-size: 12px; color: var(--text-secondary);
   }
   .doc-card .card-meta span { white-space: nowrap; }
-  .doc-card .card-badges { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .doc-card .card-badges { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px; }
   .doc-card .badge {
     font-size: 11px; padding: 1px 7px; border-radius: 0px;
     background: #D1FAE5; color: #10B981;
@@ -380,6 +380,38 @@
   .drawer-body .meta-value { font-size: 14px; color: var(--text); word-break: break-all; }
   .drawer-body .meta-value.authors { color: var(--primary); }
   .drawer-section-title { font-size: 14px; font-weight: 600; margin: 20px 0 10px; display: flex; align-items: center; gap: 6px; }
+  /* Content preview in drawer */
+  .preview-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .preview-header .preview-label { font-size: 14px; font-weight: 600; }
+  .preview-header .preview-actions { display: flex; gap: 8px; }
+  .preview-header .preview-actions button {
+    padding: 4px 10px; border-radius: var(--radius-sm); font-size: 12px;
+    cursor: pointer; border: 1px solid var(--border); background: var(--card); color: var(--text-secondary);
+  }
+  .preview-header .preview-actions button:hover { background: var(--bg); }
+  .preview-header .preview-actions button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .preview-content { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .preview-content.expanded { max-height: none; }
+  .chunk-block {
+    padding: 10px 14px; border-bottom: 1px solid #F3F4F6;
+    font-size: 13px; line-height: 1.7; color: var(--text);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .chunk-block:last-child { border-bottom: none; }
+  .chunk-block .chunk-idx {
+    font-size: 11px; color: var(--text-muted); margin-bottom: 4px;
+    user-select: none;
+  }
+  .preview-loading { padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px; }
+  .preview-empty { padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px; }
+  .preview-download {
+    display: inline-flex; align-items: center; gap: 4px; margin-top: 10px;
+    padding: 5px 12px; border-radius: var(--radius-sm); font-size: 12px;
+    cursor: pointer; border: 1px solid var(--primary); background: var(--card);
+    color: var(--primary); text-decoration: none;
+  }
+  .preview-download:hover { background: var(--primary-light); }
   /* Search results in drawer */
   .search-hit {
     padding: 10px 14px; background: var(--bg); border-radius: var(--radius-sm);
@@ -420,6 +452,64 @@
   .confirm-box .btn-confirm { background: var(--danger); color: #fff; }
   .confirm-box .btn-confirm:hover { background: var(--danger-hover); }
 
+  /* Tombstone/Reconcile panels */
+  .panel-box {
+    background: var(--card); border-radius: var(--radius); padding: 0;
+    max-width: 650px; width: 92%; max-height: 80vh; box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    display: flex; flex-direction: column;
+  }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+  }
+  .panel-header h3 { font-size: 16px; margin: 0; }
+  .panel-body {
+    padding: 16px 24px; overflow-y: scroll; flex: 1; max-height: 55vh;
+  }
+  /* Config sections (pure div, no <details> to avoid scroll-lock bugs) */
+  .cfg-section { margin-top: 18px; }
+  .cfg-section-hdr { cursor: pointer; font-size: 14px; font-weight: 600; padding: 8px 0; border-bottom: 1px solid var(--border); margin-bottom: 12px; user-select: none; display: flex; align-items: center; gap: 6px; }
+  .cfg-section-hdr .cfg-arrow { font-size: 10px; transition: transform 0.2s; display: inline-block; width: 14px; }
+  .cfg-section.collapsed .cfg-arrow { transform: rotate(-90deg); }
+  .cfg-section.collapsed .cfg-section-body { display: none; }
+  .panel-footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 14px 24px; border-top: 1px solid var(--border);
+  }
+  .panel-footer button {
+    padding: 8px 16px; border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; border: none;
+  }
+  .panel-footer .btn-cancel { background: var(--border); color: var(--text); }
+  .panel-footer .btn-confirm { background: var(--primary); color: #fff; }
+  .panel-footer .btn-confirm:hover { background: var(--primary-hover); }
+  .panel-footer .btn-rebuild { background: var(--primary); color: #fff; }
+  .panel-footer .btn-rebuild:hover { background: var(--primary-hover); }
+
+  /* Tombstone table */
+  .tomb-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tomb-table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border); color: var(--text-secondary); font-weight: 600; }
+  .tomb-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .tomb-table .expired { color: var(--warning); font-weight: 600; }
+  .tomb-table .active-ts { color: var(--primary); }
+  .tomb-table button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); cursor: pointer; font-size: 12px; }
+  .tomb-table button:hover { background: var(--primary-light); }
+
+  /* Reconcile findings */
+  .finding-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  .finding-row:last-child { border-bottom: none; }
+  .finding-sev { font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 3px; white-space: nowrap; }
+  .finding-sev.fatal { background: #FEE2E2; color: var(--danger); }
+  .finding-sev.error { background: #FEF3C7; color: #D97706; }
+  .finding-sev.warn { background: #E0E7FF; color: #4F46E5; }
+  .reconcile-summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .reconcile-stat { background: var(--bg); padding: 10px; border-radius: 6px; text-align: center; }
+  .reconcile-stat .val { font-size: 22px; font-weight: 700; }
+  .reconcile-stat .lbl { font-size: 12px; color: var(--text-secondary); }
+
+  /* Checkbox label for tombstone toggle */
+  .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+  .tombstone-option { margin: 8px 0 12px; }
+
   /* Loading spinner */
   .loading-docs {
     text-align: center; padding: 60px 0; color: var(--text-muted);
@@ -446,6 +536,16 @@
   }
   .kb-badge .home-btn:hover { background: rgba(255,255,255,0.15); }
 
+  .header-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .header-action-btn {
+    padding: 4px 10px; font-size: 12px;
+    border: 1px solid rgba(255,255,255,0.3); border-radius: 0px;
+    background: transparent; color: rgba(255,255,255,0.85); cursor: pointer;
+    transition: background var(--transition);
+  }
+  .header-action-btn:hover { background: rgba(255,255,255,0.12); }
+  .header-action-export { background: rgba(255,255,255,0.1); }
+
   /* Home page */
   .kb-home {
     display: none; align-items: center; justify-content: center;
@@ -461,36 +561,39 @@
   .kb-home-card .welcome-icon { font-size: 52px; margin-bottom: 12px; }
   .kb-home-card h1 { font-size: 24px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
   .kb-home-card .subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 28px; }
-  .kb-home-card .kb-list { text-align: left; margin-bottom: 20px; }
+  .kb-home-card .kb-list { text-align: left; margin-bottom: 24px; }
   .kb-home-card .kb-list-item {
-    display: flex; align-items: center; gap: 14px;
-    padding: 14px 18px; border: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px;
+    padding: 18px 20px; border: 1px solid var(--border);
     border-radius: var(--radius); cursor: pointer;
-    transition: all var(--transition); margin-bottom: 8px;
+    transition: all var(--transition); margin-bottom: 10px;
   }
   .kb-home-card .kb-list-item:hover {
     border-color: var(--primary); background: var(--primary-light);
     box-shadow: var(--shadow-md); transform: translateY(-1px);
   }
-  .kb-home-card .kb-list-item .kb-icon { font-size: 28px; flex-shrink: 0; }
+  .kb-home-card .kb-list-item .kb-icon { font-size: 32px; flex-shrink: 0; }
   .kb-home-card .kb-list-item .kb-info { flex: 1; min-width: 0; }
-  .kb-home-card .kb-list-item .kb-name { font-weight: 600; font-size: 15px; }
-  .kb-home-card .kb-list-item .kb-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-  .kb-home-card .kb-list-item .kb-arrow { font-size: 18px; color: var(--text-muted); }
-  .kb-home-card .kb-list-item:hover .kb-arrow { color: var(--primary); }
+  .kb-home-card .kb-list-item .kb-name { font-weight: 600; font-size: 16px; color: var(--text); }
+  .kb-home-card .kb-list-item .kb-desc { font-size: 13px; color: var(--text-secondary); margin-top: 4px; line-height: 1.4; }
+  .kb-home-card .kb-list-item .kb-meta-right {
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  }
+  .kb-home-card .kb-list-item .kb-arrow { font-size: 20px; color: var(--text-muted); transition: color var(--transition), transform var(--transition); }
+  .kb-home-card .kb-list-item:hover .kb-arrow { color: var(--primary); transform: translateX(3px); }
   .kb-home-card .kb-list-item .kb-del-btn {
     font-size: 15px; opacity: 0; cursor: pointer; transition: opacity var(--transition);
-    padding: 4px; border-radius: 0px; line-height: 1; margin-left: 4px;
+    padding: 4px 6px; border-radius: 0px; line-height: 1;
   }
-  .kb-home-card .kb-list-item:hover .kb-del-btn { opacity: 0.5; }
+  .kb-home-card .kb-list-item:hover .kb-del-btn { opacity: 0.4; }
   .kb-home-card .kb-list-item .kb-del-btn:hover { opacity: 1 !important; background: #fef2f2; }
-  .kb-home-card .kb-empty { padding: 30px 0; color: var(--text-muted); }
-  .kb-home-card .kb-empty .empty-icon { font-size: 40px; margin-bottom: 8px; }
-  .kb-home-card .kb-empty p { font-size: 14px; }
+  .kb-home-card .kb-empty { padding: 40px 0; color: var(--text-muted); }
+  .kb-home-card .kb-empty .empty-icon { font-size: 48px; margin-bottom: 12px; }
+  .kb-home-card .kb-empty p { font-size: 15px; }
   .kb-home-card .kb-create-btn {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 10px 24px; background: var(--primary); color: #fff;
-    border: none; border-radius: var(--radius-sm); font-size: 14px;
+    padding: 12px 28px; background: var(--primary); color: #fff;
+    border: none; border-radius: var(--radius-sm); font-size: 15px; font-weight: 500;
     cursor: pointer; transition: background var(--transition);
   }
   .kb-home-card .kb-create-btn:hover { background: var(--primary-hover); }
@@ -507,6 +610,8 @@
     .kb-home-card { padding: 28px 20px; }
     .kb-home-card .welcome-icon { font-size: 40px; }
     .kb-home-card h1 { font-size: 20px; }
+    .kb-home-card .kb-list-item { padding: 14px 16px; }
+    .kb-home-card .kb-list-item .kb-name { font-size: 15px; }
   }
 
   /* Dark mode */
@@ -575,6 +680,14 @@
       <h1><span>📚</span> Knowledge Base Manager</h1>
       <p>管理你的本地知识库 · 上传、浏览、搜索和删除文档</p>
       <div class="kb-badge">🏷️ 知识库：<span id="currentKBLabel"></span> <button class="home-btn" onclick="goHome()">🏠 主页</button></div>
+      <div class="header-actions">
+        <button class="header-action-btn" onclick="openConfigPanel()" title="配置管理">⚙️ 配置</button>
+        <button class="header-action-btn" onclick="openSearchDebugPanel()" title="搜索调试">🔍 搜索调试</button>
+        <button class="header-action-btn" onclick="openStatusPanel()" title="系统状态">📊 状态</button>
+        <button class="header-action-btn" onclick="openTombstonePanel()" title="墓碑管理">🗑️ 墓碑</button>
+        <button class="header-action-btn" onclick="openReconcilePanel()" title="对账&向量">🔬 工具</button>
+        <button class="header-action-btn header-action-export" onclick="exportKB()" title="导出知识库">📦 导出</button>
+      </div>
     </div>
   </div>
 
@@ -586,6 +699,7 @@
       <div class="stat-card"><div class="num" id="statChunks">-</div><div class="label">总分块数</div></div>
       <div class="stat-card"><div class="num" id="statPapers">-</div><div class="label">学术论文</div></div>
       <div class="stat-card"><div class="num" id="statTypes">-</div><div class="label">文件类型</div></div>
+      <div class="stat-card"><div class="num" id="statVectors">-</div><div class="label">向量覆盖</div><div class="sub" id="statVectorsSub"></div></div>
       <div class="model-card" id="statEmbedder">
         <div class="model-header">
           <span class="model-badge" id="embedderBadge"></span>
@@ -665,6 +779,8 @@
         <button class="active" id="viewCard" onclick="setView('card')">📇 卡片</button>
         <button id="viewTable" onclick="setView('table')">📋 表格</button>
       </div>
+      <button class="filter-select" style="padding:8px 10px;cursor:pointer;min-width:auto" onclick="openTombstonePanel()" title="墓碑管理">🗑️ 墓碑</button>
+      <button class="filter-select" style="padding:8px 10px;cursor:pointer;min-width:auto" onclick="openReconcilePanel()" title="对账检查">🔍 对账</button>
       <span class="count-info" id="resultCount"></span>
       <span class="tag-chip" id="tagFilterChip" onclick="filterByTag(currentTag)" title="点击清除标签过滤">
         🏷️ <span class="tag-chip-text" id="tagFilterLabel"></span>
@@ -695,8 +811,6 @@
           <tr>
             <th onclick="sortBy('name')">文档名 <span class="sort-icon">▲</span></th>
             <th onclick="sortBy('sourceType')">类型 <span class="sort-icon">▲</span></th>
-            <th onclick="sortBy('chunkCount')" style="text-align:right">分块 <span class="sort-icon">▲</span></th>
-            <th onclick="sortBy('addedAt')">时间 <span class="sort-icon">▲</span></th>
             <th>操作</th>
           </tr>
         </thead>
@@ -751,6 +865,22 @@
       <div class="meta-label">标签</div>
       <div class="meta-value" id="ddTags"></div>
     </div>
+    <div class="meta-group" id="ddManifestGroup" style="display:none">
+      <div class="meta-label">📋 索引版本</div>
+      <div class="meta-value" id="ddManifest"></div>
+    </div>
+    <div class="preview-section" id="previewSection" style="display:none">
+      <div class="preview-header">
+        <span class="preview-label">📝 文档内容预览</span>
+        <div class="preview-actions">
+          <button id="previewToggleBtn" onclick="togglePreviewExpand()">展开全部</button>
+          <a class="preview-download" id="previewDownloadLink" href="#" title="下载原始文件">⬇ 下载</a>
+        </div>
+      </div>
+      <div class="preview-content" id="previewContent">
+        <div class="preview-loading">加载中…</div>
+      </div>
+    </div>
 
   </div>
 </div>
@@ -760,6 +890,22 @@
   <div class="confirm-box">
     <h3>确认删除</h3>
     <p id="confirmText">确定要删除此文档吗？此操作不可撤销。</p>
+    <div class="tombstone-option">
+      <label class="checkbox-label">
+        <input type="checkbox" id="tombstoneToggle" onchange="onTombstoneToggle()">
+        使用软删除（先屏蔽检索，7天后自动清理）
+      </label>
+      <div id="tombstoneOptions" style="display:none;margin-top:8px">
+        <label style="font-size:13px;color:var(--text-secondary)">
+          保留天数：
+          <input type="number" id="tombstoneTTL" value="7" min="1" max="365" style="width:70px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px">
+        </label>
+        <label style="font-size:13px;color:var(--text-secondary);margin-left:12px">
+          原因：
+          <input type="text" id="tombstoneReason" placeholder="可选" style="width:140px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px">
+        </label>
+      </div>
+    </div>
     <div class="actions">
       <button class="btn-cancel" onclick="closeConfirm()">取消</button>
       <button class="btn-confirm" id="confirmBtn" onclick="doDelete()">删除</button>
@@ -770,8 +916,84 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Tombstone panel -->
+<div class="overlay" id="tombstoneOverlay">
+  <div class="panel-box">
+    <div class="panel-header">
+      <h3>🗑️ 墓碑管理</h3>
+      <button class="drawer-close" onclick="closeTombstonePanel()">✕</button>
+    </div>
+    <div class="panel-body" id="tombstoneBody">
+      <div style="text-align:center;padding:20px;color:var(--text-secondary)">加载中…</div>
+    </div>
+    <div class="panel-footer">
+      <button class="btn-cancel" onclick="closeTombstonePanel()">关闭</button>
+      <button class="btn-confirm" onclick="cleanTombstones()">🧹 清理过期</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reconcile report panel -->
+<div class="overlay" id="reconcileOverlay">
+  <div class="panel-box">
+    <div class="panel-header">
+      <h3>🔍 对账报告</h3>
+      <button class="drawer-close" onclick="closeReconcilePanel()">✕</button>
+    </div>
+    <div class="panel-body" id="reconcileBody">
+      <div style="text-align:center;padding:20px;color:var(--text-secondary)">点击下方按钮开始对账检查…</div>
+    </div>
+    <div class="panel-footer">
+      <button class="btn-cancel" onclick="closeReconcilePanel()">关闭</button>
+      <button class="btn-rebuild" style="background:var(--primary);margin-right:8px" onclick="runRebuildVectors()">🧬 重建向量索引</button>
+      <button class="btn-confirm" onclick="runReconcile()">🔄 开始对账</button>
+    </div>
+  </div>
+</div>
+
+<!-- Config Panel Overlay -->
+<div class="overlay" id="configOverlay">
+  <div class="panel-box" style="max-width:940px">
+    <div class="panel-header"><h3>⚙️ 配置管理</h3><button class="drawer-close" onclick="closeConfigPanel()">✕</button></div>
+    <div class="panel-body" id="configBody"><div style="text-align:center;padding:20px;color:var(--text-secondary)">加载中…</div></div>
+  </div>
+</div>
+
+<!-- Search Debug Overlay -->
+<div class="overlay" id="searchDebugOverlay">
+  <div class="panel-box" style="max-width:800px">
+    <div class="panel-header"><h3>🔍 搜索调试控制台</h3><button class="drawer-close" onclick="closeSearchDebugPanel()">✕</button></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input id="debugQuery" placeholder="输入查询关键词…" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px" onkeydown="if(event.key==='Enter')runSearchDebug()">
+        <select id="debugMode" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+          <option value="hybrid">Hybrid</option><option value="bm25">BM25</option><option value="vector">Vector</option>
+        </select>
+        <button class="btn-confirm" onclick="runSearchDebug()" style="white-space:nowrap">搜索</button>
+      </div>
+      <div id="debugResults"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Status Panel Overlay -->
+<div class="overlay" id="statusOverlay">
+  <div class="panel-box" style="max-width:600px">
+    <div class="panel-header"><h3>📊 系统状态</h3><button class="drawer-close" onclick="closeStatusPanel()">✕</button></div>
+    <div class="panel-body" id="statusBody"><div style="text-align:center;padding:20px;color:var(--text-secondary)">加载中…</div></div>
+  </div>
+</div>
+
+<!-- Batch toolbar -->
+<div id="batchBar" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 16px;box-shadow:0 4px 20px rgba(0,0,0,.15);z-index:1000;align-items:center;gap:12px">
+  <span id="batchCount" style="font-size:13px;font-weight:600">已选 0 项</span>
+  <button class="btn-cancel" onclick="toggleBatchMode()" style="padding:4px 12px;font-size:12px">取消</button>
+  <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="batchTombstone">软删除</label>
+  <button class="btn-confirm" onclick="batchDelete()" style="padding:4px 12px;font-size:12px;background:var(--danger)">批量删除</button>
+</div>
+
 <script>
-// === State ===
+// === Config Panel JS ===
 var currentKB = '';
 var currentDocs = [];
 var totalDocs = 0;
@@ -894,19 +1116,22 @@ function renderKBHome() {
   var kbs = window._kbList || [];
   var list = document.getElementById('kbHomeList');
   if (!kbs || kbs.length === 0) {
-    list.innerHTML = '<div class="kb-empty"><div class="empty-icon">📭</div><p>还没有知识库，点击上方按钮创建一个吧</p></div>';
+    list.innerHTML = '<div class="kb-empty"><div class="empty-icon">📭</div><p>还没有知识库，点击下方按钮创建一个吧</p></div>';
     return;
   }
   list.innerHTML = kbs.map(function(kb) {
-    var delBtn = '<span class="kb-del-btn" onclick="event.stopPropagation();deleteKB(\'' + escHtml(kb.name) + '\')" title="删除知识库">🗑️</span>';
+    var desc = kb.description ? escHtml(kb.description) : '';
+    var descHtml = desc ? '<div class="kb-desc">' + desc + '</div>' : '';
     return '<div class="kb-list-item" onclick="enterKB(\'' + escHtml(kb.name) + '\')">' +
       '<div class="kb-icon">📂</div>' +
       '<div class="kb-info">' +
       '<div class="kb-name">' + escHtml(kb.name) + '</div>' +
-      '<div class="kb-desc">' + (kb.description ? escHtml(kb.description) : '点击进入该知识库') + '</div>' +
+      descHtml +
       '</div>' +
-      '<div class="kb-arrow">➜</div>' +
-      delBtn +
+      '<div class="kb-meta-right">' +
+      '<span class="kb-del-btn" onclick="event.stopPropagation();deleteKB(\'' + escHtml(kb.name) + '\')" title="删除知识库">🗑️</span>' +
+      '<span class="kb-arrow">➜</span>' +
+      '</div>' +
       '</div>';
   }).join('');
 }
@@ -1065,8 +1290,8 @@ function sortBy(field) {
   ths.forEach(function(el) { el.classList.remove('sorted'); });
   var icons = document.querySelectorAll('#tableView th .sort-icon');
   icons.forEach(function(el) { el.textContent = '▲'; });
-  var idx = field === 'name' ? 0 : field === 'sourceType' ? 1 : field === 'chunkCount' ? 2 : 3;
-  if (ths[idx]) {
+  var idx = field === 'name' ? 0 : field === 'sourceType' ? 1 : -1;
+  if (idx >= 0 && ths[idx]) {
     ths[idx].classList.add('sorted');
     var icon = ths[idx].querySelector('.sort-icon');
     if (icon) icon.textContent = currentSort.order === 'desc' ? '▼' : '▲';
@@ -1096,6 +1321,19 @@ function render() {
     document.getElementById('statChunks').textContent = totalChunks;
     document.getElementById('statPapers').textContent = totalPapers;
     document.getElementById('statTypes').textContent = totalTypes;
+    // Vector stats from document list
+    var vecDocs = 0, vecChunks = 0;
+    currentDocs.forEach(function(d) {
+      if (d.hasVectors) { vecDocs++; vecChunks += d.chunkCount; }
+    });
+    document.getElementById('statVectors').textContent = vecDocs + '/' + totalDocs;
+    var vecPct = totalChunks > 0 ? Math.round(vecChunks * 100 / totalChunks) : 0;
+    document.getElementById('statVectorsSub').textContent = vecChunks + ' chunks (' + vecPct + '%)';
+    if (vecDocs < totalDocs) {
+      document.getElementById('statVectors').style.color = 'var(--warning)';
+    } else {
+      document.getElementById('statVectors').style.color = '';
+    }
   }
 
   updateTagIndicator();
@@ -1215,21 +1453,17 @@ function renderCards(items, isHits) {
   grid.innerHTML = items.map(function(d) {
     var icon = typeIcon(d.sourceType);
     var paperTag = d.isPaper ? '<span class="badge badge-paper">📄 论文</span>' : '';
+    var vectorTag = d.hasVectors ? '<span class="badge badge-paper" style="background:var(--primary-light);color:var(--primary)" title="已向量化 ' + (d.vectorDim||'?') + ' 维">🧬 向量</span>' : '';
     var tags = (d.tags||[]).map(function(t) {
       return '<span class="badge" onclick="event.stopPropagation();filterByTag(\'' + escHtml(t) + '\')" style="cursor:pointer">' + escHtml(t) + '</span>';
     }).join('');
-    var sizeStr = formatSize(d.totalChars);
     return '<div class="doc-card" onclick="showDetail(\'' + escHtml(d.slug) + '\')">' +
       '<div class="card-top">' +
       '<div class="type-icon">' + icon + '</div>' +
       '<div class="card-info">' +
       '<div class="card-title" title="' + escHtml(d.name) + '">' + escHtml(d.name) + '</div>' +
-      '<div class="card-meta">' +
-      '<span>📦 ' + d.chunkCount + ' 分块</span>' +
-      '<span>📏 ' + sizeStr + '</span>' +
-      '<span>🕐 ' + formatTime(d.addedAt) + '</span>' +
-      '</div></div></div>' +
-      '<div class="card-badges">' + paperTag + tags + '</div>' +
+      '</div></div>' +
+      '<div class="card-badges">' + paperTag + vectorTag + tags + '</div>' +
       '<div class="card-actions">' +
       '<button class="btn-detail" onclick="event.stopPropagation();showDetail(\'' + escHtml(d.slug) + '\')">📖 查看详情</button>' +
       '<button class="btn-delete-card" onclick="event.stopPropagation();confirmDelete(\'' + escHtml(d.slug) + '\',\'' + escHtml(d.name) + '\')">🗑️</button>' +
@@ -1263,8 +1497,6 @@ function renderTable(items, isHits) {
     return '<tr>' +
       '<td><div class="doc-name-cell" title="' + escHtml(d.name) + '">' + escHtml(d.name) + '</div></td>' +
       '<td><span class="doc-type-badge">' + escHtml(d.sourceType||'') + '</span></td>' +
-      '<td style="text-align:right">' + d.chunkCount + '</td>' +
-      '<td><span style="font-size:13px;color:var(--text-muted)">' + formatTime(d.addedAt) + '</span></td>' +
       '<td>' +
       '<button class="btn-delete" style="border-color:var(--primary);color:var(--primary);margin-right:4px" onclick="showDetail(\'' + escHtml(d.slug) + '\')">📖</button>' +
       '<button class="btn-delete" onclick="confirmDelete(\'' + escHtml(d.slug) + '\',\'' + escHtml(d.name) + '\')">🗑️</button>' +
@@ -1308,6 +1540,8 @@ async function showDetail(slug) {
   document.getElementById('ddSize').textContent = '';
   document.getElementById('ddTime').textContent = '';
   document.getElementById('ddTagsGroup').style.display = 'none';
+  document.getElementById('ddManifestGroup').style.display = 'none';
+  document.getElementById('previewSection').style.display = 'none';
   document.getElementById('drawerTitle').textContent = '文档详情';
   openDrawer();
   try {
@@ -1346,6 +1580,112 @@ function renderDrawer(data) {
     document.getElementById('ddTags').textContent = meta.tags.join(', ');
   } else {
     document.getElementById('ddTagsGroup').style.display = 'none';
+  }
+
+  // Fetch manifest info.
+  loadManifestInfo(meta.slug);
+  // Fetch content preview.
+  loadContentPreview(meta.slug);
+}
+
+async function loadManifestInfo(slug) {
+  var group = document.getElementById('ddManifestGroup');
+  var el = document.getElementById('ddManifest');
+  try {
+    var data = await apiRaw('/api/documents/' + encodeURIComponent(slug) + '/manifest');
+    if (data && data.manifest) {
+      group.style.display = 'block';
+      el.innerHTML = 'v' + escHtml(String(data.version))
+        + ' · ' + escHtml(String(data.chunkCount)) + ' 分块'
+        + ' · 策略: <code style="font-size:11px">' + escHtml(String(data.strategy).slice(0,30)) + '</code>'
+        + (data.sourceHash ? '<br><span style="font-size:11px;color:var(--text-muted)">源SHA256: ' + escHtml(data.sourceHash.slice(0,16)) + '…</span>' : '');
+    } else if (data && data.message) {
+      group.style.display = 'block';
+      el.innerHTML = '<span style="color:var(--text-muted);font-size:12px">' + escHtml(data.message) + '</span>';
+    } else {
+      group.style.display = 'none';
+    }
+  } catch (e) {
+    group.style.display = 'none';
+  }
+}
+
+async function loadContentPreview(slug) {
+  var section = document.getElementById('previewSection');
+  var content = document.getElementById('previewContent');
+  var downloadLink = document.getElementById('previewDownloadLink');
+  var toggleBtn = document.getElementById('previewToggleBtn');
+
+  // Set download link
+  downloadLink.href = '/api/documents/' + encodeURIComponent(slug) + '/download?' +
+    (typeof currentKB !== 'undefined' && currentKB ? 'kb=' + encodeURIComponent(currentKB) : '');
+
+  // Reset
+  toggleBtn.textContent = '展开全部';
+  toggleBtn.classList.remove('active');
+  content.classList.remove('expanded');
+  content.innerHTML = '<div class="preview-loading">加载中…</div>';
+
+  try {
+    var data = await apiRaw('/api/documents/' + encodeURIComponent(slug) + '/chunks');
+    section.style.display = 'block';
+    if (!data || !data.chunks || data.chunks.length === 0) {
+      content.innerHTML = '<div class="preview-empty">暂无分块内容</div>';
+      return;
+    }
+    var chunks = data.chunks;
+    var html = '';
+    // Show first 5 chunks initially
+    var maxInitial = 5;
+    for (var i = 0; i < chunks.length; i++) {
+      var c = chunks[i];
+      var idx = c.index || (i + 1);
+      var display = i < maxInitial ? '' : ' style="display:none"';
+      var text = c.content || '';
+      // Truncate very long chunks for display
+      var truncated = text.length > 2000 ? text.slice(0, 2000) + '\n…[内容过长，已截断，请使用下载功能查看完整内容]' : text;
+      html += '<div class="chunk-block" data-chunk-idx="' + idx + '"' + display + '>'
+        + '<div class="chunk-idx">📄 分块 #' + idx + '</div>'
+        + escHtml(truncated)
+        + '</div>';
+    }
+    content.innerHTML = html;
+
+    // Show/hide toggle button based on chunk count
+    if (chunks.length > maxInitial) {
+      toggleBtn.style.display = '';
+      toggleBtn.textContent = '展开全部 (' + chunks.length + ' 块)';
+    } else {
+      toggleBtn.style.display = 'none';
+    }
+  } catch (e) {
+    section.style.display = 'block';
+    content.innerHTML = '<div class="preview-empty">加载失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function togglePreviewExpand() {
+  var content = document.getElementById('previewContent');
+  var toggleBtn = document.getElementById('previewToggleBtn');
+  var expanded = content.classList.contains('expanded');
+  if (expanded) {
+    // Collapse: hide chunks beyond the 5th
+    content.classList.remove('expanded');
+    var blocks = content.querySelectorAll('.chunk-block');
+    for (var i = 5; i < blocks.length; i++) {
+      blocks[i].style.display = 'none';
+    }
+    toggleBtn.textContent = '展开全部 (' + blocks.length + ' 块)';
+    toggleBtn.classList.remove('active');
+  } else {
+    // Expand: show all
+    content.classList.add('expanded');
+    var allBlocks = content.querySelectorAll('.chunk-block');
+    for (var j = 0; j < allBlocks.length; j++) {
+      allBlocks[j].style.display = '';
+    }
+    toggleBtn.textContent = '收起';
+    toggleBtn.classList.add('active');
   }
 }
 
@@ -1425,7 +1765,13 @@ async function uploadFiles(fileList) {
       var errText = await resp.text();
       var errMsg = '上传失败 (HTTP ' + resp.status + ')';
       try { var j = JSON.parse(errText); errMsg = j.error || errMsg; } catch (_) {}
-      throw new Error(errMsg);
+      var ri = document.createElement('div');
+      ri.className = 'upload-item fail';
+      ri.innerHTML = '<div class="upload-item-row"><span class="status">❌ ' + escHtml(errMsg) + '</span></div>';
+      progressEl.appendChild(ri);
+      showToast('上传失败: ' + errMsg, 'error');
+      delete window._abortUpload;
+      return;
     }
 
     // NDJSON streaming: read the body with a ReadableStream reader.
@@ -1469,9 +1815,12 @@ async function uploadFiles(fileList) {
     loadModelInfo();
   } catch (e) {
     if (e.name === 'AbortError') return;
-    showToast('上传失败: ' + e.message, 'error');
-    progressEl.innerHTML = '';
-    progressEl.classList.remove('active');
+    // Don't clear already-rendered results — append an error entry instead.
+    var ri = document.createElement('div');
+    ri.className = 'upload-item fail';
+    ri.innerHTML = '<div class="upload-item-row"><span class="status">❌ 连接中断: ' + escHtml(e.message) + '</span></div>';
+    progressEl.appendChild(ri);
+    showToast('上传中断: ' + e.message, 'error');
   } finally {
     delete window._abortUpload;
   }
@@ -1756,7 +2105,16 @@ function updateUploadStage(stagesEl, stage, status, detail, statusEl) {
 function confirmDelete(slug, name) {
   pendingDelete = slug;
   document.getElementById('confirmText').textContent = '确定要删除 "' + name + '" 吗？此操作不可撤销。';
+  document.getElementById('tombstoneToggle').checked = false;
+  document.getElementById('tombstoneOptions').style.display = 'none';
+  document.getElementById('tombstoneTTL').value = '7';
+  document.getElementById('tombstoneReason').value = '';
   document.getElementById('confirmOverlay').classList.add('show');
+}
+
+function onTombstoneToggle() {
+  var checked = document.getElementById('tombstoneToggle').checked;
+  document.getElementById('tombstoneOptions').style.display = checked ? 'block' : 'none';
 }
 
 function closeConfirm() {
@@ -1768,10 +2126,18 @@ async function doDelete() {
   if (!pendingDelete) return;
   var btn = document.getElementById('confirmBtn');
   btn.disabled = true; btn.textContent = '删除中…';
+  var useTombstone = document.getElementById('tombstoneToggle').checked;
   try {
-    await api('/api/documents/' + encodeURIComponent(pendingDelete), { method: 'DELETE' });
+    var url = '/api/documents/' + encodeURIComponent(pendingDelete);
+    if (useTombstone) {
+      var ttl = document.getElementById('tombstoneTTL').value || '7';
+      var reason = document.getElementById('tombstoneReason').value || '';
+      url += '?tombstone=true&ttl=' + (parseInt(ttl) * 86400);
+      if (reason) url += '&reason=' + encodeURIComponent(reason);
+    }
+    await api(url, { method: 'DELETE' });
     closeConfirm();
-    showToast('删除成功', 'success');
+    showToast(useTombstone ? '已添加墓碑（软删除）' : '删除成功', 'success');
     loadDocs();
     loadModelInfo();
   } catch (e) {
@@ -1853,6 +2219,511 @@ function formatSize(chars) {
 function typeIcon(type) {
   var map = { pdf:'📄', docx:'📝', md:'📝', txt:'📄', epub:'📖', html:'🌐', xlsx:'📊', pptx:'📽️' };
   return map[type] || '📄';
+}
+
+// === Tombstone Management ===
+function openTombstonePanel() {
+  document.getElementById('tombstoneOverlay').classList.add('show');
+  loadTombstones();
+}
+
+function closeTombstonePanel() {
+  document.getElementById('tombstoneOverlay').classList.remove('show');
+}
+
+async function loadTombstones() {
+  var body = document.getElementById('tombstoneBody');
+  body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary)">加载中…</div>';
+  try {
+    var data = await api('/api/tombstones');
+    if (!data.tombstones || data.tombstones.length === 0) {
+      body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">🎉 没有墓碑记录<br><span style="font-size:12px">知识库干净无软删除文档</span></div>';
+      return;
+    }
+    var html = '<table class="tomb-table"><thead><tr><th>文档 Slug</th><th>删除时间</th><th>状态</th><th>原因</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < data.tombstones.length; i++) {
+      var t = data.tombstones[i];
+      var statusHtml = t.expired
+        ? '<span class="expired">⏰ 已过期</span>'
+        : '<span class="active-ts">🛡️ 保护中</span>';
+      html += '<tr>'
+        + '<td title="' + escHtml(t.docSlug) + '">' + escHtml(truncateSlug(t.docSlug)) + '</td>'
+        + '<td>' + formatTime(t.deletedAt) + '</td>'
+        + '<td>' + statusHtml + '</td>'
+        + '<td style="font-size:12px;color:var(--text-secondary)">' + escHtml(t.reason || '-') + '</td>'
+        + '<td><button onclick="restoreTombstone(\'' + escHtml(t.docSlug) + '\')">↩ 恢复</button></td>'
+        + '</tr>';
+    }
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger)">加载失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function restoreTombstone(slug) {
+  if (!confirm('确定恢复文档 "' + truncateSlug(slug) + '" 吗？将重新出现在搜索结果中。')) return;
+  try {
+    await api('/api/tombstones/' + encodeURIComponent(slug), { method: 'DELETE' });
+    showToast('文档已恢复', 'success');
+    loadTombstones();
+    loadDocs();
+  } catch (e) {
+    showToast('恢复失败: ' + e.message, 'error');
+  }
+}
+
+async function cleanTombstones() {
+  var btn = document.querySelector('#tombstoneOverlay .btn-confirm');
+  btn.disabled = true; btn.textContent = '清理中…';
+  try {
+    var data = await api('/api/tombstones/clean', { method: 'POST' });
+    showToast('已清理 ' + (data.cleaned || 0) + ' 个过期文档', 'success');
+    loadTombstones();
+    loadDocs();
+  } catch (e) {
+    showToast('清理失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '🧹 清理过期';
+  }
+}
+
+function truncateSlug(slug) {
+  if (!slug) return '';
+  return slug.length > 36 ? slug.slice(0, 33) + '…' : slug;
+}
+
+// === Config Panel JS ===
+function openConfigPanel() {
+  document.getElementById('configOverlay').classList.add('show');
+  loadConfigObj();
+}
+function closeConfigPanel() {
+  document.getElementById('configOverlay').classList.remove('show');
+}
+
+// cfgSection generates a collapsible config category container (pure div — no <details>).
+function cfgSection(title) {
+  return '<div class="cfg-section"><div class="cfg-section-hdr" onclick="cfgToggle(this)"><span class="cfg-arrow">▼</span>' + title + '</div><div class="cfg-section-body">';
+}
+
+// cfgToggle handles collapse/expand with measured scroll compensation.
+function cfgToggle(hdr) {
+  var section = hdr.parentElement;
+  var pb = document.getElementById('configBody');
+  var wasCollapsed = section.classList.contains('collapsed');
+  var bodyEl = section.querySelector('.cfg-section-body');
+
+  if (!wasCollapsed) {
+    // About to collapse — measure the height that will disappear.
+    var removedHeight = bodyEl.offsetHeight;
+    var scrollBefore = pb.scrollTop;
+    section.classList.add('collapsed');
+    // Force layout so scrollHeight is current.
+    void pb.offsetHeight;
+    var newMax = Math.max(0, pb.scrollHeight - pb.clientHeight);
+    pb.scrollTop = Math.min(scrollBefore, newMax);
+  } else {
+    // Expanding — content grows, old scroll position stays valid.
+    section.classList.remove('collapsed');
+  }
+}
+
+// cfgField generates a single config input field.
+// type: text (default), number, password, select (pass opts.options array), bool (checkbox), readonly
+function cfgField(id, label, val, type, opts) {
+  type = type || 'text';
+  opts = opts || {};
+  var v = (val === undefined || val === null) ? '' : String(val);
+  if (type === 'bool') {
+    var checked = val === true || val === 'true' || val === 1 || val === '1' ? ' checked' : '';
+    return '<div style="display:flex;align-items:center;min-height:34px"><label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">'
+      + '<input type="checkbox" id="cfg_' + id + '"' + checked + ' style="accent-color:var(--primary);width:16px;height:16px;margin:0">'
+      + label + '</label></div>';
+  }
+  if (type === 'select') {
+    var options = opts.options || [];
+    var h = '<div><label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:2px">' + label + '</label>'
+      + '<select id="cfg_' + id + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px;box-sizing:border-box;background:var(--card)">';
+    for (var i = 0; i < options.length; i++) {
+      var sel = v === options[i] ? ' selected' : '';
+      h += '<option value="' + escHtml(options[i]) + '"' + sel + '>' + escHtml(options[i]) + '</option>';
+    }
+    h += '</select></div>';
+    return h;
+  }
+  if (type === 'password') {
+    var ph = v === '***' ? '已设置，留空不修改' : '未设置';
+    return '<div><label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:2px">' + label + '</label>'
+      + '<div style="display:flex;gap:4px">'
+      + '<input id="cfg_' + id + '" value="" type="password" placeholder="' + ph + '" style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px;box-sizing:border-box">'
+      + '<button type="button" onclick="var e=document.getElementById(\'cfg_' + id + '\');var t=e.type===\'password\'?\'text\':\'password\';e.type=t;this.textContent=t===\'password\'?\'👁\':\'🙈\'" title="显示/隐藏" style="padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card);cursor:pointer;font-size:13px;flex-shrink:0">👁</button>'
+      + '</div></div>';
+  }
+  if (type === 'number') {
+    return '<div><label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:2px">' + label + '</label>'
+      + '<input id="cfg_' + id + '" value="' + escHtml(v) + '" type="number" step="any" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px;box-sizing:border-box"></div>';
+  }
+  if (type === 'readonly') {
+    return '<div><label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:2px">' + label + ' <span style="color:var(--warning);font-size:10px">需重启</span></label>'
+      + '<input value="' + escHtml(v) + '" readonly style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px;box-sizing:border-box;background:var(--bg);color:var(--text-muted);cursor:not-allowed"></div>';
+  }
+  return '<div><label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:2px">' + label + '</label>'
+    + '<input id="cfg_' + id + '" value="' + escHtml(v) + '" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:13px;box-sizing:border-box"></div>';
+}
+
+async function loadConfigObj() {
+  try {
+    var data = await apiRaw('/api/config');
+    var body = document.getElementById('configBody');
+    var h = '';
+    // ── Embedding ──
+    h += cfgSection('🧠 嵌入模型');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('embedEndpoint', 'API 端点', data.embedEndpoint);
+    h += cfgField('embedModel', '模型名称', data.embedModel);
+    h += cfgField('embedDim', '向量维度 (0=自动)', data.embedDim, 'number');
+    h += cfgField('embedApiKey', 'API Key', data.embedApiKey, 'password');
+    h += '</div></div></div>';
+    // ── Reranking ──
+    h += cfgSection('🔄 重排序');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('rerankEndpoint', 'API 端点', data.rerankEndpoint);
+    h += cfgField('rerankModel', '模型名称', data.rerankModel);
+    h += cfgField('rerankApiKey', 'API Key', data.rerankApiKey, 'password');
+    h += cfgField('rerankTimeout', '超时时间', data.rerankTimeout);
+    h += cfgField('rerankCandidateLimit', '候选数量', data.rerankCandidateLimit, 'number');
+    h += '</div></div></div>';
+    // ── Search ──
+    h += cfgSection('🔍 搜索参数');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+    h += cfgField('searchMode', '搜索模式', data.searchMode, 'select', {options:['hybrid','bm25','vector']});
+    h += cfgField('rerankEnabled', '启用重排序', data.rerankEnabled, 'bool');
+    h += cfgField('rrfK', 'RRF K', data.rrfK, 'number');
+    h += cfgField('abstractBoost', '摘要加权', data.abstractBoost, 'number');
+    h += cfgField('bm25K1', 'BM25 K1', data.bm25K1, 'number');
+    h += cfgField('bm25B', 'BM25 B', data.bm25B, 'number');
+    h += '</div></div></div>';
+    // ── Chunking ──
+    h += cfgSection('✂️ 分块参数');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('chunkMinChars', '最小字符数', data.chunkMinChars, 'number');
+    h += cfgField('chunkMaxChars', '最大字符数', data.chunkMaxChars, 'number');
+    h += cfgField('chunkOverlapChars', '重叠字符数', data.chunkOverlapChars, 'number');
+    h += cfgField('chunkSemanticThreshold', '语义分割阈值', data.chunkSemanticThreshold, 'number');
+    h += '</div></div></div>';
+    // ── Doc Parser ──
+    h += cfgSection('📄 文档解析');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('docParserEndpoint', 'API 端点', data.docParserEndpoint);
+    h += cfgField('docParserApiKey', 'API Key', data.docParserApiKey, 'password');
+    h += cfgField('docParserTimeout', '超时时间', data.docParserTimeout);
+    h += '</div></div></div>';
+    // ── GPU Scheduler ──
+    h += cfgSection('⚡ GPU 调度器');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('gpuSchedulerEnabled', '启用 GPU 调度器', data.gpuSchedulerEnabled, 'bool');
+    h += cfgField('gpuSchedulerTimeout', '超时时间', data.gpuSchedulerTimeout);
+    h += cfgField('gpuSchedulerEmbeddingSleepUrl', 'Embedding Sleep URL', data.gpuSchedulerEmbeddingSleepUrl);
+    h += cfgField('gpuSchedulerRerankerSleepUrl', 'Reranker Sleep URL', data.gpuSchedulerRerankerSleepUrl);
+    h += cfgField('gpuSchedulerDocParserSleepUrl', 'Doc Parser Sleep URL', data.gpuSchedulerDocParserSleepUrl);
+    h += '</div></div></div>';
+    // ── Upload ──
+    h += cfgSection('📤 上传');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('uploadMaxSizeMb', '最大上传大小 (MB)', data.uploadMaxSizeMb, 'number');
+    h += '</div></div></div>';
+    // ── Auth ──
+    h += cfgSection('🔐 认证');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('apiToken', 'API Token（留空=无认证）', data.apiToken, 'password');
+    h += '</div></div></div>';
+    // ── Logging ──
+    h += cfgSection('📝 日志');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('logLevel', '日志级别', data.logLevel, 'select', {options:['debug','info','warn','error']});
+    h += cfgField('logFile', '日志文件路径', data.logFile);
+    h += '</div></div></div>';
+    // ── Server (restart-required, read-only) ──
+    h += cfgSection('🌐 服务器 <span style="font-size:11px;color:var(--text-muted);font-weight:400">— 修改需重启</span>');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+    h += cfgField('managePort', '管理端口', data.managePort, 'readonly');
+    h += cfgField('servePort', 'MCP 服务端口', data.servePort, 'readonly');
+    h += cfgField('serveBaseUrl', '服务 Base URL', data.serveBaseUrl, 'readonly');
+    h += '</div></div></div>';
+    // ── Storage (restart-required) ──
+    h += cfgSection('💾 存储 <span style="font-size:11px;color:var(--text-muted);font-weight:400">— 修改需重启</span>');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('dataDir', '数据目录', data.dataDir, 'readonly');
+    h += cfgField('defaultKB', '默认知识库', data.defaultKB, 'readonly');
+    h += cfgField('configPath', '配置文件路径', data.configPath, 'readonly');
+    h += '</div></div></div>';
+    // ── MySQL (only if configured) ──
+    if (data.mysqlHost || data.mysqlDsn) {
+      h += cfgSection('🐬 MySQL <span style="font-size:11px;color:var(--text-muted);font-weight:400">— 修改需重启</span>');
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+      h += cfgField('mysqlHost', '主机', data.mysqlHost, 'readonly');
+      h += cfgField('mysqlPort', '端口', data.mysqlPort, 'readonly');
+      h += cfgField('mysqlUser', '用户', data.mysqlUser, 'readonly');
+      h += cfgField('mysqlDatabase', '数据库', data.mysqlDatabase, 'readonly');
+      if (data.mysqlSocketPath) h += cfgField('mysqlSocketPath', 'Socket 路径', data.mysqlSocketPath, 'readonly');
+      if (data.mysqlDsn) h += cfgField('mysqlDsn', 'DSN', data.mysqlDsn, 'readonly');
+      h += '</div></div></div>';
+    }
+    h += '<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">'
+      + '<button class="btn-confirm" onclick="saveConfigObj()" style="padding:10px 24px;font-size:14px">💾 保存配置</button>'
+      + '<span style="font-size:12px;color:var(--text-muted)" id="configMsg"></span>'
+      + '<span style="font-size:11px;color:var(--text-muted);margin-left:auto">标记「需重启」的项请直接编辑 knowledge-mcp.toml</span>'
+      + '</div>';
+    body.innerHTML = h;
+  } catch(e) {
+    document.getElementById('configBody').innerHTML = '<div style="color:var(--danger)">加载失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function saveConfigObj() {
+  // Field definitions: {id, coerce:'int'|'float'|'bool'} — string is default.
+  var fields = [
+    // Embedding
+    {id:'embedEndpoint'},{id:'embedModel'},{id:'embedDim',coerce:'int'},{id:'embedApiKey'},
+    // Reranking
+    {id:'rerankEndpoint'},{id:'rerankModel'},{id:'rerankApiKey'},{id:'rerankTimeout'},{id:'rerankCandidateLimit',coerce:'int'},
+    // Search
+    {id:'searchMode'},{id:'rerankEnabled',coerce:'bool'},{id:'rrfK',coerce:'int'},{id:'abstractBoost',coerce:'float'},
+    {id:'bm25K1',coerce:'float'},{id:'bm25B',coerce:'float'},
+    // Chunking
+    {id:'chunkMinChars',coerce:'int'},{id:'chunkMaxChars',coerce:'int'},{id:'chunkOverlapChars',coerce:'int'},{id:'chunkSemanticThreshold',coerce:'float'},
+    // Doc Parser
+    {id:'docParserEndpoint'},{id:'docParserApiKey'},{id:'docParserTimeout'},
+    // GPU Scheduler
+    {id:'gpuSchedulerEnabled',coerce:'bool'},{id:'gpuSchedulerTimeout'},
+    {id:'gpuSchedulerEmbeddingSleepUrl'},{id:'gpuSchedulerRerankerSleepUrl'},{id:'gpuSchedulerDocParserSleepUrl'},
+    // Upload
+    {id:'uploadMaxSizeMb',coerce:'int'},
+    // Auth
+    {id:'apiToken'},
+    // Logging
+    {id:'logLevel'},{id:'logFile'},
+  ];
+  var cfg = {};
+  for (var i = 0; i < fields.length; i++) {
+    var el = document.getElementById('cfg_' + fields[i].id);
+    if (!el) continue;
+    var v;
+    if (fields[i].coerce === 'bool') {
+      v = el.checked;
+    } else {
+      v = el.value.trim();
+      if (v === '') continue; // skip empties so masked/unchanged passwords are not sent
+    }
+    if (fields[i].coerce === 'int') v = parseInt(v);
+    else if (fields[i].coerce === 'float') v = parseFloat(v);
+    cfg[fields[i].id] = v;
+  }
+  try {
+    var data = await apiRaw('/api/config', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    var msg = '✅ 已保存 ' + (data.changes ? data.changes.length + ' 项' : '');
+    if (data.restartRequired) msg += ' (部分需重启)';
+    document.getElementById('configMsg').textContent = msg;
+    document.getElementById('configMsg').style.color = 'var(--success)';
+  } catch(e) {
+    document.getElementById('configMsg').textContent = '❌ ' + e.message;
+    document.getElementById('configMsg').style.color = 'var(--danger)';
+  }
+}
+
+// === Search Debug JS ===
+function openSearchDebugPanel() { document.getElementById('searchDebugOverlay').classList.add('show'); }
+function closeSearchDebugPanel() { document.getElementById('searchDebugOverlay').classList.remove('show'); }
+async function runSearchDebug() {
+  var q = document.getElementById('debugQuery').value.trim();
+  if (!q) return;
+  var mode = document.getElementById('debugMode').value;
+  var body = document.getElementById('debugResults');
+  body.innerHTML = '<div class="spinner"></div>';
+  try {
+    var data = await apiRaw('/api/search-console', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:q, mode:mode, limit:20, kbName:currentKB})});
+    var html = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">'
+      + data.totalHits + ' 条结果 · 耗时 ' + data.latencyMs + 'ms</div>';
+    if (data.results && data.results.length > 0) {
+      for (var i=0;i<data.results.length;i++) {
+        var r = data.results[i];
+        html += '<div style="margin-bottom:8px;padding:8px;background:var(--surface);border-radius:4px;font-size:12px">'
+          + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">'
+          + '<span style="font-weight:600;color:var(--primary)">#'+r.rank+'</span>'
+          + '<span style="color:var(--text-muted)">'+r.score.toFixed(3)+'</span>'
+          + '<span style="color:var(--text-muted)">'+escHtml(r.docSlug)+'/'+escHtml(r.chunkId)+'</span>'
+          + '</div>'
+          + '<div style="color:var(--text-secondary);line-height:1.5;max-height:60px;overflow:hidden">'+escHtml(r.snippet)+'</div>'
+          + '</div>';
+      }
+    }
+    body.innerHTML = html;
+  } catch(e) { body.innerHTML = '<div style="color:var(--danger)">'+escHtml(e.message)+'</div>'; }
+}
+
+// === Status JS ===
+function openStatusPanel() { document.getElementById('statusOverlay').classList.add('show'); loadStatusObj(); }
+function closeStatusPanel() { document.getElementById('statusOverlay').classList.remove('show'); }
+async function loadStatusObj() {
+  try {
+    var sys = await apiRaw('/api/system-info');
+    var body = document.getElementById('statusBody');
+    body.innerHTML = '<div class="reconcile-summary">'
+      + '<div class="reconcile-stat"><div class="val">'+sys.uptimeSeconds+'s</div><div class="lbl">运行时间</div></div>'
+      + '<div class="reconcile-stat"><div class="val">'+sys.numGoroutine+'</div><div class="lbl">Goroutines</div></div>'
+      + '<div class="reconcile-stat"><div class="val">'+(sys.memory.allocMB||0).toFixed(1)+'MB</div><div class="lbl">内存</div></div>'
+      + '<div class="reconcile-stat"><div class="val">'+sys.numCPU+'</div><div class="lbl">CPU核数</div></div>'
+      + '</div>'
+      + '<div style="margin-top:12px;font-size:13px"><b>Go 版本:</b> '+escHtml(sys.goVersion)+'</div>'
+      + '<div style="margin-top:4px;font-size:13px"><b>内存详情:</b> Sys '+(sys.memory.sysMB||0).toFixed(1)+'MB · GC '+sys.memory.numGC+'次 · 对象 '+sys.memory.heapObjects+'</div>';
+  } catch(e) { document.getElementById('statusBody').innerHTML = '<div style="color:var(--danger)">'+escHtml(e.message)+'</div>'; }
+}
+
+// === KB Export ===
+function exportKB() {
+  if (!currentKB) return;
+  window.open('/api/knowledge-bases/'+encodeURIComponent(currentKB)+'/export?kb='+encodeURIComponent(currentKB), '_blank');
+}
+
+// === Batch operations ===
+var batchSelected = {};
+function toggleBatchMode() {
+  var mode = !window._batchMode;
+  window._batchMode = mode;
+  document.getElementById('batchBar').style.display = mode ? 'flex' : 'none';
+  if (!mode) { batchSelected = {}; updateBatchCount(); }
+}
+function toggleBatchDoc(slug) {
+  if (batchSelected[slug]) delete batchSelected[slug];
+  else batchSelected[slug] = true;
+  updateBatchCount();
+}
+function updateBatchCount() {
+  document.getElementById('batchCount').textContent = '已选 ' + Object.keys(batchSelected).length + ' 项';
+}
+async function batchDelete() {
+  var slugs = Object.keys(batchSelected);
+  if (slugs.length === 0) return;
+  if (!confirm('确定要删除选中的 '+slugs.length+' 个文档吗？')) return;
+  try {
+    await apiRaw('/api/documents/batch-delete', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({slugs:slugs,tombstone:document.getElementById('batchTombstone').checked})});
+    showToast('批量删除完成', 'success');
+    batchSelected = {}; updateBatchCount();
+    loadDocs();
+  } catch(e) { showToast('批量删除失败: '+e.message, 'error'); }
+}
+
+// === Reconciliation ===
+function openReconcilePanel() {
+  document.getElementById('reconcileOverlay').classList.add('show');
+  document.getElementById('reconcileBody').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary)">点击下方按钮开始对账检查…</div>';
+}
+
+function closeReconcilePanel() {
+  document.getElementById('reconcileOverlay').classList.remove('show');
+  // Stop any active SSE rebuild stream
+  if (window._rebuildES) { window._rebuildES.close(); window._rebuildES = null; }
+}
+
+// === Vector Rebuild ===
+async function runRebuildVectors() {
+  var body = document.getElementById('reconcileBody');
+  var btn = document.querySelector('#reconcileOverlay .btn-rebuild');
+  body.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner-lg" style="margin:0 auto 10px"></div><div style="color:var(--text-secondary)">正在启动向量重建…</div></div>';
+  btn.disabled = true; btn.textContent = '⏳ 重建中…';
+  try {
+    var data = await api('/api/rebuild-vectors', { method: 'POST' });
+    btn.textContent = '⏳ 重建中…';
+    body.innerHTML = '<div class="reconcile-summary">'
+      + '<div class="reconcile-stat"><div class="val" id="rebuildProg">0%</div><div class="lbl">进度</div></div>'
+      + '<div class="reconcile-stat"><div class="val" id="rebuildEmbedded">-</div><div class="lbl">已嵌入</div></div>'
+      + '<div class="reconcile-stat"><div class="val" id="rebuildStatus">运行中</div><div class="lbl">状态</div></div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px" id="rebuildDocName"></div>'
+      + '<div style="margin-top:8px" id="rebuildLog"></div>';
+
+    // Subscribe to SSE for progress
+    var es = new EventSource('/api/tasks/' + encodeURIComponent(data.taskId) + '/events');
+    window._rebuildES = es;
+    es.onmessage = function(ev) {
+      try {
+        var e = JSON.parse(ev.data);
+        if (e.stage && e.status) {
+          var logEl = document.getElementById('rebuildLog');
+          logEl.innerHTML += '<div style="font-size:12px;color:var(--text-secondary);padding:2px 0">' +
+            escHtml(e.stage) + ' → ' + escHtml(e.status) + '</div>';
+          logEl.scrollTop = logEl.scrollHeight;
+          document.getElementById('rebuildDocName').textContent = e.detail || '';
+          // Parse progress from status like "50/100 (50%)"
+          var m = (e.status||'').match(/(\d+)\/(\d+)/);
+          if (m) {
+            var cur = parseInt(m[1]), tot = parseInt(m[2]);
+            document.getElementById('rebuildProg').textContent = tot > 0 ? Math.round(cur*100/tot) + '%' : '-';
+            document.getElementById('rebuildEmbedded').textContent = cur;
+          }
+        }
+        if (e.stage === 'complete' && e.status === 'done') {
+          document.getElementById('rebuildStatus').textContent = '✅ 完成';
+          document.getElementById('rebuildStatus').style.color = 'var(--success)';
+          btn.disabled = false; btn.textContent = '🧬 重建向量索引';
+          es.close(); window._rebuildES = null;
+          showToast('向量重建完成', 'success');
+          loadDocs();
+        }
+        if (e.stage === 'error') {
+          document.getElementById('rebuildStatus').textContent = '❌ 失败';
+          document.getElementById('rebuildStatus').style.color = 'var(--danger)';
+          btn.disabled = false; btn.textContent = '🧬 重建向量索引';
+          es.close(); window._rebuildES = null;
+          showToast('向量重建失败: ' + (e.detail||''), 'error');
+        }
+      } catch(er) {}
+    };
+    es.onerror = function() {
+      if (es.readyState === EventSource.CLOSED) {
+        window._rebuildES = null;
+      }
+    };
+  } catch (e) {
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger)">启动失败: ' + escHtml(e.message) + '</div>';
+    btn.disabled = false; btn.textContent = '🧬 重建向量索引';
+  }
+}
+
+async function runReconcile() {
+  var body = document.getElementById('reconcileBody');
+  var btn = document.querySelector('#reconcileOverlay .btn-confirm');
+  body.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner-lg" style="margin:0 auto 10px"></div><div style="color:var(--text-secondary)">正在对账检查…</div></div>';
+  btn.disabled = true; btn.textContent = '⏳ 检查中…';
+  try {
+    var data = await api('/api/reconcile', { method: 'POST' });
+    var html = '<div class="reconcile-summary">'
+      + '<div class="reconcile-stat"><div class="val">' + data.docsChecked + '</div><div class="lbl">已检查</div></div>'
+      + '<div class="reconcile-stat"><div class="val" style="color:' + (data.docsOK === data.docsChecked ? 'var(--success)' : 'var(--warning)') + '">' + data.docsOK + '</div><div class="lbl">正常</div></div>'
+      + '<div class="reconcile-stat"><div class="val" style="color:' + (data.hasErrors ? 'var(--danger)' : 'var(--success)') + '">' + (data.findings ? data.findings.length : 0) + '</div><div class="lbl">发现</div></div>'
+      + '</div>';
+    html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">KB: ' + escHtml(data.kbName || '') + ' · 耗时: ' + escHtml(data.duration || '') + '</div>';
+    if (data.findings && data.findings.length > 0) {
+      for (var i = 0; i < data.findings.length; i++) {
+        var f = data.findings[i];
+        html += '<div class="finding-row">'
+          + '<span class="finding-sev ' + f.severity + '">' + f.severity.toUpperCase() + '</span>'
+          + '<span>' + escHtml(f.docSlug || '-');
+        if (f.chunkId) html += ' / ' + escHtml(f.chunkId);
+        html += ': ' + escHtml(f.message) + '</span></div>';
+      }
+    } else {
+      html += '<div style="text-align:center;padding:20px;color:var(--success);font-size:15px">✅ 所有文档通过校验，没有不一致</div>';
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--danger)">对账失败: ' + escHtml(e.message) + '</div>';
+  } finally {
+    btn.disabled = false; btn.textContent = '🔄 开始对账';
+  }
 }
 </script>
 </body>

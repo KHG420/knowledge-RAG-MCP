@@ -23,6 +23,14 @@ func (s *Store) RemoveDocument(slug string) error {
 		return err
 	}
 
+	// Remove from the vector index (non-fatal).
+	s.removeDocFromVectorIndex(slug)
+	if s.vectorIndex != nil {
+		if saveErr := s.saveVectorIndex(s.vectorIndex); saveErr != nil {
+			log.WithModule("vector").Warnf("save vector index after remove: %v", saveErr)
+		}
+	}
+
 	// Remove the line from INDEX.md (best-effort).
 	if metaErr == nil {
 		s.removeFromIndex(slug, meta)

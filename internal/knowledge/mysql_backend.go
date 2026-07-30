@@ -63,7 +63,7 @@ func (cfg MySQLBackendConfig) dsn() string {
 		DBName:               cfg.Database,
 		ParseTime:            true,
 		AllowNativePasswords: true,
-		MultiStatements:      true,
+		MultiStatements:      false,
 	}
 	if cfg.SocketPath != "" {
 		mcfg.Net = "unix"
@@ -94,80 +94,130 @@ func NewMySQLBackend(cfg MySQLBackendConfig) (*MySQLBackend, error) {
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 func (mb *MySQLBackend) Init() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS knowledge_bases (
-		name VARCHAR(255) PRIMARY KEY,
-		description TEXT,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS knowledge_bases (
+			name VARCHAR(255) PRIMARY KEY,
+			description TEXT,
+			index_content MEDIUMTEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS documents (
-		slug VARCHAR(255) NOT NULL,
-		kb_name VARCHAR(255) NOT NULL,
-		original_name VARCHAR(512) NOT NULL DEFAULT '',
-		source_type VARCHAR(50) NOT NULL DEFAULT '',
-		added_at TIMESTAMP NULL,
-		chunk_count INT NOT NULL DEFAULT 0,
-		total_chars INT NOT NULL DEFAULT 0,
-		title VARCHAR(512) NOT NULL DEFAULT '',
-		authors TEXT,
-		abstract TEXT,
-		is_paper BOOLEAN NOT NULL DEFAULT FALSE,
-		tags TEXT,
-		raw_text LONGTEXT,
-		source_data LONGBLOB,
-		source_ext VARCHAR(50) NOT NULL DEFAULT '',
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-		PRIMARY KEY (kb_name, slug)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+		`CREATE TABLE IF NOT EXISTS documents (
+			slug VARCHAR(255) NOT NULL,
+			kb_name VARCHAR(255) NOT NULL,
+			original_name VARCHAR(512) NOT NULL DEFAULT '',
+			source_type VARCHAR(50) NOT NULL DEFAULT '',
+			added_at TIMESTAMP NULL,
+			chunk_count INT NOT NULL DEFAULT 0,
+			total_chars INT NOT NULL DEFAULT 0,
+			title VARCHAR(512) NOT NULL DEFAULT '',
+			authors TEXT,
+			abstract TEXT,
+			is_paper BOOLEAN NOT NULL DEFAULT FALSE,
+			tags TEXT,
+			raw_text LONGTEXT,
+			source_data LONGBLOB,
+			source_ext VARCHAR(50) NOT NULL DEFAULT '',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (kb_name, slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS chunks (
-		kb_name VARCHAR(255) NOT NULL,
-		doc_slug VARCHAR(255) NOT NULL,
-		chunk_id VARCHAR(10) NOT NULL,
-		content LONGTEXT NOT NULL,
-		PRIMARY KEY (kb_name, doc_slug, chunk_id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+		`CREATE TABLE IF NOT EXISTS chunks (
+			kb_name VARCHAR(255) NOT NULL,
+			doc_slug VARCHAR(255) NOT NULL,
+			chunk_id VARCHAR(10) NOT NULL,
+			content LONGTEXT NOT NULL,
+			PRIMARY KEY (kb_name, doc_slug, chunk_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS section_chunks (
-		kb_name VARCHAR(255) NOT NULL,
-		doc_slug VARCHAR(255) NOT NULL,
-		section_id VARCHAR(10) NOT NULL,
-		content LONGTEXT NOT NULL,
-		PRIMARY KEY (kb_name, doc_slug, section_id)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+		`CREATE TABLE IF NOT EXISTS section_chunks (
+			kb_name VARCHAR(255) NOT NULL,
+			doc_slug VARCHAR(255) NOT NULL,
+			section_id VARCHAR(10) NOT NULL,
+			content LONGTEXT NOT NULL,
+			PRIMARY KEY (kb_name, doc_slug, section_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS chunks_index (
-		kb_name VARCHAR(255) NOT NULL,
-		doc_slug VARCHAR(255) NOT NULL,
-		index_data JSON NOT NULL,
-		checksum VARCHAR(64) NOT NULL DEFAULT '',
-		PRIMARY KEY (kb_name, doc_slug)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+		`CREATE TABLE IF NOT EXISTS chunks_index (
+			kb_name VARCHAR(255) NOT NULL,
+			doc_slug VARCHAR(255) NOT NULL,
+			index_data JSON NOT NULL,
+			checksum VARCHAR(64) NOT NULL DEFAULT '',
+			PRIMARY KEY (kb_name, doc_slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS inverted_index (
-		kb_name VARCHAR(255) NOT NULL,
-		term VARCHAR(191) NOT NULL,
-		doc_slug VARCHAR(255) NOT NULL,
-		chunk_id VARCHAR(10) NOT NULL,
-		tf INT NOT NULL DEFAULT 0,
-		PRIMARY KEY (kb_name, term, doc_slug, chunk_id),
-		INDEX idx_term (kb_name, term)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+		`CREATE TABLE IF NOT EXISTS inverted_index (
+			kb_name VARCHAR(255) NOT NULL,
+			term VARCHAR(191) NOT NULL,
+			doc_slug VARCHAR(255) NOT NULL,
+			chunk_id VARCHAR(10) NOT NULL,
+			tf INT NOT NULL DEFAULT 0,
+			PRIMARY KEY (kb_name, term, doc_slug, chunk_id),
+			INDEX idx_term (kb_name, term)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-	CREATE TABLE IF NOT EXISTS list_snapshots (
-		kb_name VARCHAR(255) PRIMARY KEY,
-		checksum VARCHAR(64) NOT NULL DEFAULT '',
-		snapshot_data JSON,
-		updated_at TIMESTAMP NULL
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-	`
-	_, err := mb.db.Exec(schema)
-	if err != nil {
-		return fmt.Errorf("mysql init schema: %w", err)
+		`CREATE TABLE IF NOT EXISTS list_snapshots (
+			kb_name VARCHAR(255) PRIMARY KEY,
+			checksum VARCHAR(64) NOT NULL DEFAULT '',
+			snapshot_data JSON,
+			updated_at TIMESTAMP NULL
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		`CREATE TABLE IF NOT EXISTS manifests (
+			kb_name VARCHAR(255) NOT NULL,
+			slug VARCHAR(255) NOT NULL,
+			manifest_json JSON NOT NULL,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (kb_name, slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		`CREATE TABLE IF NOT EXISTS task_records (
+			kb_name VARCHAR(255) NOT NULL,
+			slug VARCHAR(255) NOT NULL,
+			task_json JSON NOT NULL,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (kb_name, slug)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
+
+	for i, stmt := range statements {
+		if _, err := mb.db.Exec(stmt); err != nil {
+			return fmt.Errorf("mysql init schema (statement %d): %w", i+1, err)
+		}
+	}
+
+	// Migration: ensure index_content column exists (added after description was
+	// reused for INDEX.md storage).
+	if err := mb.migrateIndexContent(); err != nil {
+		return fmt.Errorf("migrate index_content: %w", err)
+	}
+
+	return nil
+}
+
+// migrateIndexContent adds the index_content column to existing knowledge_bases
+// tables. It also migrates any existing INDEX.md content from description to the
+// new column, clearing description back to its original user-authored value.
+func (mb *MySQLBackend) migrateIndexContent() error {
+	// Add column (ignore error if it already exists — MySQL errno 1060).
+	_, err := mb.db.Exec("ALTER TABLE knowledge_bases ADD COLUMN index_content MEDIUMTEXT AFTER description")
+	if err != nil {
+		// MySQL error 1060 = duplicate column; this is expected for already-migrated DBs.
+		if strings.Contains(err.Error(), "1060") || strings.Contains(err.Error(), "Duplicate column") {
+			return nil
+		}
+		return err
+	}
+
+	// First run: migrate any INDEX.md content from description to index_content.
+	// Only move rows where description looks like INDEX.md content (starts with "- [").
+	_, _ = mb.db.Exec(`
+		UPDATE knowledge_bases
+		SET index_content = description, description = ''
+		WHERE description LIKE '- [%'
+	`)
 	return nil
 }
 
@@ -211,6 +261,8 @@ func (mb *MySQLBackend) DeleteKB(name string) error {
 	_, _ = mb.db.Exec("DELETE FROM chunks_index WHERE kb_name = ?", name)
 	_, _ = mb.db.Exec("DELETE FROM section_chunks WHERE kb_name = ?", name)
 	_, _ = mb.db.Exec("DELETE FROM chunks WHERE kb_name = ?", name)
+	_, _ = mb.db.Exec("DELETE FROM manifests WHERE kb_name = ?", name)
+	_, _ = mb.db.Exec("DELETE FROM task_records WHERE kb_name = ?", name)
 	_, _ = mb.db.Exec("DELETE FROM documents WHERE kb_name = ?", name)
 	_, err := mb.db.Exec("DELETE FROM knowledge_bases WHERE name = ?", name)
 	if err != nil {
@@ -570,22 +622,21 @@ func (mb *MySQLBackend) WriteSource(kbName, slug string, data []byte, ext string
 // ── INDEX.md ───────────────────────────────────────────────────────────────────
 
 func (mb *MySQLBackend) ReadIndex(kbName string) (string, error) {
-	// INDEX.md is stored in kb.json's description field for MySQL.
-	// We use the knowledge_bases table to store it.
-	var description string
-	err := mb.db.QueryRow("SELECT COALESCE(description,'') FROM knowledge_bases WHERE name = ?", kbName).Scan(&description)
+	// INDEX.md is stored in the index_content column.
+	var content string
+	err := mb.db.QueryRow("SELECT COALESCE(index_content,'') FROM knowledge_bases WHERE name = ?", kbName).Scan(&content)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read index for %q: %w", kbName, err)
 	}
-	return description, nil
+	return content, nil
 }
 
 func (mb *MySQLBackend) WriteIndex(kbName, content string) error {
 	_, err := mb.db.Exec(
-		"INSERT INTO knowledge_bases (name, description) VALUES (?, ?) ON DUPLICATE KEY UPDATE description=VALUES(description)",
+		"INSERT INTO knowledge_bases (name, description, index_content) VALUES (?, '', ?) ON DUPLICATE KEY UPDATE index_content=VALUES(index_content)",
 		kbName, content,
 	)
 	if err != nil {
@@ -673,6 +724,139 @@ func isTableNotExists(err error) bool {
 	return strings.Contains(errStr, "No such table") ||
 		strings.Contains(errStr, "doesn't exist") ||
 		strings.Contains(errStr, "relation") && strings.Contains(errStr, "does not exist")
+}
+
+// ── Chunk manifest (stored in manifests table JSON column) ─────────────────────
+
+func (mb *MySQLBackend) ReadManifest(kbName, slug string) (*ChunkManifest, error) {
+	row := mb.db.QueryRow(
+		`SELECT manifest_json FROM manifests WHERE kb_name = ? AND slug = ?`,
+		kbName, slug,
+	)
+	var js string
+	if err := row.Scan(&js); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	return UnmarshalChunkManifest([]byte(js))
+}
+
+func (mb *MySQLBackend) WriteManifest(kbName, slug string, manifest *ChunkManifest) error {
+	data, err := manifest.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	_, err = mb.db.Exec(
+		`INSERT INTO manifests (kb_name, slug, manifest_json, updated_at)
+		 VALUES (?, ?, ?, NOW())
+		 ON DUPLICATE KEY UPDATE manifest_json = VALUES(manifest_json), updated_at = NOW()`,
+		kbName, slug, string(data),
+	)
+	return err
+}
+
+// ── Task record (stored in task_records table) ─────────────────────────────────
+
+func (mb *MySQLBackend) ReadTaskRecord(kbName, slug string) (*TaskRecord, error) {
+	row := mb.db.QueryRow(
+		`SELECT task_json FROM task_records WHERE kb_name = ? AND slug = ?`,
+		kbName, slug,
+	)
+	var js string
+	if err := row.Scan(&js); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read task record: %w", err)
+	}
+	return UnmarshalTaskRecord([]byte(js))
+}
+
+func (mb *MySQLBackend) WriteTaskRecord(kbName, slug string, task *TaskRecord) error {
+	data, err := task.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("marshal task record: %w", err)
+	}
+	_, err = mb.db.Exec(
+		`INSERT INTO task_records (kb_name, slug, task_json, updated_at)
+		 VALUES (?, ?, ?, NOW())
+		 ON DUPLICATE KEY UPDATE task_json = VALUES(task_json), updated_at = NOW()`,
+		kbName, slug, string(data),
+	)
+	return err
+}
+
+func (mb *MySQLBackend) DeleteTaskRecord(kbName, slug string) error {
+	_, err := mb.db.Exec(
+		`DELETE FROM task_records WHERE kb_name = ? AND slug = ?`,
+		kbName, slug,
+	)
+	return err
+}
+
+// ── Atomic index staging — MySQL is transactional, so we use version columns ───
+
+func (mb *MySQLBackend) PrepareStaging(kbName, slug string) error {
+	// For MySQL, staging is implicit: we write with a new version number.
+	// Old versions remain in the same tables identified by version column.
+	return nil
+}
+
+func (mb *MySQLBackend) PromoteStaging(kbName, slug string, newVersion int) error {
+	// Mark the new version as active and retire the previous active version.
+	tx, err := mb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("promote staging: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Retire current active version.
+	if _, err := tx.Exec(
+		`UPDATE index_versions SET state = 'retired', retired_at = NOW()
+		 WHERE kb_name = ? AND slug = ? AND state = 'active'`,
+		kbName, slug,
+	); err != nil {
+		return fmt.Errorf("promote: retire old: %w", err)
+	}
+
+	// Activate the new version.
+	if _, err := tx.Exec(
+		`UPDATE index_versions SET state = 'active', activated_at = NOW()
+		 WHERE kb_name = ? AND slug = ? AND version = ?`,
+		kbName, slug, newVersion,
+	); err != nil {
+		return fmt.Errorf("promote: activate new: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+func (mb *MySQLBackend) CleanStaging(kbName, slug string) error {
+	// Remove any index versions still in "building" state.
+	_, err := mb.db.Exec(
+		`DELETE FROM index_versions WHERE kb_name = ? AND slug = ? AND state = 'building'`,
+		kbName, slug,
+	)
+	return err
+}
+
+func (mb *MySQLBackend) ActiveVersion(kbName, slug string) (int, error) {
+	row := mb.db.QueryRow(
+		`SELECT version FROM index_versions
+		 WHERE kb_name = ? AND slug = ? AND state = 'active'
+		 ORDER BY version DESC LIMIT 1`,
+		kbName, slug,
+	)
+	var v int
+	if err := row.Scan(&v); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return v, nil
 }
 
 // Ensure interfaces are satisfied at compile time.

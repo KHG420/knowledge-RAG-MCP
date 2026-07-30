@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/retrieval"
 )
@@ -35,31 +36,59 @@ type Store struct {
 	rerankBatchSize     int   // max documents per reranker request (default 20)
 	searchLogger       SearchLogger
 	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
-	logger *logging.Logger
-	mu     *sync.Mutex
-	taskManager *UploadTaskManager
+	logger    *logging.Logger
+	mu        *sync.Mutex
+	taskManager      *UploadTaskManager
+	vectorIndex      *HNSWIndex         // per-KB vector index for fast ANN search
+	tombstoneManager *TombstoneManager   // cached tombstone manager (lazy init)
+
+	// Runtime configuration
+	config     *config.Config // reference to loaded configuration for API exposure
+	configPath string          // path to the config file on disk
+	settings   *storeSettings   // hot-reloadable runtime settings (pointer to avoid lock copy)
 }
 
 // NewStore returns a Store backed by the local filesystem under ~/knowledge_base/.
 func NewStore() *Store {
+	s := defaultSettings()
 	return &Store{
 		backend:       NewFileBackend(""),
 		AbstractBoost: 1.1,
 		logger:        logging.NewNopLogger(),
 		mu:            &sync.Mutex{},
+		settings:      &s,
 	}
 }
 
 // NewStoreWithBackend returns a Store using the given StorageBackend.
 // The caller is responsible for calling backend.Init() and backend.Close().
 func NewStoreWithBackend(backend StorageBackend) *Store {
+	s := defaultSettings()
 	return &Store{
 		backend:       backend,
 		AbstractBoost: 1.1,
 		logger:        logging.NewNopLogger(),
 		mu:            &sync.Mutex{},
+		settings:      &s,
 	}
 }
+
+// SetConfig stores a reference to the parsed config for API exposure and
+// initializes runtime settings (search mode, chunking, BM25) from the config.
+func (s *Store) SetConfig(cfg *config.Config, cfgPath string) {
+	s.config = cfg
+	s.configPath = cfgPath
+	s.settings.applyFromConfig(cfg)
+	if cfg != nil && cfg.AbstractBoost > 0 {
+		s.AbstractBoost = cfg.AbstractBoost
+	}
+}
+
+// Config returns the current config reference (may be nil).
+func (s *Store) Config() *config.Config { return s.config }
+
+// ConfigPath returns the path to the config file on disk.
+func (s *Store) ConfigPath() string { return s.configPath }
 
 // Backend returns the underlying StorageBackend for inspection.
 func (s *Store) Backend() StorageBackend { return s.backend }
@@ -99,6 +128,7 @@ func (s *Store) WithKB(name string) *Store {
 	}
 	cp := *s
 	cp.kbName = name
+	cp.vectorIndex = nil // each KB has its own vector index
 	return &cp
 }
 
@@ -378,7 +408,7 @@ func (s *Store) AppendDocumentText(slug string, newText string) (int, error) {
 			newHead := fineChunks[:m]
 			boundary := append(oldTail, newHead...)
 
-			merged, mergeErr := MergeSemanticNeighbors(context.Background(), boundary, s.embedder, defaultSemanticThreshold)
+			merged, mergeErr := MergeSemanticNeighbors(context.Background(), boundary, s.embedder, chunkSemanticThreshold)
 			if mergeErr == nil {
 				// Detect changes to old chunks (content modified = absorbed new content).
 				for j := 0; j < len(oldTail) && j < len(merged); j++ {
@@ -465,10 +495,12 @@ func (s *Store) AppendDocumentText(slug string, newText string) (int, error) {
 				TermCount: len(tokens),
 				Terms:     trimTopTerms(tc, maxTermsPerChunk),
 			}
-			// Preserve original metadata (section, offset, vector, etc).
+			// Preserve original metadata (section, offset, page, vector, etc).
 			if pos, ok := entryByID[chunkID]; ok {
 				replacement.Section = index.Chunks[pos].Section
 				replacement.Offset = index.Chunks[pos].Offset
+				replacement.PageStart = index.Chunks[pos].PageStart
+				replacement.PageEnd = index.Chunks[pos].PageEnd
 				replacement.Vector = index.Chunks[pos].Vector
 				replacement.SectionChunkID = index.Chunks[pos].SectionChunkID
 				replacement.SectionRole = index.Chunks[pos].SectionRole
@@ -488,6 +520,8 @@ func (s *Store) AppendDocumentText(slug string, newText string) (int, error) {
 			Terms:       trimTopTerms(tc, maxTermsPerChunk),
 			Section:     c.Section,
 			Offset:      meta.TotalChars + c.Offset,
+			PageStart:   c.PageStart,
+			PageEnd:     c.PageEnd,
 			SectionRole: c.SectionRole,
 		}
 		if c.SectionID != "" {
@@ -818,9 +852,10 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 			Terms:       trimTopTerms(tc, maxTermsPerChunk),
 			Section:     c.Section,
 			Offset:      c.Offset,
+			PageStart:   c.PageStart,
+			PageEnd:     c.PageEnd,
 			SectionRole: c.SectionRole,
 		}
-		// Link to parent section chunk when hierarchical data is available.
 		if c.SectionID != "" && sectionChunks != nil {
 			entry.SectionChunkID = c.SectionID
 		}
@@ -839,6 +874,19 @@ func (s *Store) writeChunksIndexFromMetaWithSections(slug string, chunks []Chunk
 	}
 	if err := s.WriteChunksIndex(slug, index); err != nil {
 		return fmt.Errorf("write CHUNKS.toml: %w", err)
+	}
+	// Update the vector index incrementally (non-fatal).
+	// Ensure the vector index exists first — this may trigger a one-time build
+	// if this is the first document in the KB. After the incremental update,
+	// persist to disk so the index survives restarts.
+	if hasEmbedder {
+		s.ensureVectorIndexLocked()
+		s.updateVectorIndex(slug, index.Chunks)
+		if s.vectorIndex != nil {
+			if saveErr := s.saveVectorIndex(s.vectorIndex); saveErr != nil {
+				s.logger.WithModule("vector").Warnf("save vector index after update: %v", saveErr)
+			}
+		}
 	}
 	return nil
 }
@@ -978,4 +1026,385 @@ func trimTopTerms(counts map[string]int, n int) []termFreq {
 // computeChunksChecksum delegates checksum computation to the backend.
 func (s *Store) computeChunksChecksum(slug string) (string, error) {
 	return s.backend.ComputeChunksChecksum(s.kbName, slug)
+}
+
+// ============================================================================
+// Vector index — HNSW-based ANN search for dense embeddings
+// ============================================================================
+
+// EnsureVectorIndex loads or builds the per-KB HNSW vector index. It is safe to
+// call multiple times (idempotent).
+func (s *Store) EnsureVectorIndex() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureVectorIndexLocked()
+}
+
+// ensureVectorIndexLocked is the internal version of EnsureVectorIndex that
+// assumes s.mu is already held. Callers that already hold s.mu (e.g.
+// UploadDocumentWithProgress, writeChunksIndexFromMetaWithSections) must use
+// this version to avoid a recursive lock.
+func (s *Store) ensureVectorIndexLocked() {
+	if s.vectorIndex != nil {
+		return
+	}
+
+	// Try loading from persistent cache.
+	if idx, err := s.loadVectorIndex(); err == nil && idx != nil {
+		s.vectorIndex = idx
+		s.logger.WithModule("vector").Infof("loaded vector index: %d vectors", idx.Len())
+		return
+	}
+
+	s.buildVectorIndexLocked()
+}
+
+// buildVectorIndexLocked rebuilds the HNSW index from all CHUNKS.toml files.
+// Must be called with s.mu held. When the build succeeds, the index is
+// automatically persisted to VECTOR.gob so subsequent starts can load it
+// without a full rebuild.
+func (s *Store) buildVectorIndexLocked() {
+	log := s.logger.WithModule("vector")
+
+	if s.embedder == nil {
+		return
+	}
+	dim := s.embedder.Dim()
+	if dim <= 0 {
+		return
+	}
+
+	slugs, err := s.backend.ListDocSlugs(s.kbName)
+	if err != nil {
+		log.Warnf("buildVectorIndex: list docs: %v", err)
+		return
+	}
+
+	idx := NewHNSWIndex(dim)
+	added := 0
+	for _, slug := range slugs {
+		index, idxErr := s.ReadChunksIndex(slug)
+		if idxErr != nil || index == nil {
+			continue
+		}
+		for _, e := range index.Chunks {
+			if len(e.Vector) == dim {
+				id := slug + "/" + e.ID
+				idx.Add(id, e.Vector)
+				added++
+			}
+		}
+	}
+	s.vectorIndex = idx
+	log.Infof("built vector index: %d vectors (dim=%d) from %d documents", added, dim, len(slugs))
+
+	// Persist so the next start doesn't need a full rebuild.
+	if saveErr := s.saveVectorIndex(idx); saveErr != nil {
+		log.Warnf("save vector index after build: %v", saveErr)
+	}
+}
+
+// BuildVectorIndex forces a full rebuild of the HNSW vector index and persists
+// it to disk. Call this after bulk-importing documents or when the embedder
+// configuration changes.
+func (s *Store) BuildVectorIndex() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.vectorIndex = nil
+	s.buildVectorIndexLocked()
+	if s.vectorIndex != nil {
+		return s.saveVectorIndex(s.vectorIndex)
+	}
+	return nil
+}
+
+// updateVectorIndex adds vectors from a single document to the HNSW index and
+// removes any previous entries for the same document.
+func (s *Store) updateVectorIndex(slug string, entries []ChunkIndexEntry) {
+	if s.vectorIndex == nil {
+		return
+	}
+
+	// Remove old entries for this document.
+	for _, e := range entries {
+		s.vectorIndex.Remove(slug + "/" + e.ID)
+	}
+
+	// Add new entries.
+	for _, e := range entries {
+		if len(e.Vector) > 0 {
+			s.vectorIndex.Add(slug+"/"+e.ID, e.Vector)
+		}
+	}
+}
+
+// removeDocFromVectorIndex removes all vectors belonging to a document.
+func (s *Store) removeDocFromVectorIndex(slug string) {
+	if s.vectorIndex == nil {
+		return
+	}
+	// We don't know the chunk IDs, so iterate through all nodes. This is fine
+	// because HNSW Remove is cheap (it only unlinks, no rebalancing).
+	prefix := slug + "/"
+	for _, id := range s.vectorIndex.allIDs() {
+		if len(id) > len(prefix) && id[:len(prefix)] == prefix {
+			s.vectorIndex.Remove(id)
+		}
+	}
+}
+
+// vectorIndexPath returns the path to the persisted VECTOR.gob file.
+func (s *Store) vectorIndexPath() string {
+	if fb, ok := s.backend.(*FileBackend); ok {
+		return filepath.Join(fb.kbDir(s.kbName), "VECTOR.gob")
+	}
+	return ""
+}
+
+// loadVectorIndex loads the HNSW index from VECTOR.gob.
+func (s *Store) loadVectorIndex() (*HNSWIndex, error) {
+	p := s.vectorIndexPath()
+	if p == "" {
+		return nil, nil
+	}
+	return LoadHNSWIndex(p)
+}
+
+// saveVectorIndex persists the HNSW index to VECTOR.gob.
+func (s *Store) saveVectorIndex(idx *HNSWIndex) error {
+	p := s.vectorIndexPath()
+	if p == "" {
+		return nil
+	}
+	return idx.Save(p)
+}
+
+// ── Vector statistics & rebuild ────────────────────────────────────────────────
+
+// VectorStats summarises vector coverage in a knowledge base.
+type VectorStats struct {
+	KBName          string           `json:"kbName"`
+	TotalDocs       int              `json:"totalDocs"`
+	DocsWithVectors int              `json:"docsWithVectors"`
+	TotalChunks     int              `json:"totalChunks"`
+	ChunksWithVectors int            `json:"chunksWithVectors"`
+	VectorDim       int              `json:"vectorDim"`
+	EmbedderModel   string           `json:"embedderModel,omitempty"`
+	Docs            []DocVectorStats `json:"docs,omitempty"`
+}
+
+// DocVectorStats holds per-document vector coverage.
+type DocVectorStats struct {
+	Slug         string `json:"slug"`
+	Name         string `json:"name"`
+	HasVectors   bool   `json:"hasVectors"`
+	VectorDim    int    `json:"vectorDim,omitempty"`
+	ChunkCount   int    `json:"chunkCount"`
+	VectorChunks int    `json:"vectorChunks"`
+	MissingCount int    `json:"missingCount"`
+}
+
+// RebuildResult reports the outcome of a vector rebuild operation.
+type RebuildResult struct {
+	DocsProcessed  int `json:"docsProcessed"`
+	ChunksEmbedded int `json:"chunksEmbedded"`
+	DocsSkipped    int `json:"docsSkipped"`
+}
+
+// GetVectorStats scans chunks_index entries and returns per-document and
+// aggregate vector coverage statistics.
+func (s *Store) GetVectorStats() (*VectorStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stats := &VectorStats{KBName: s.kbName}
+	if s.embedder != nil {
+		stats.EmbedderModel = s.EmbedderInfo()["model"].(string)
+		stats.VectorDim = s.embedder.Dim()
+	}
+
+	slugs, err := s.backend.ListDocSlugs(s.kbName)
+	if err != nil {
+		return nil, fmt.Errorf("list slugs: %w", err)
+	}
+	stats.TotalDocs = len(slugs)
+
+	for _, slug := range slugs {
+		index, idxErr := s.backend.ReadChunksIndex(s.kbName, slug)
+		if idxErr != nil {
+			continue
+		}
+		if index == nil {
+			continue
+		}
+
+		meta, _ := s.backend.ReadMeta(s.kbName, slug)
+		name := slug
+		if meta != nil {
+			name = meta.OriginalName
+		}
+
+		ds := DocVectorStats{
+			Slug:       slug,
+			Name:       name,
+			HasVectors: index.HasVectors,
+			VectorDim:  index.VectorDim,
+			ChunkCount: len(index.Chunks),
+		}
+
+		if index.HasVectors {
+			stats.DocsWithVectors++
+			for _, e := range index.Chunks {
+				if len(e.Vector) > 0 {
+					ds.VectorChunks++
+				}
+			}
+			ds.MissingCount = ds.ChunkCount - ds.VectorChunks
+		}
+
+		stats.TotalChunks += ds.ChunkCount
+		stats.ChunksWithVectors += ds.VectorChunks
+		stats.Docs = append(stats.Docs, ds)
+	}
+
+	return stats, nil
+}
+
+// ReEmbedMissingVectors regenerates embedding vectors for documents that lack
+// them. When slug is non-empty, only that document is processed. Progress is
+// reported via the callback: func(current, total int, docName string).
+func (s *Store) ReEmbedMissingVectors(ctx context.Context, slug string, progress func(int, int, string)) (*RebuildResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	log := s.logger.WithModule("vector-rebuild")
+
+	if s.embedder == nil || s.embedder.Dim() <= 0 {
+		return nil, fmt.Errorf("embedder not configured")
+	}
+
+	var slugs []string
+	if slug != "" {
+		slugs = []string{slug}
+	} else {
+		var err error
+		slugs, err = s.backend.ListDocSlugs(s.kbName)
+		if err != nil {
+			return nil, fmt.Errorf("list slugs: %w", err)
+		}
+	}
+
+	result := &RebuildResult{}
+	dim := s.embedder.Dim()
+
+	// Ensure HNSW index is ready for updates.
+	s.ensureVectorIndexLocked()
+
+	for si, slug := range slugs {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+
+		index, err := s.backend.ReadChunksIndex(s.kbName, slug)
+		if err != nil {
+			log.Warnf("skip %q: read chunks_index: %v", slug, err)
+			result.DocsSkipped++
+			continue
+		}
+		if index == nil {
+			log.Warnf("skip %q: no chunks_index", slug)
+			result.DocsSkipped++
+			continue
+		}
+
+		// Collect chunk texts that need vectors.
+		type job struct {
+			idx     int
+			chunkID string
+			text    string
+		}
+		var jobs []job
+		for i, e := range index.Chunks {
+			if len(e.Vector) == dim {
+				continue // already has a valid vector
+			}
+			text, readErr := s.backend.ReadChunk(s.kbName, slug, e.ID)
+			if readErr != nil {
+				log.Warnf("skip chunk %q/%q: %v", slug, e.ID, readErr)
+				continue
+			}
+			jobs = append(jobs, job{idx: i, chunkID: e.ID, text: text})
+		}
+
+		if len(jobs) == 0 {
+			log.Infof("skip %q: all %d chunks have vectors", slug, len(index.Chunks))
+			result.DocsSkipped++
+			continue
+		}
+
+		log.Infof("embedding %d/%d chunks for %q", len(jobs), len(index.Chunks), slug)
+
+		// Embed in batches (max 20 texts per call — embedder HTTP client has 30s timeout).
+		batchSize := 20
+		embedded := 0
+		for start := 0; start < len(jobs); start += batchSize {
+			end := start + batchSize
+			if end > len(jobs) {
+				end = len(jobs)
+			}
+			batch := jobs[start:end]
+
+			texts := make([]string, len(batch))
+			for i, j := range batch {
+				texts[i] = j.text
+			}
+
+			vectors, embErr := s.embedder.Embed(ctx, texts)
+			if embErr != nil {
+				return result, fmt.Errorf("embed %q (batch %d-%d): %w", slug, start, end, embErr)
+			}
+
+			for i, j := range batch {
+				if i < len(vectors) && len(vectors[i]) == dim {
+					// Convert float32 → float64 for ChunkIndexEntry.Vector.
+					vec := make([]float64, dim)
+					for k, v := range vectors[i] {
+						vec[k] = float64(v)
+					}
+					index.Chunks[j.idx].Vector = vec
+					embedded++
+				}
+			}
+
+			if progress != nil {
+				progress(si*len(index.Chunks)+embedded, len(slugs)*len(index.Chunks), slug)
+			}
+		}
+
+		if embedded > 0 {
+			index.HasVectors = true
+			index.VectorDim = dim
+
+			if err := s.backend.WriteChunksIndex(s.kbName, slug, index); err != nil {
+				return result, fmt.Errorf("write chunks_index for %q: %w", slug, err)
+			}
+
+			// Update HNSW vector index.
+			s.updateVectorIndex(slug, index.Chunks)
+			if s.vectorIndex != nil {
+				if saveErr := s.saveVectorIndex(s.vectorIndex); saveErr != nil {
+					log.Warnf("save vector index after rebuild: %v", saveErr)
+				}
+			}
+
+			result.DocsProcessed++
+			result.ChunksEmbedded += embedded
+			log.Infof("embedded %d vectors for %q", embedded, slug)
+		}
+	}
+
+	return result, nil
 }

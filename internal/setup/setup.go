@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,18 +68,23 @@ func Run() {
 	steps := []step{
 		{name: "data_dir", run: stepDataDir},
 		{name: "default_kb", run: stepDefaultKB},
+		{name: "mysql", run: stepMySQL},
 		{name: "embedder", run: stepEmbedder},
 		{name: "reranker", run: stepReranker},
 		{name: "rerank_limit", run: stepRerankLimit},
 		{name: "doc_parser", run: stepDocParser},
+		{name: "mineru", run: stepMinerU},
 		{name: "gpu_scheduler", run: stepGPUScheduler},
 		{name: "manage_port", run: stepManagePort},
+		{name: "serve_port", run: stepServePort},
 		{name: "logging", run: stepLogging},
 	}
 
+	totalSteps := len(steps)
 	current := 0
 	for current >= 0 && current < len(steps) {
 		s := steps[current]
+		fmt.Printf("\n[%d/%d]", current+1, totalSteps)
 		result := s.run(cfg)
 		switch {
 		case result == nil:
@@ -411,11 +417,22 @@ func stepManagePort(cfg *config.Config) error {
 	fmt.Println(lt.ManagePortTitle)
 	fmt.Println(lt.ManagePortDesc)
 
-	val := prompt(lt.ManagePortPrompt, "8085")
+	defaultPort := "8085"
+	if cfg.ManagePort != "" {
+		defaultPort = cfg.ManagePort
+	}
+	val := prompt(lt.ManagePortPrompt, defaultPort)
 	if err := checkBackQuit(val); err != nil {
 		return err
 	}
 	cfg.ManagePort = val
+
+	// Check if the port is already in use.
+	if ln, err := net.Listen("tcp", ":"+val); err == nil {
+		ln.Close()
+	} else {
+		fmt.Printf("⚠ 端口 %s 可能已被占用: %v\n", val, err)
+	}
 	return nil
 }
 
@@ -536,6 +553,7 @@ func showSummary(cfg *config.Config) {
 	fmt.Println(lt.SummaryHeader)
 	fmt.Printf(lt.SummaryDataDir, cfg.DataDir)
 	fmt.Printf(lt.SummaryDefaultKB, orNone(cfg.DefaultKB))
+	fmt.Printf(lt.SummaryStorage, storageBackend(cfg))
 	fmt.Printf(lt.SummaryEmbedding, onOff(cfg.EmbedEndpoint != ""))
 	if cfg.EmbedEndpoint != "" {
 		fmt.Printf("    - URL:            %s\n", cfg.EmbedEndpoint)
@@ -552,6 +570,9 @@ func showSummary(cfg *config.Config) {
 	if cfg.DocParserEndpoint != "" {
 		fmt.Printf("    - URL:            %s\n", cfg.DocParserEndpoint)
 	}
+	if cfg.MinerUEnabled {
+		fmt.Printf(lt.SummaryMinerU, lt.SummaryEnabled)
+	}
 	fmt.Printf(lt.SummaryGPUSched, onOff(cfg.GPUSchedulerEnabled))
 	if cfg.GPUSchedulerEnabled {
 		if cfg.GPUSchedulerEmbeddingSleepURL != "" {
@@ -565,6 +586,7 @@ func showSummary(cfg *config.Config) {
 		}
 	}
 	fmt.Printf(lt.SummaryManagePort, cfg.ManagePort)
+	fmt.Printf(lt.SummaryServePort, orNone(cfg.ServePort))
 	fmt.Printf(lt.SummaryLogLevel, cfg.LogLevel)
 	fmt.Println("===========================================")
 }
@@ -583,6 +605,103 @@ func orNone(s string) string {
 		return lt.SummaryNone
 	}
 	return s
+}
+
+func storageBackend(cfg *config.Config) string {
+	if cfg.MySQLHost != "" || cfg.MySQLDSN != "" {
+		return "MySQL"
+	}
+	return T().SummaryNone
+}
+
+func stepMySQL(cfg *config.Config) error {
+	lt := T()
+	fmt.Println(lt.MySQLTitle)
+	fmt.Println(lt.MySQLDesc)
+
+	enable := promptYN(lt.MySQLEnable, false)
+	switch enable {
+	case "back":
+		return errBack
+	case "no":
+		return nil
+	}
+
+	// Try DSN first (shortcut).
+	dsn := prompt(lt.MySQLDSN, "")
+	if err := checkBackQuit(dsn); err != nil {
+		return err
+	}
+	if dsn != "" {
+		cfg.MySQLDSN = dsn
+		return nil
+	}
+	fmt.Println(lt.MySQLDSNHelp)
+
+	val := prompt(lt.MySQLUser, "knowledge")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLUser = val
+
+	val = prompt(lt.MySQLPass, "")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLPassword = val
+
+	val = prompt(lt.MySQLHost, "127.0.0.1")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLHost = val
+
+	val = prompt(lt.MySQLPort, "3306")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLPort = val
+
+	val = prompt(lt.MySQLDB, "knowledge_mcp")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLDatabase = val
+
+	val = prompt(lt.MySQLSocket, "")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.MySQLSocketPath = val
+	return nil
+}
+
+func stepMinerU(cfg *config.Config) error {
+	lt := T()
+	fmt.Println(lt.MinerUTitle)
+	fmt.Println(lt.MinerUDesc)
+
+	enable := promptYN(lt.MinerUEnable, false)
+	switch enable {
+	case "back":
+		return errBack
+	case "yes":
+		cfg.MinerUEnabled = true
+	}
+	return nil
+}
+
+func stepServePort(cfg *config.Config) error {
+	lt := T()
+	fmt.Println(lt.ServePortTitle)
+	fmt.Println(lt.ServePortDesc)
+
+	val := prompt(lt.ServePortPrompt, "8086")
+	if err := checkBackQuit(val); err != nil {
+		return err
+	}
+	cfg.ServePort = val
+	return nil
 }
 
 func confirmSave() bool {

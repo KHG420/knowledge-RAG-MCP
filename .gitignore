@@ -6,6 +6,7 @@
 *.dylib
 knowledge-mcp
 knowledge-mcp.toml
+reasonix.toml
 
 # Backup config files
 knowledge-mcp.toml~

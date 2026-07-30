@@ -344,6 +344,8 @@ func (fb *FileBackend) ReadChunksIndex(kbName, slug string) (*ChunksIndex, error
 		Terms          map[string]int `toml:"terms"`
 		Section        string         `toml:"section"`
 		Offset         int            `toml:"offset"`
+		PageStart      int            `toml:"page_start,omitempty"`
+		PageEnd        int            `toml:"page_end,omitempty"`
 		Vector         []float64      `toml:"vector,omitempty"`
 		SectionChunkID string         `toml:"section_chunk_id,omitempty"`
 		SectionRole    string         `toml:"section_role,omitempty"`
@@ -374,8 +376,8 @@ func (fb *FileBackend) ReadChunksIndex(kbName, slug string) (*ChunksIndex, error
 		sort.Slice(terms, func(i, j int) bool { return terms[i].Count > terms[j].Count })
 		index.Chunks[i] = ChunkIndexEntry{
 			ID: c.ID, TermCount: c.TermCount, Terms: terms,
-			Section: c.Section, Offset: c.Offset, Vector: c.Vector,
-			SectionChunkID: c.SectionChunkID, SectionRole: c.SectionRole,
+			Section: c.Section, Offset: c.Offset, PageStart: c.PageStart, PageEnd: c.PageEnd,
+			Vector: c.Vector, SectionChunkID: c.SectionChunkID, SectionRole: c.SectionRole,
 		}
 	}
 	return &index, nil
@@ -526,4 +528,96 @@ func (fb *FileBackend) ComputeChunksChecksum(kbName, slug string) (string, error
 		h.Write(data)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ── Chunk manifest ────────────────────────────────────────────────────────────
+
+func (fb *FileBackend) manifestPath(kbName, slug string) string {
+	return filepath.Join(fb.docDir(kbName, slug), ManifestFilename)
+}
+
+func (fb *FileBackend) ReadManifest(kbName, slug string) (*ChunkManifest, error) {
+	data, err := os.ReadFile(fb.manifestPath(kbName, slug))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // no manifest yet (legacy document)
+		}
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	return UnmarshalChunkManifest(data)
+}
+
+func (fb *FileBackend) WriteManifest(kbName, slug string, manifest *ChunkManifest) error {
+	dir := fb.docDir(kbName, slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("ensure doc dir: %w", err)
+	}
+	data, err := manifest.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	return os.WriteFile(fb.manifestPath(kbName, slug), data, 0o644)
+}
+
+// ── Task record ───────────────────────────────────────────────────────────────
+
+func (fb *FileBackend) taskPath(kbName, slug string) string {
+	return filepath.Join(fb.docDir(kbName, slug), TaskFilename)
+}
+
+func (fb *FileBackend) ReadTaskRecord(kbName, slug string) (*TaskRecord, error) {
+	data, err := os.ReadFile(fb.taskPath(kbName, slug))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read task record: %w", err)
+	}
+	return UnmarshalTaskRecord(data)
+}
+
+func (fb *FileBackend) WriteTaskRecord(kbName, slug string, task *TaskRecord) error {
+	dir := fb.docDir(kbName, slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("ensure doc dir: %w", err)
+	}
+	data, err := task.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("marshal task record: %w", err)
+	}
+	return os.WriteFile(fb.taskPath(kbName, slug), data, 0o644)
+}
+
+func (fb *FileBackend) DeleteTaskRecord(kbName, slug string) error {
+	os.Remove(fb.taskPath(kbName, slug))
+	return nil
+}
+
+// ── Atomic index staging ──────────────────────────────────────────────────────
+
+func (fb *FileBackend) stagingDir(kbName, slug string) string {
+	return filepath.Join(fb.docDir(kbName, slug), ".staging")
+}
+
+func (fb *FileBackend) versionsDir(kbName, slug string) string {
+	return filepath.Join(fb.docDir(kbName, slug), "versions")
+}
+
+func (fb *FileBackend) PrepareStaging(kbName, slug string) error {
+	builder := NewAtomicIndexBuilder(fb.docDir(kbName, slug))
+	return builder.PrepareStaging()
+}
+
+func (fb *FileBackend) PromoteStaging(kbName, slug string, newVersion int) error {
+	builder := NewAtomicIndexBuilder(fb.docDir(kbName, slug))
+	return builder.PromoteAtomically(newVersion)
+}
+
+func (fb *FileBackend) CleanStaging(kbName, slug string) error {
+	return os.RemoveAll(fb.stagingDir(kbName, slug))
+}
+
+func (fb *FileBackend) ActiveVersion(kbName, slug string) (int, error) {
+	builder := NewAtomicIndexBuilder(fb.docDir(kbName, slug))
+	return builder.ActiveVersion(), nil
 }

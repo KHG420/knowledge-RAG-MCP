@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"os"
@@ -11,6 +12,12 @@ import (
 
 	"knowledge-mcp/internal/retrieval"
 )
+
+// rankedEntry pairs a search entry with its BM25 / hybrid score for sorting.
+type rankedEntry struct {
+	entry searchEntry
+	score float64
+}
 
 const dedupJaccardThreshold = 0.6 // Jaccard similarity threshold for snippet dedup (G9)
 
@@ -46,6 +53,10 @@ type searchEntry struct {
 	section        string         // from CHUNKS.toml metadata
 	offset         int            // from CHUNKS.toml metadata
 	sourceType     string         // from meta.json
+	title          string         // from meta.json (human-readable document title)
+	originalName   string         // from meta.json (original filename)
+	pageStart      int            // from CHUNKS.toml (PDF page number, 1-based, 0 = unknown)
+	pageEnd        int            // from CHUNKS.toml (PDF page number, 1-based, 0 = unknown)
 	vector         []float64      // dense embedding vector (from CHUNKS.toml, if available)
 	sectionRole    string         // classified section role (C2), e.g. "abstract", "introduction"
 	sectionChunkID string         // G14: parent section chunk ID (e.g. "S00"), for coarse-to-fine search
@@ -100,6 +111,7 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 		// Read meta for source-type filtering and paper detection (G13).
 		meta, metaErr := s.ReadMeta(slug)
 		if metaErr != nil {
+			log.Debugf("collectEntries: skipping %q: %v", slug, metaErr)
 			continue
 		}
 		if filter.SourceType != "" && meta.SourceType != filter.SourceType {
@@ -135,6 +147,10 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 					section:        e.Section,
 					offset:         e.Offset,
 					sourceType:     meta.SourceType,
+					title:          meta.Title,
+					originalName:   meta.OriginalName,
+					pageStart:      e.PageStart,
+					pageEnd:        e.PageEnd,
 					vector:         e.Vector,
 					sectionRole:    e.SectionRole,
 					sectionChunkID: e.SectionChunkID,
@@ -160,6 +176,8 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 					terms:      retrieval.Counts(tokens),
 					termLen:    len(tokens),
 					sourceType: meta.SourceType,
+					title:      meta.Title,
+					originalName: meta.OriginalName,
 					isPaper:    meta.IsPaper,
 				})
 			}
@@ -213,6 +231,10 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 				section:        e.Section,
 				offset:         e.Offset,
 				sourceType:     meta.SourceType,
+				title:          meta.Title,
+				originalName:   meta.OriginalName,
+				pageStart:      e.PageStart,
+				pageEnd:        e.PageEnd,
 				vector:         e.Vector,
 				sectionRole:    e.SectionRole,
 				sectionChunkID: e.SectionChunkID,
@@ -276,6 +298,7 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		entries, err = s.coarseToFineFilter(query, entries)
 		if err != nil {
 			// Non-fatal: fall back to unfiltered entries.
+			log.Warnf("coarseToFineFilter failed: %v, falling back to unfiltered", err)
 		}
 		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
 		if len(entries) == 0 {
@@ -296,15 +319,11 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	avgLen := float64(totalLen) / float64(len(entries))
 
 	// Phase 3: score each entry with BM25.
-	type ranked struct {
-		entry searchEntry
-		score float64
-	}
-	var results []ranked
+	var results []rankedEntry
 	for i, e := range entries {
 		score := retrieval.BM25Score(docs[i], lengths[i], queryTerms, df, len(entries), avgLen)
 		if score > 0 {
-			results = append(results, ranked{entry: e, score: score})
+			results = append(results, rankedEntry{entry: e, score: score})
 		}
 	}
 
@@ -317,13 +336,17 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		}
 	}
 
-	// Phase 4: sort descending by score.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
+	// Phase 4: partial sort — use a heap to extract top N candidates
+	// (up to limit × 5) when the result set is large, then fully sort
+	// those for the downstream pipeline.
+	topN := limit * 5
+	if topN < 200 {
+		topN = 200
+	}
+	results = partialSortTopK(results, topN)
 
 	// Phase 5: trim low-scoring noise.
-	results = retrieval.KeepTopRelativeScore(results, 0.15, func(r ranked) float64 {
+	results = retrieval.KeepTopRelativeScore(results, 0.15, func(r rankedEntry) float64 {
 		return r.score
 	})
 
@@ -352,9 +375,9 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 			scores[i] = r.score
 		}
 		newEntries, newScores := s.rerankTop(query, entries, scores, limit)
-		results = make([]ranked, len(newEntries))
+		results = make([]rankedEntry, len(newEntries))
 		for i := range newEntries {
-			results[i] = ranked{entry: newEntries[i], score: newScores[i]}
+			results[i] = rankedEntry{entry: newEntries[i], score: newScores[i]}
 		}
 	}
 
@@ -366,14 +389,27 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	// Phase 9: convert to SearchHit slice with section/offset metadata.
 	hits := make([]SearchHit, len(results))
 	for i, r := range results {
+		cid := fmt.Sprintf("%s_%s", r.entry.docSlug, r.entry.chunkID)
 		hits[i] = SearchHit{
-			Score:       r.score,
-			DocSlug:     r.entry.docSlug,
-			ChunkID:     r.entry.chunkID,
-			Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
-			Section:     r.entry.section,
-			Offset:      r.entry.offset,
-			SectionRole: r.entry.sectionRole,
+			Score: r.score,
+			Document: DocumentInfo{
+				ID:           r.entry.docSlug,
+				Title:        r.entry.title,
+				OriginalName: r.entry.originalName,
+				Type:         r.entry.sourceType,
+			},
+			Location: LocationInfo{
+				ChunkID: r.entry.chunkID,
+				Section: r.entry.section,
+				Offset:  r.entry.offset,
+				PageStart: r.entry.pageStart,
+				PageEnd:   r.entry.pageEnd,
+			},
+			Content: HitContent{
+				Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
+				SectionRole: r.entry.sectionRole,
+			},
+			CitationID: cid,
 		}
 	}
 	// Phase 9a: deduplicate overlapping snippets (G9).
@@ -394,13 +430,13 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	type sectionKey struct{ doc, heading string }
 	secCount := make(map[sectionKey]int)
 	for _, h := range hits {
-		if h.Section != "" {
-			secCount[sectionKey{h.DocSlug, h.Section}]++
+		if h.Location.Section != "" {
+			secCount[sectionKey{h.Document.ID, h.Location.Section}]++
 		}
 	}
 	for i := range hits {
-		if hits[i].Section != "" && secCount[sectionKey{hits[i].DocSlug, hits[i].Section}] >= 2 {
-			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Section)
+		if hits[i].Location.Section != "" && secCount[sectionKey{hits[i].Document.ID, hits[i].Location.Section}] >= 2 {
+			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Location.Section)
 		}
 	}
 
@@ -414,7 +450,7 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		hitIDs := make([]string, topN)
 		for i := 0; i < topN; i++ {
 			topScores[i] = hits[i].Score
-			hitIDs[i] = hits[i].ChunkID
+			hitIDs[i] = hits[i].Location.ChunkID
 		}
 		s.searchLogger.LogSearch(SearchLogEntry{
 			Query:     query,
@@ -425,6 +461,131 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 			Timestamp: time.Now(),
 		})
 	}
+	return hits, nil
+}
+
+// SearchBM25 performs a pure BM25 keyword search without vector retrieval or
+// cross-encoder reranking. It is intended for search-debug and scenarios where
+// raw lexical scores are needed.
+func (s *Store) SearchBM25(query string, limit int) ([]SearchHit, error) {
+	start := time.Now()
+	log := s.logger.WithModule("search")
+	log.Debugf("SearchBM25: query=%q limit=%d kb=%q", query, limit, s.kbName)
+	defer func() {
+		log.Debugf("SearchBM25 done in %v", time.Since(start))
+	}()
+
+	if limit <= 0 {
+		limit = 8
+	}
+
+	rewritten := s.rewrittenQueries(query)
+	queryTerms, err := retrieval.QueryTerms(rewritten)
+	if err != nil {
+		return nil, fmt.Errorf("search bm25: %w", err)
+	}
+
+	entries, err := s.collectEntries(SearchFilter{}, queryTerms)
+	if err != nil {
+		return nil, fmt.Errorf("search bm25: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// BM25 scoring.
+	docs := make([]map[string]int, len(entries))
+	lengths := make([]int, len(entries))
+	var totalLen int
+	for i, e := range entries {
+		docs[i] = e.terms
+		lengths[i] = e.termLen
+		totalLen += e.termLen
+	}
+	df := retrieval.DocumentFrequency(docs)
+	avgLen := float64(totalLen) / float64(len(entries))
+
+	var results []rankedEntry
+	for i, e := range entries {
+		score := retrieval.BM25Score(docs[i], lengths[i], queryTerms, df, len(entries), avgLen)
+		if score > 0 {
+			results = append(results, rankedEntry{entry: e, score: score})
+		}
+	}
+
+	// Abstract boost.
+	for i := range results {
+		if results[i].entry.isPaper && results[i].entry.sectionRole == "abstract" {
+			results[i].score *= s.AbstractBoost
+		}
+	}
+
+	// Partial sort + noise trim.
+	topN := limit * 5
+	if topN < 200 {
+		topN = 200
+	}
+	results = partialSortTopK(results, topN)
+	results = retrieval.KeepTopRelativeScore(results, 0.15, func(r rankedEntry) float64 { return r.score })
+
+	// Load chunk text for snippet generation.
+	for i := range results {
+		if results[i].entry.text == "" {
+			text, readErr := s.ReadChunk(results[i].entry.docSlug, results[i].entry.chunkID)
+			if readErr != nil {
+				text = ""
+			}
+			results[i].entry.text = text
+		}
+	}
+
+	// Cap to limit.
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	// Convert to SearchHit.
+	hits := make([]SearchHit, len(results))
+	for i, r := range results {
+		cid := fmt.Sprintf("%s_%s", r.entry.docSlug, r.entry.chunkID)
+		hits[i] = SearchHit{
+			Score: r.score,
+			Document: DocumentInfo{
+				ID:           r.entry.docSlug,
+				Title:        r.entry.title,
+				OriginalName: r.entry.originalName,
+				Type:         r.entry.sourceType,
+			},
+			Location: LocationInfo{
+				ChunkID: r.entry.chunkID,
+				Section: r.entry.section,
+				Offset:  r.entry.offset,
+				PageStart: r.entry.pageStart,
+				PageEnd:   r.entry.pageEnd,
+			},
+			Content: HitContent{
+				Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
+				SectionRole: r.entry.sectionRole,
+			},
+			CitationID: cid,
+		}
+	}
+
+	// Deduplicate + section hint.
+	hits = deduplicateSnippets(hits)
+	type sectionKey struct{ doc, heading string }
+	secCount := make(map[sectionKey]int)
+	for _, h := range hits {
+		if h.Location.Section != "" {
+			secCount[sectionKey{h.Document.ID, h.Location.Section}]++
+		}
+	}
+	for i := range hits {
+		if hits[i].Location.Section != "" && secCount[sectionKey{hits[i].Document.ID, hits[i].Location.Section}] >= 2 {
+			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Location.Section)
+		}
+	}
+
 	return hits, nil
 }
 
@@ -453,7 +614,7 @@ func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]S
 			continue
 		}
 		for _, h := range hits {
-			key := h.DocSlug + "/" + h.ChunkID
+			key := h.Document.ID + "/" + h.Location.ChunkID
 			if seen[key] {
 				continue
 			}
@@ -525,6 +686,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		entries, err = s.coarseToFineFilter(query, entries)
 		if err != nil {
 			// Non-fatal: fall back to unfiltered entries.
+			log.Warnf("coarseToFineFilter failed: %v, falling back to unfiltered", err)
 		}
 		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
 		if len(entries) == 0 {
@@ -532,7 +694,82 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		}
 	}
 
-	// Check if any entry has a vector.
+	// =========================================================================
+	// Phase 1.5: vector-side independent recall via HNSW ANN.
+	//
+	// The dense path does its own ANN search over *all* indexed vectors —
+	// it is NOT limited to the BM25 candidate set.  Vector-only candidates
+	// (semantically relevant but lacking keyword overlap) are merged into
+	// the candidate pool so they can participate in RRF fusion.
+	//
+	// cosByKey is pre-computed here and reused in Phase 3 so we don't
+	// repeat the embedding API call or ANN search.
+	// =========================================================================
+	var cosByKey map[string]float64 // key = "slug/chunkID" → cosine score
+
+	if s.embedder != nil {
+		s.EnsureVectorIndex()
+	}
+	needDense := s.embedder != nil && s.vectorIndex != nil && s.vectorIndex.Len() > 0
+
+	if needDense {
+		// Coordinate GPU: load embedding model, sleep reranker.
+		if s.gpuScheduler != nil {
+			s.gpuScheduler.PrepareForEmbedding()
+		}
+
+		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
+			qVec64 := make([]float64, len(queryVec[0]))
+			for j, v := range queryVec[0] {
+				qVec64[j] = float64(v)
+			}
+
+			// Wide beam for good recall — the union with BM25 candidates
+			// means we can afford to be generous.
+			vecK := limit * 20
+			if vecK < 300 {
+				vecK = 300
+			}
+			if vecK > s.vectorIndex.Len() {
+				vecK = s.vectorIndex.Len()
+			}
+
+			hits := s.vectorIndex.Search(qVec64, vecK)
+			cosByKey = make(map[string]float64, len(hits))
+			for _, h := range hits {
+				cosByKey[h.ID] = h.Score
+			}
+			log.Infof("[search] hybrid: vector recall returned %d hits (beam=%d)", len(hits), vecK)
+
+			// Merge vector-only candidates into the BM25 candidate set.
+			existingKeys := make(map[string]bool, len(entries))
+			for _, e := range entries {
+				existingKeys[e.docSlug+"/"+e.chunkID] = true
+			}
+			merged := 0
+			for _, h := range hits {
+				if !existingKeys[h.ID] {
+					parts := strings.SplitN(h.ID, "/", 2)
+					if len(parts) == 2 {
+						entries = append(entries, searchEntry{
+							docSlug: parts[0],
+							chunkID: parts[1],
+						})
+						merged++
+					}
+				}
+			}
+			if merged > 0 {
+				log.Infof("[search] hybrid: merged %d vector-only candidates (total=%d)", merged, len(entries))
+			}
+		} else {
+			log.Infof("[search] hybrid: embedding failed, dense recall skipped")
+			needDense = false
+		}
+	}
+
+	// Check if any entry carries its own vector (for brute-force fallback).
 	hasVectors := false
 	for _, e := range entries {
 		if len(e.vector) > 0 {
@@ -567,14 +804,43 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		}
 	}
 
-	// Phase 3: embedding scoring (if vectors are available).
-	s.logger.Infof("[search] hybrid: embedding phase hasVectors=%v embedder=%v candidates=%d", hasVectors, s.embedder != nil, len(scored))
-	if hasVectors && s.embedder != nil {
-		// Coordinate GPU: ensure embedding is loaded; sleep reranker to free memory.
+	// Phase 3: dense scoring — reuse cosByKey pre-computed in Phase 1.5.
+	// When cosByKey is populated, the ANN search has already been done and we
+	// just map scores onto the scored slice.  Otherwise we fall back to a
+	// fresh brute-force scan over entries that carry their own vectors.
+	if len(cosByKey) > 0 {
+		needFallback := false
+		for i := range scored {
+			key := scored[i].entry.docSlug + "/" + scored[i].entry.chunkID
+			if s, ok := cosByKey[key]; ok {
+				scored[i].cosScore = s
+			} else if len(scored[i].entry.vector) > 0 {
+				needFallback = true
+			}
+		}
+		if needFallback {
+			// Rare path: a few entries have vectors but fell outside the
+			// ANN beam.  Do a targeted brute-force for just those entries.
+			queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+			if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
+				qVec64 := make([]float64, len(queryVec[0]))
+				for j, v := range queryVec[0] {
+					qVec64[j] = float64(v)
+				}
+				for i := range scored {
+					if scored[i].cosScore == 0 && len(scored[i].entry.vector) > 0 {
+						scored[i].cosScore = cosineSimilarity(scored[i].entry.vector, qVec64)
+					}
+				}
+			}
+		}
+		s.logger.Infof("[search] hybrid: dense scoring done (cosByKey=%d fallback=%v)", len(cosByKey), needFallback)
+	} else if hasVectors && s.embedder != nil {
+		// No vector index available; brute-force every entry that has a vector.
 		if s.gpuScheduler != nil {
 			s.gpuScheduler.PrepareForEmbedding()
 		}
-		queryVec, embedErr := s.embedder.Embed(nil, []string{query})
+		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
 		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
 			qVec64 := make([]float64, len(queryVec[0]))
 			for j, v := range queryVec[0] {
@@ -585,12 +851,10 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 					scored[i].cosScore = cosineSimilarity(scored[i].entry.vector, qVec64)
 				}
 			}
-			s.logger.Infof("[search] hybrid: embedding computed cos_scores for %d candidates", len(scored))
-		} else {
-			s.logger.Infof("[search] hybrid: embedding returned empty vectors, skip dense scoring")
 		}
+		s.logger.Infof("[search] hybrid: brute-force cos_scores for %d candidates (no index)", len(scored))
 	} else {
-		s.logger.Infof("[search] hybrid: embedding skipped (no vectors or no embedder configured)")
+		s.logger.Infof("[search] hybrid: dense scoring skipped (no vectors or no embedder)")
 	}
 
 	// Phase 3.5: abstract score boost. Chunks from the "abstract" section of
@@ -701,14 +965,27 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	// Phase 10: convert to SearchHit slice.
 	hits := make([]SearchHit, len(results))
 	for i, r := range results {
+		cid := fmt.Sprintf("%s_%s", r.entry.docSlug, r.entry.chunkID)
 		hits[i] = SearchHit{
-			Score:       r.rrfScore,
-			DocSlug:     r.entry.docSlug,
-			ChunkID:     r.entry.chunkID,
-			Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
-			Section:     r.entry.section,
-			Offset:      r.entry.offset,
-			SectionRole: r.entry.sectionRole,
+			Score: r.rrfScore,
+			Document: DocumentInfo{
+				ID:           r.entry.docSlug,
+				Title:        r.entry.title,
+				OriginalName: r.entry.originalName,
+				Type:         r.entry.sourceType,
+			},
+			Location: LocationInfo{
+				ChunkID: r.entry.chunkID,
+				Section: r.entry.section,
+				Offset:  r.entry.offset,
+				PageStart: r.entry.pageStart,
+				PageEnd:   r.entry.pageEnd,
+			},
+			Content: HitContent{
+				Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
+				SectionRole: r.entry.sectionRole,
+			},
+			CitationID: cid,
 		}
 	}
 	// Phase 10a: deduplicate overlapping snippets (G9).
@@ -729,13 +1006,13 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	type hsSectionKey struct{ doc, heading string }
 	hsSecCount := make(map[hsSectionKey]int)
 	for _, h := range hits {
-		if h.Section != "" {
-			hsSecCount[hsSectionKey{h.DocSlug, h.Section}]++
+		if h.Location.Section != "" {
+			hsSecCount[hsSectionKey{h.Document.ID, h.Location.Section}]++
 		}
 	}
 	for i := range hits {
-		if hits[i].Section != "" && hsSecCount[hsSectionKey{hits[i].DocSlug, hits[i].Section}] >= 2 {
-			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Section)
+		if hits[i].Location.Section != "" && hsSecCount[hsSectionKey{hits[i].Document.ID, hits[i].Location.Section}] >= 2 {
+			hits[i].SectionHint = fmt.Sprintf("Multiple hits in section '%s'. Consider reading with level=section for full context.", hits[i].Location.Section)
 		}
 	}
 
@@ -749,7 +1026,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		hitIDs := make([]string, topN)
 		for i := 0; i < topN; i++ {
 			topScores[i] = hits[i].Score
-			hitIDs[i] = hits[i].ChunkID
+			hitIDs[i] = hits[i].Location.ChunkID
 		}
 		s.searchLogger.LogSearch(SearchLogEntry{
 			Query:     query,
@@ -761,6 +1038,101 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		})
 	}
 	return hits, nil
+}
+
+// SearchVector performs a pure dense (ANN) vector search using the HNSW index.
+// It is intended for search-debug and scenarios where raw semantic similarity
+// scores are needed. Returns an error when no embedder or vector index is
+// configured.
+func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
+	log := s.logger.WithModule("search")
+	log.Debugf("SearchVector: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
+
+	if limit <= 0 {
+		limit = 8
+	}
+
+	if s.embedder == nil {
+		return nil, fmt.Errorf("vector search unavailable: no embedding model configured (set embedder in config)")
+	}
+	s.EnsureVectorIndex()
+	if s.vectorIndex == nil || s.vectorIndex.Len() == 0 {
+		return nil, fmt.Errorf("vector search unavailable: vector index is empty (upload documents with an embedder configured to populate it)")
+	}
+
+	// Coordinate GPU: prepare for embedding.
+	if s.gpuScheduler != nil {
+		s.gpuScheduler.PrepareForEmbedding()
+	}
+
+	queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+	if embedErr != nil || len(queryVec) == 0 || len(queryVec[0]) == 0 {
+		return nil, fmt.Errorf("search vector: embed failed: %w", embedErr)
+	}
+	qVec64 := make([]float64, len(queryVec[0]))
+	for j, v := range queryVec[0] {
+		qVec64[j] = float64(v)
+	}
+
+	// Wide beam for good recall.
+	vecK := limit * 20
+	if vecK < 300 {
+		vecK = 300
+	}
+	if vecK > s.vectorIndex.Len() {
+		vecK = s.vectorIndex.Len()
+	}
+
+	hits := s.vectorIndex.Search(qVec64, vecK)
+	log.Infof("[search] vector: ANN returned %d hits (beam=%d)", len(hits), vecK)
+
+	// Build SearchHit results from vector hits.
+	results := make([]SearchHit, 0, len(hits))
+	seen := make(map[string]bool, len(hits))
+	for _, h := range hits {
+		if h.ID == "" || h.Score <= 0 {
+			continue
+		}
+		// Deduplicate by slug/chunkID.
+		if seen[h.ID] {
+			continue
+		}
+		seen[h.ID] = true
+
+		parts := strings.SplitN(h.ID, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		slug, chunkID := parts[0], parts[1]
+
+		text, readErr := s.ReadChunk(slug, chunkID)
+		if readErr != nil {
+			text = ""
+		}
+
+		// Re-tokenise for snippet generation.
+		queryTerms, _ := retrieval.QueryTerms(query)
+
+		results = append(results, SearchHit{
+			Score: h.Score,
+			Document: DocumentInfo{
+				ID: slug,
+			},
+			Location: LocationInfo{
+				ChunkID: chunkID,
+			},
+			Content: HitContent{
+				Snippet: retrieval.MakeSnippet(text, query, queryTerms, 200),
+			},
+			CitationID: fmt.Sprintf("%s_%s", slug, chunkID),
+		})
+
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
 }
 
 // SearchDocuments performs document-level retrieval using MaxP aggregation.
@@ -804,10 +1176,10 @@ func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter
 	}
 	groups := map[string]*docGroup{}
 	for _, h := range hits {
-		g, ok := groups[h.DocSlug]
+		g, ok := groups[h.Document.ID]
 		if !ok {
 			g = &docGroup{maxScore: h.Score}
-			groups[h.DocSlug] = g
+			groups[h.Document.ID] = g
 		}
 		if h.Score > g.maxScore {
 			g.maxScore = h.Score
@@ -1081,20 +1453,6 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 	return outEntries, outScores
 }
 
-// resolveSourceType returns the source type for a slug, but only reads meta
-// when the filter actually needs it (to avoid unnecessary I/O in the common
-// no-filter path). Returns empty string when not needed.
-func resolveSourceType(s *Store, slug string, filter SearchFilter) string {
-	if filter.SourceType == "" {
-		return "" // not needed by any filter
-	}
-	meta, err := s.ReadMeta(slug)
-	if err != nil {
-		return ""
-	}
-	return meta.SourceType
-}
-
 // rewrittenQueries applies the configured QueryRewriter and merges all
 // rewritten query variants into a single query string for tokenisation.
 // When no rewriter is configured, the original query is returned as-is.
@@ -1114,12 +1472,16 @@ func (s *Store) rewrittenQueries(query string) string {
 // listDocDirs returns the names of all document subdirectories under the
 // knowledge directory.
 func listDocDirs(kd string) ([]string, error) {
-	entries, err := readDirNames(kd)
+	entries, err := os.ReadDir(kd)
 	if err != nil {
 		return nil, err
 	}
 	var dirs []string
-	for _, name := range entries {
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
 		if name == "INDEX.md" {
 			continue
 		}
@@ -1251,15 +1613,15 @@ func deduplicateSnippets(hits []SearchHit) []SearchHit {
 			if hits[j].DuplicateOf != "" {
 				continue
 			}
-			if hits[i].DocSlug != hits[j].DocSlug {
+			if hits[i].Document.ID != hits[j].Document.ID {
 				continue
 			}
-			if snippetJaccard(hits[i].Snippet, hits[j].Snippet) >= dedupJaccardThreshold {
+			if snippetJaccard(hits[i].Content.Snippet, hits[j].Content.Snippet) >= dedupJaccardThreshold {
 				// Mark the lower-scoring hit as a duplicate.
 				if hits[i].Score >= hits[j].Score {
-					hits[j].DuplicateOf = hits[i].ChunkID
+					hits[j].DuplicateOf = hits[i].Location.ChunkID
 				} else {
-					hits[i].DuplicateOf = hits[j].ChunkID
+					hits[i].DuplicateOf = hits[j].Location.ChunkID
 					break // hits[i] is now a duplicate; no need to check further for i
 				}
 			}
@@ -1314,4 +1676,52 @@ func matchesMetaTags(docTags, filterTags []string) bool {
 		}
 	}
 	return false
+}
+
+// --- top-K partial sort (min-heap) ---
+
+// topKHeap maintains the k highest scored items using a min-heap.
+type topKHeap struct {
+	items []rankedEntry
+	k     int
+}
+
+func (h topKHeap) Len() int           { return len(h.items) }
+func (h topKHeap) Less(i, j int) bool  { return h.items[i].score < h.items[j].score }
+func (h topKHeap) Swap(i, j int)       { h.items[i], h.items[j] = h.items[j], h.items[i] }
+func (h *topKHeap) Push(x any)         { h.items = append(h.items, x.(rankedEntry)) }
+func (h *topKHeap) Pop() any {
+	old := h.items
+	n := len(old)
+	x := old[n-1]
+	h.items = old[:n-1]
+	return x
+}
+
+// partialSortTopK keeps the top k highest-scored items and sorts them
+// descending. When len(results) ≤ k it does a full sort; for large
+// collections it uses a bounded min-heap to avoid O(n log n) sorting.
+func partialSortTopK(results []rankedEntry, k int) []rankedEntry {
+	if k <= 0 || len(results) <= k {
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].score > results[j].score
+		})
+		return results
+	}
+	h := &topKHeap{items: make([]rankedEntry, 0, k), k: k}
+	heap.Init(h)
+	for i := range results {
+		if h.Len() < k {
+			heap.Push(h, results[i])
+		} else if results[i].score > h.items[0].score {
+			h.items[0] = results[i]
+			heap.Fix(h, 0)
+		}
+	}
+	// Extract in descending order.
+	out := make([]rankedEntry, h.Len())
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = heap.Pop(h).(rankedEntry)
+	}
+	return out
 }

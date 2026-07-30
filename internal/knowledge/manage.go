@@ -28,6 +28,10 @@ var manageUI embed.FS
 func (s *Store) StartManageServer(port string) error {
 	mux := http.NewServeMux()
 
+	// ── Health (no auth required) ──
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /api/health", s.handleHealth)
+
 	// Serve the embedded UI
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -51,12 +55,28 @@ func (s *Store) StartManageServer(port string) error {
 
 	// API: delete a document
 	mux.HandleFunc("DELETE /api/documents/{slug}", s.handleManageDelete)
+	// API: batch delete documents
+	mux.HandleFunc("POST /api/documents/batch-delete", s.handleBatchDelete)
 
 	// API: document detail with chunk previews
 	mux.HandleFunc("GET /api/documents/{slug}", s.handleManageDocDetail)
+	// API: document chunk content preview
+	mux.HandleFunc("GET /api/documents/{slug}/chunks", s.handleDocChunks)
+	// API: document download
+	mux.HandleFunc("GET /api/documents/{slug}/download", s.handleDocDownload)
+	// API: document replace (re-upload)
+	mux.HandleFunc("PUT /api/documents/{slug}", s.handleDocReplace)
+	// API: document tags update
+	mux.HandleFunc("PATCH /api/documents/{slug}/tags", s.handleDocTagsUpdate)
 
 	// API: full-text search
 	mux.HandleFunc("GET /api/search", s.handleManageSearch)
+	// API: search console (debug)
+	mux.HandleFunc("POST /api/search-console", s.handleSearchConsole)
+
+	// API: config read/write
+	mux.HandleFunc("GET /api/config", s.handleConfigGet)
+	mux.HandleFunc("PUT /api/config", s.handleConfigPut)
 
 	// API: knowledge-bases management
 	mux.HandleFunc("GET /api/knowledge-bases", func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +117,10 @@ func (s *Store) StartManageServer(port string) error {
 	mux.HandleFunc("DELETE /api/knowledge-bases/{name}", func(w http.ResponseWriter, r *http.Request) {
 		log := s.logger.WithModule("manage")
 		name := r.PathValue("name")
+		if err := validateComponent(name); err != nil {
+			writeManageError(w, http.StatusBadRequest, "invalid name: "+err.Error())
+			return
+		}
 		log.Infof("DeleteKB: name=%q", name)
 		if err := s.DeleteKB(name); err != nil {
 			log.Errorf("DeleteKB: name=%q failed: %v", name, err)
@@ -106,6 +130,9 @@ func (s *Store) StartManageServer(port string) error {
 		log.Infof("DeleteKB: name=%q deleted", name)
 		writeManageJSON(w, http.StatusOK, map[string]string{"message": "deleted", "name": name})
 	})
+	// API: knowledge base export/import
+	mux.HandleFunc("GET /api/knowledge-bases/{name}/export", s.handleKBExport)
+	mux.HandleFunc("POST /api/knowledge-bases/import", s.handleKBImport)
 
 	// API: model info (embedder + reranker)
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +151,39 @@ func (s *Store) StartManageServer(port string) error {
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleTaskStatus)
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.handleTaskEvents)
 
+	// API: tombstone management
+	mux.HandleFunc("GET /api/tombstones", s.handleTombstoneList)
+	mux.HandleFunc("DELETE /api/tombstones/{slug}", s.handleTombstoneRestore)
+	mux.HandleFunc("POST /api/tombstones/clean", s.handleTombstoneClean)
+
+	// API: reconciliation
+	mux.HandleFunc("POST /api/reconcile", s.handleReconcile)
+
+	// API: manifest viewer
+	mux.HandleFunc("GET /api/documents/{slug}/manifest", s.handleManifestView)
+
+	// API: vector statistics and rebuild
+	mux.HandleFunc("GET /api/vector-stats", s.handleVectorStats)
+	mux.HandleFunc("POST /api/rebuild-vectors", s.handleRebuildVectors)
+
+	// API: GPU scheduler status
+	mux.HandleFunc("GET /api/gpu-scheduler", s.handleGPUSchedulerStatus)
+
+	// API: logs viewer
+	mux.HandleFunc("GET /api/logs", s.handleLogs)
+
+	// API: metrics
+	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
+
+	// API: system info
+	mux.HandleFunc("GET /api/system-info", s.handleSystemInfo)
+
+	// ── Apply middleware ──
+	handler := CORSMiddleware(mux)
+	if s.config != nil && s.config.APIToken != "" {
+		handler = AuthMiddleware(s.config.APIToken)(handler)
+	}
+
 	// Background cleanup of old tasks every 5 minutes.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -133,26 +193,32 @@ func (s *Store) StartManageServer(port string) error {
 		}
 	}()
 
-	// Listen on the port with per-family fallback.
-	// On macOS, Go's net.Listen("tcp", ":port") can return EADDRINUSE even when
-	// binding succeeds on one address family. This happens because getaddrinfo
-	// returns both IPv4 and IPv6 addresses for ":port", and Go tries each in
-	// sequence — the IPv6 socket (with IPV6_V6ONLY=0 on macOS) already covers
-	// all addresses, making the subsequent IPv4 bind appear as "address already
-	// in use". We try each family independently so the first success is used.
+	// Dual-stack listen (IPv4 + IPv6 on a single socket).
+	// We prefer "tcp" which binds both address families when the OS supports it
+	// (Linux, Windows). On macOS, net.Listen("tcp", ":port") can spuriously
+	// return EADDRINUSE — we fall back to trying tcp4 then tcp6 independently.
 	var ln net.Listener
 	var err error
-	for _, network := range []string{"tcp6", "tcp4"} {
-		ln, err = net.Listen(network, ":"+port)
-		if err == nil {
-			break
+	ln, err = net.Listen("tcp", ":"+port)
+	if err != nil {
+		for _, network := range []string{"tcp4", "tcp6"} {
+			ln, err = net.Listen(network, ":"+port)
+			if err == nil {
+				break
+			}
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("listen on :%s (tried tcp6, tcp4): %w", port, err)
+		return fmt.Errorf("listen on :%s (tried tcp, tcp4, tcp6): %w", port, err)
 	}
 	defer ln.Close()
-	return http.Serve(ln, mux)
+	server := &http.Server{
+		Handler:      handler,
+		WriteTimeout: 10 * time.Minute,
+		ReadTimeout:  10 * time.Minute,
+		IdleTimeout:  120 * time.Second,
+	}
+	return server.Serve(ln)
 }
 
 // --- API handlers ---
@@ -168,6 +234,8 @@ type manageDocItem struct {
 	Authors    []string `json:"authors,omitempty"`
 	IsPaper    bool     `json:"isPaper"`
 	Tags       []string `json:"tags"`
+	HasVectors bool     `json:"hasVectors"`
+	VectorDim  int      `json:"vectorDim,omitempty"`
 }
 
 func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
@@ -275,6 +343,9 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 		}
 		return less
 	})
+
+	// Populate vector status from chunks_index (lightweight, batched).
+	s.populateVectorStatus(items)
 
 	// Paginate
 	end := offset + limit
@@ -396,7 +467,8 @@ func saveManageFile(s *Store, src io.Reader, filename string) (DocumentMeta, err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	tmpPath := filepath.Join(tmpDir, filename)
+	safeName := filepath.Base(filename)
+	tmpPath := filepath.Join(tmpDir, safeName)
 	dst, err := os.Create(tmpPath)
 	if err != nil {
 		return DocumentMeta{}, fmt.Errorf("create temp file: %w", err)
@@ -465,7 +537,8 @@ func (s *Store) handleManageUploadSSE(w http.ResponseWriter, r *http.Request) {
 			file.Close()
 			continue
 		}
-		tmpPath := filepath.Join(tmpDir, fh.Filename)
+		safeName := filepath.Base(fh.Filename)
+		tmpPath := filepath.Join(tmpDir, safeName)
 		dst, err := os.Create(tmpPath)
 		if err != nil {
 			log.Errorf("Upload: create tmp file %q failed: %v", tmpPath, err)
@@ -530,6 +603,10 @@ func (s *Store) handleManageUploadSSE(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if err := validateComponent(id); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+		return
+	}
 	task := s.TaskManager().Get(id)
 	if task == nil {
 		writeManageError(w, http.StatusNotFound, "task not found")
@@ -552,6 +629,10 @@ func (s *Store) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 // until the task completes or the client disconnects.
 func (s *Store) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if err := validateComponent(id); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid task id: "+err.Error())
+		return
+	}
 	task := s.TaskManager().Get(id)
 	if task == nil {
 		writeManageError(w, http.StatusNotFound, "task not found")
@@ -677,6 +758,32 @@ func (s *Store) handleManageDelete(w http.ResponseWriter, r *http.Request) {
 		writeManageError(w, http.StatusBadRequest, "slug is required")
 		return
 	}
+	if err := validateComponent(slug); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid slug")
+		return
+	}
+
+	// Support soft-delete with tombstone via ?tombstone=true
+	if r.URL.Query().Get("tombstone") == "true" {
+		ttlStr := r.URL.Query().Get("ttl")
+		ttl := int64(0)
+		if ttlStr != "" {
+			if n, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && n > 0 {
+				ttl = n
+			}
+		}
+		reason := r.URL.Query().Get("reason")
+		log.Debugf("Delete(tombstone): slug=%q ttl=%d reason=%q kb=%q", slug, ttl, reason, s.kbName)
+		if err := s.RemoveDocumentTombstone(slug, ttl, reason); err != nil {
+			log.Errorf("Delete(tombstone): slug=%q failed: %v", slug, err)
+			writeManageError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		log.Infof("Delete(tombstone): slug=%q tombstoned", slug)
+		writeManageJSON(w, http.StatusOK, map[string]string{"message": "tombstoned", "slug": slug})
+		return
+	}
+
 	log.Debugf("Delete: slug=%q kb=%q", slug, s.kbName)
 	if err := s.RemoveDocument(slug); err != nil {
 		log.Errorf("Delete: slug=%q failed: %v", slug, err)
@@ -698,6 +805,10 @@ func (s *Store) handleManageDocDetail(w http.ResponseWriter, r *http.Request) {
 	if slug == "" {
 		log.Errorf("DocDetail: slug is empty")
 		writeManageError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+	if err := validateComponent(slug); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid slug")
 		return
 	}
 	log.Debugf("DocDetail: slug=%q kb=%q", slug, s.kbName)
@@ -843,6 +954,344 @@ func probeDocParser(ctx context.Context, log *logging.Logger) probeResult {
 	return probeResult{OK: true, LatencyMs: latency}
 }
 
+// ── Tombstone handlers ─────────────────────────────────────────────────────
+
+// handleTombstoneList returns all active tombstone records.
+func (s *Store) handleTombstoneList(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	tm := s.getTombstoneManager()
+	records := tm.All()
+	if records == nil {
+		records = []*Tombstone{}
+	}
+	log.Debugf("TombstoneList: kb=%q count=%d", s.kbName, len(records))
+
+	type tombstoneItem struct {
+		DocSlug     string `json:"docSlug"`
+		DeletedAt   string `json:"deletedAt"`
+		TTLSeconds  int64  `json:"ttlSeconds"`
+		Expired     bool   `json:"expired"`
+		Reason      string `json:"reason,omitempty"`
+		DocVersion  int    `json:"docVersion"`
+	}
+	now := time.Now()
+	items := make([]tombstoneItem, len(records))
+	for i, ts := range records {
+		items[i] = tombstoneItem{
+			DocSlug:    ts.DocSlug,
+			DeletedAt:  ts.DeletedAt.Format(time.RFC3339),
+			TTLSeconds: ts.TTLSeconds,
+			Expired:    ts.Expired(now),
+			Reason:     ts.Reason,
+			DocVersion: ts.DocVersion,
+		}
+	}
+
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"tombstones": items,
+		"count":      len(items),
+	})
+}
+
+// handleTombstoneRestore removes a tombstone, restoring the document to
+// search visibility. The physical files must still exist (tombstone hasn't
+// been cleaned yet).
+func (s *Store) handleTombstoneRestore(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	slug := r.PathValue("slug")
+	if slug == "" {
+		writeManageError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+	if err := validateComponent(slug); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid slug")
+		return
+	}
+	log.Infof("TombstoneRestore: slug=%q kb=%q", slug, s.kbName)
+
+	tm := s.getTombstoneManager()
+	if !tm.Exists(slug) {
+		writeManageError(w, http.StatusNotFound, "tombstone not found for slug: "+slug)
+		return
+	}
+	if err := tm.Remove(slug); err != nil {
+		log.Errorf("TombstoneRestore: slug=%q failed: %v", slug, err)
+		writeManageError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Infof("TombstoneRestore: slug=%q restored", slug)
+	writeManageJSON(w, http.StatusOK, map[string]string{
+		"message": "restored",
+		"slug":    slug,
+	})
+}
+
+// handleTombstoneClean physically removes all expired tombstoned documents
+// and their records.
+func (s *Store) handleTombstoneClean(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	log.Infof("TombstoneClean: kb=%q", s.kbName)
+
+	cleaned, err := s.CleanExpiredTombstones()
+	if err != nil {
+		log.Errorf("TombstoneClean: failed: %v", err)
+		writeManageError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Infof("TombstoneClean: cleaned %d documents", cleaned)
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"message": "cleaned",
+		"cleaned": cleaned,
+	})
+}
+
+// ── Reconciliation handler ──────────────────────────────────────────────────
+
+// handleReconcile runs a full consistency check and returns the report.
+func (s *Store) handleReconcile(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	log.Infof("Reconcile: kb=%q", s.kbName)
+
+	report, err := s.Reconcile()
+	if err != nil {
+		log.Errorf("Reconcile: failed: %v", err)
+		writeManageError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type findingItem struct {
+		Severity string `json:"severity"`
+		DocSlug  string `json:"docSlug"`
+		ChunkID  string `json:"chunkId,omitempty"`
+		Message  string `json:"message"`
+	}
+	findings := make([]findingItem, len(report.Findings))
+	for i, f := range report.Findings {
+		findings[i] = findingItem{
+			Severity: string(f.Severity),
+			DocSlug:  f.DocSlug,
+			ChunkID:  f.ChunkID,
+			Message:  f.Message,
+		}
+	}
+
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"kbName":      report.KBName,
+		"docsChecked": report.DocsChecked,
+		"docsOK":      report.DocsOK,
+		"duration":    report.Duration.String(),
+		"findings":    findings,
+		"hasErrors":   len(report.Findings) > 0 && report.DocsChecked > report.DocsOK,
+	})
+}
+
+// ── Manifest handler ────────────────────────────────────────────────────────
+
+// handleManifestView returns the chunk manifest for a document.
+func (s *Store) handleManifestView(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	slug := r.PathValue("slug")
+	if slug == "" {
+		writeManageError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+	if err := validateComponent(slug); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid slug")
+		return
+	}
+	log.Debugf("ManifestView: slug=%q kb=%q", slug, s.kbName)
+
+	manifest, err := s.backend.ReadManifest(s.kbName, slug)
+	if err != nil {
+		log.Errorf("ManifestView: slug=%q read error: %v", slug, err)
+		writeManageError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if manifest == nil {
+		writeManageJSON(w, http.StatusOK, map[string]any{
+			"slug":     slug,
+			"manifest": nil,
+			"message":  "No manifest found (legacy document — re-upload with atomic mode to generate)",
+		})
+		return
+	}
+
+	// Compute diff against previous version if available.
+	var diffInfo map[string]any
+	if manifest.Version > 1 {
+		// Try to load the previous version from versions dir.
+		diffInfo = map[string]any{
+			"version":      manifest.Version,
+			"chunkCount":   manifest.ChunkCount,
+			"strategy":     manifest.Strategy,
+			"previousDiff": "version history not yet persisted",
+		}
+	}
+
+	type chunkEntry struct {
+		ID          string `json:"id"`
+		LegacyID    string `json:"legacyId"`
+		Section     string `json:"section,omitempty"`
+		Offset      int    `json:"offset"`
+		CharCount   int    `json:"charCount"`
+		SectionRole string `json:"sectionRole,omitempty"`
+	}
+	chunks := make([]chunkEntry, len(manifest.Chunks))
+	for i, c := range manifest.Chunks {
+		chunks[i] = chunkEntry{
+			ID:          c.ID,
+			LegacyID:    c.LegacyID,
+			Section:     c.Section,
+			Offset:      c.Offset,
+			CharCount:   c.CharCount,
+			SectionRole: c.SectionRole,
+		}
+	}
+
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"slug":         manifest.DocSlug,
+		"version":      manifest.Version,
+		"sourceHash":   manifest.SourceHash,
+		"textHash":     manifest.TextHash,
+		"strategy":     manifest.Strategy,
+		"chunkCount":   manifest.ChunkCount,
+		"sectionCount": manifest.SectionCount,
+		"createdAt":    manifest.CreatedAt.Format(time.RFC3339),
+		"chunks":       chunks,
+		"diff":         diffInfo,
+	})
+}
+
+// ── Vector status population for document list ────────────────────────────
+
+// populateVectorStatus fills the HasVectors and VectorDim fields for each
+// item by reading the lightweight header from chunks_index.
+func (s *Store) populateVectorStatus(items []manageDocItem) {
+	for i := range items {
+		index, err := s.ReadChunksIndex(items[i].Slug)
+		if err != nil || index == nil {
+			continue
+		}
+		items[i].HasVectors = index.HasVectors
+		items[i].VectorDim = index.VectorDim
+	}
+}
+
+// ── Vector statistics handler ──────────────────────────────────────────────
+
+// handleVectorStats returns per-KB vector statistics, including per-document
+// breakdown of vector coverage.
+func (s *Store) handleVectorStats(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	log.Infof("VectorStats: kb=%q", s.kbName)
+
+	stats, err := s.GetVectorStats()
+	if err != nil {
+		log.Errorf("VectorStats: failed: %v", err)
+		writeManageError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeManageJSON(w, http.StatusOK, stats)
+}
+
+// ── Vector rebuild handler ─────────────────────────────────────────────────
+
+// handleRebuildVectors triggers vector re-embedding for documents that lack
+// vectors. Returns immediately with a task ID for SSE progress tracking.
+func (s *Store) handleRebuildVectors(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+
+	// Parse optional slug filter (rebuild a single document).
+	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
+
+	log.Infof("RebuildVectors: kb=%q slug=%q", s.kbName, slug)
+
+	task := s.TaskManager().Create("vector-rebuild", s.kbName, "")
+	taskID := task.ID
+
+	go func() {
+		defer task.MarkDone("")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+
+		progressCB := func(current, total int, docName string) {
+			pct := 0
+			if total > 0 {
+				pct = current * 100 / total
+			}
+			task.RecordEvent(ProgressEvent{
+				Stage:  fmt.Sprintf("embedding: %s", docName),
+				Status: fmt.Sprintf("%d/%d (%d%%)", current, total, pct),
+				Detail: docName,
+			})
+		}
+
+		result, err := s.ReEmbedMissingVectors(ctx, slug, progressCB)
+		if err != nil {
+			task.RecordEvent(ProgressEvent{
+				Stage:  "error",
+				Status: "error",
+				Detail: fmt.Sprintf("vector rebuild failed: %v", err),
+			})
+			return
+		}
+
+		task.RecordEvent(ProgressEvent{
+			Stage:  "complete",
+			Status: "done",
+			Detail: fmt.Sprintf("embedded %d chunks across %d documents", result.ChunksEmbedded, result.DocsProcessed),
+		})
+	}()
+
+	writeManageJSON(w, http.StatusAccepted, map[string]any{
+		"taskId":  taskID,
+		"message": "vector rebuild started",
+	})
+}
+
+// ── Enhanced delete with tombstone option ────────────────────────────────────
+// The existing handleManageDelete is extended to support ?tombstone=true query
+// parameter for soft-delete with tombstone.
+
+func init() {
+	// Ensure tombstone handlers compile correctly.
+	_ = (*Store).handleTombstoneList
+	_ = (*Store).handleTombstoneRestore
+	_ = (*Store).handleTombstoneClean
+	_ = (*Store).handleReconcile
+	_ = (*Store).handleManifestView
+}
+
 // --- helpers ---
 
 type manageAPIError struct {
@@ -865,7 +1314,9 @@ func writeManageError(w http.ResponseWriter, status int, msg string) {
 func writeNDJSONLine(w http.ResponseWriter, flusher http.Flusher, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return
+		// Fallback: write a safe error line so the client doesn't hang waiting
+		// for a result that will never come.
+		data = []byte(`{"error":"internal serialization error"}`)
 	}
 	// Ignore write errors: the connection may have been closed by the client.
 	_, _ = fmt.Fprintf(w, "%s\n", data)

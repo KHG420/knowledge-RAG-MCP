@@ -63,4 +63,23 @@ type StorageBackend interface {
 
 	// ── Chunk checksum verification ──────────────────────────────────────────
 	ComputeChunksChecksum(kbName, slug string) (string, error)
+
+	// ── Chunk manifest (versioned chunk list, MANIFEST.json) ──────────────────
+	ReadManifest(kbName, slug string) (*ChunkManifest, error)
+	WriteManifest(kbName, slug string, manifest *ChunkManifest) error
+
+	// ── Task state persistence (TASK.json for state machine) ──────────────────
+	ReadTaskRecord(kbName, slug string) (*TaskRecord, error)
+	WriteTaskRecord(kbName, slug string, task *TaskRecord) error
+	DeleteTaskRecord(kbName, slug string) error
+
+	// ── Atomic index staging support ──────────────────────────────────────────
+	// PrepareStaging prepares the staging area for a new index version build.
+	PrepareStaging(kbName, slug string) error
+	// PromoteStaging atomically promotes the staging index to active.
+	PromoteStaging(kbName, slug string, newVersion int) error
+	// CleanStaging removes leftover staging data after a failed build.
+	CleanStaging(kbName, slug string) error
+	// ActiveVersion returns the current active index version for a document.
+	ActiveVersion(kbName, slug string) (int, error)
 }

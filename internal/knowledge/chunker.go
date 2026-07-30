@@ -3,18 +3,74 @@ package knowledge
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-const (
-	shortChunk               = 200  // chars below this are merged into the preceding chunk
-	longChunk                = 2000 // chars above this are re-split on sentence boundaries
-	fragmentThreshold        = 60   // chars below this are merged into the preceding chunk after splitLong
-	overlapChars             = 200  // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
-	defaultSemanticThreshold = 0.75 // cosine similarity threshold for semantic chunk merging
+// Chunk parameter defaults (overridable at runtime via SetChunkParams).
+var (
+	chunkShortChunk            = 200   // chars below this are merged into the preceding chunk
+	chunkLongChunk             = 2000  // chars above this are re-split on sentence boundaries
+	chunkFragmentThreshold     = 60    // chars below this are merged into the preceding chunk after splitLong
+	chunkOverlapChars          = 200   // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
+	chunkSemanticThreshold     = 0.75  // cosine similarity threshold for semantic chunk merging
 )
+
+// PageBreak records the character offset where a new PDF page starts.
+// Offset is a 0-based character index in the full document text; Page is 1-based.
+type PageBreak struct {
+	Offset int
+	Page   int
+}
+
+// PageOffsets is a sorted slice of PageBreak used to look up which page a given
+// character offset falls on. PDF parsers build this from page-boundary metadata.
+type PageOffsets []PageBreak
+
+// pageAt returns the 1-based page number for a character offset, or 0 if unknown.
+func (po PageOffsets) pageAt(offset int) int {
+	if len(po) == 0 {
+		return 0
+	}
+	// po is sorted by Offset; find the last break whose Offset <= offset.
+	last := 0
+	for _, b := range po {
+		if b.Offset > offset {
+			break
+		}
+		last = b.Page
+	}
+	return last
+}
+
+// ensureSorted sorts the page breaks by offset so binary-ish lookup works.
+func (po PageOffsets) ensureSorted() {
+	sort.Slice(po, func(i, j int) bool { return po[i].Offset < po[j].Offset })
+}
+
+// SetChunkParams allows runtime adjustment of chunking parameters.
+// Existing documents are not re-chunked; the new params only affect future uploads.
+func SetChunkParams(minChars, maxChars, oChars int, semThreshold float64) {
+	if minChars >= 50 {
+		chunkShortChunk = minChars
+	}
+	if maxChars >= 500 {
+		chunkLongChunk = maxChars
+	}
+	if oChars >= 0 {
+		chunkOverlapChars = oChars
+	}
+	if semThreshold >= 0 && semThreshold <= 1 {
+		chunkSemanticThreshold = semThreshold
+	}
+}
+
+// GetChunkParams returns the current chunking parameters.
+func GetChunkParams() (minChars, maxChars, chunkOverlapChars int, semanticThreshold float64) {
+	return chunkShortChunk, chunkLongChunk, chunkOverlapChars, chunkSemanticThreshold
+}
 
 // ChunkText splits text into paragraph-level chunks suitable for BM25 retrieval.
 //
@@ -29,6 +85,20 @@ const (
 //
 // Empty input returns nil.
 func ChunkText(text string) []ChunkWithMeta {
+	return chunkText(text, nil)
+}
+
+// ChunkTextWithPages is like ChunkText but annotates each chunk with its PDF page
+// number using pageOffsets (a sorted list of (char-offset, page) pairs, 1-based).
+// When pageOffsets is nil or empty the behaviour is identical to ChunkText.
+// Page numbers span the chunk's content range: PageStart is the page at the
+// chunk's first character offset, PageEnd at its last character offset.
+func ChunkTextWithPages(text string, pageOffsets PageOffsets) []ChunkWithMeta {
+	pageOffsets.ensureSorted()
+	return chunkText(text, pageOffsets)
+}
+
+func chunkText(text string, pageOffsets PageOffsets) []ChunkWithMeta {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -47,19 +117,29 @@ func ChunkText(text string) []ChunkWithMeta {
 	var out []ChunkWithMeta
 	for _, p := range merged {
 		sec := sectionAt(sections, p.offset)
-		if utf8.RuneCountInString(p.content) > longChunk {
+		pageStart := pageOffsets.pageAt(p.offset)
+		pageEnd := pageStart
+		endOff := p.offset + utf8.RuneCountInString(p.content)
+		if endOff > 0 {
+			pageEnd = pageOffsets.pageAt(endOff - 1)
+		}
+		if utf8.RuneCountInString(p.content) > chunkLongChunk {
 			for _, sub := range splitLong(p.content) {
 				out = append(out, ChunkWithMeta{
-					Content: sub,
-					Section: sec,
-					Offset:  p.offset,
+					Content:   sub,
+					Section:   sec,
+					Offset:    p.offset,
+					PageStart: pageStart,
+					PageEnd:   pageEnd,
 				})
 			}
 		} else {
 			out = append(out, ChunkWithMeta{
-				Content: p.content,
-				Section: sec,
-				Offset:  p.offset,
+				Content:   p.content,
+				Section:   sec,
+				Offset:    p.offset,
+				PageStart: pageStart,
+				PageEnd:   pageEnd,
 			})
 		}
 	}
@@ -160,7 +240,7 @@ func mergeShortWithOffset(paras []paraWithOffset) []paraWithOffset {
 	}
 	var out []paraWithOffset
 	for _, p := range paras {
-		if len(out) > 0 && utf8.RuneCountInString(p.content) < shortChunk {
+		if len(out) > 0 && utf8.RuneCountInString(p.content) < chunkShortChunk {
 			// Merge into the previous chunk; keep the offset of the first chunk.
 			out[len(out)-1].content += "\n\n" + p.content
 		} else {
@@ -170,18 +250,22 @@ func mergeShortWithOffset(paras []paraWithOffset) []paraWithOffset {
 	return out
 }
 
-// mergeFragments merges chunks shorter than fragmentThreshold into the preceding
+// mergeFragments merges chunks shorter than chunkFragmentThreshold into the preceding
 // chunk. This catches tiny fragments produced by splitLong (e.g. formula lines
 // ending with "." that are < 60 chars). The first chunk is never merged "upward".
+// When two chunks merge, PageStart comes from the first and PageEnd from the last.
 func mergeFragments(chunks []ChunkWithMeta) []ChunkWithMeta {
 	if len(chunks) <= 1 {
 		return chunks
 	}
 	var out []ChunkWithMeta
 	for _, c := range chunks {
-		if len(out) > 0 && utf8.RuneCountInString(c.Content) < fragmentThreshold {
+		if len(out) > 0 && utf8.RuneCountInString(c.Content) < chunkFragmentThreshold {
 			// Merge into the previous chunk; keep the offset/section of the first chunk.
 			out[len(out)-1].Content += "\n\n" + c.Content
+			if c.PageEnd > out[len(out)-1].PageEnd {
+				out[len(out)-1].PageEnd = c.PageEnd
+			}
 		} else {
 			out = append(out, c)
 		}
@@ -189,10 +273,10 @@ func mergeFragments(chunks []ChunkWithMeta) []ChunkWithMeta {
 	return out
 }
 
-// addOverlap prepends the tail of each previous chunk (~overlapChars runes) to
+// addOverlap prepends the tail of each previous chunk (~chunkOverlapChars runes) to
 // the current chunk, providing contextual continuity across chunk boundaries.
 // The overlap is truncated at the last sentence boundary within the tail window.
-// Offset metadata is NOT modified — it continues to point to the original text position.
+// Offset and page metadata are NOT modified — they continue to point to the original text position.
 func addOverlap(chunks []ChunkWithMeta) []ChunkWithMeta {
 	if len(chunks) <= 1 {
 		return chunks
@@ -203,12 +287,12 @@ func addOverlap(chunks []ChunkWithMeta) []ChunkWithMeta {
 		if len(runes) == 0 {
 			continue
 		}
-		// Determine the overlap start position: take ~overlapChars chars from the tail,
+		// Determine the overlap start position: take ~chunkOverlapChars chars from the tail,
 		// then walk forward to find the FIRST sentence boundary so the overlap reads
 		// as complete trailing content from the previous chunk.
 		start := 0
-		if len(runes) > overlapChars {
-			start = len(runes) - overlapChars
+		if len(runes) > chunkOverlapChars {
+			start = len(runes) - chunkOverlapChars
 			// Walk forward from the start of the tail to find the first sentence end.
 			tail := runes[start:]
 			for j, r := range tail {
@@ -232,7 +316,7 @@ func addOverlap(chunks []ChunkWithMeta) []ChunkWithMeta {
 //
 // The first chunk's offset and section are kept when two chunks are merged.
 // When embedder is nil or embedding fails, the original chunks are returned unchanged.
-// A threshold of 0.75 is a reasonable default (use defaultSemanticThreshold).
+// A threshold of 0.75 is a reasonable default (use chunkSemanticThreshold).
 func MergeSemanticNeighbors(ctx context.Context, chunks []ChunkWithMeta, embedder Embedder, threshold float64) ([]ChunkWithMeta, error) {
 	if len(chunks) <= 1 || embedder == nil {
 		return chunks, nil
@@ -292,7 +376,7 @@ func ChunkTextContent(text string) []string {
 }
 
 // splitLong splits a single long paragraph on sentence boundaries.
-// It tries to cut at 。.！!？? and keeps each piece under ~longChunk chars.
+// It tries to cut at 。.！!？? and keeps each piece under ~chunkLongChunk chars.
 func splitLong(text string) []string {
 	sentences := splitSentences(text)
 	if len(sentences) <= 1 {
@@ -309,7 +393,7 @@ func splitLong(text string) []string {
 		}
 		// If adding this sentence would exceed the limit and we already
 		// have content, flush the buffer.
-		if buf.Len() > 0 && utf8.RuneCountInString(buf.String())+utf8.RuneCountInString(s) > longChunk {
+		if buf.Len() > 0 && utf8.RuneCountInString(buf.String())+utf8.RuneCountInString(s) > chunkLongChunk {
 			out = append(out, strings.TrimSpace(buf.String()))
 			buf.Reset()
 		}
@@ -408,7 +492,18 @@ func classifySectionRole(heading string) string {
 // covers the entire document. Each coarse chunk's SectionID reflects its heading.
 // SectionRole is populated on both fine and coarse chunks via classifySectionRole.
 func ChunkTextHierarchical(text string) (fine []ChunkWithMeta, coarse []ChunkWithMeta) {
-	fine = ChunkText(text)
+	return chunkTextHierarchical(text, nil)
+}
+
+// ChunkTextHierarchicalWithPages is like ChunkTextHierarchical but passes page
+// boundary information through to both fine and coarse chunks.
+func ChunkTextHierarchicalWithPages(text string, pageOffsets PageOffsets) (fine []ChunkWithMeta, coarse []ChunkWithMeta) {
+	pageOffsets.ensureSorted()
+	return chunkTextHierarchical(text, pageOffsets)
+}
+
+func chunkTextHierarchical(text string, pageOffsets PageOffsets) (fine []ChunkWithMeta, coarse []ChunkWithMeta) {
+	fine = chunkText(text, pageOffsets)
 	if len(fine) == 0 {
 		return nil, nil
 	}
@@ -443,6 +538,8 @@ func ChunkTextHierarchical(text string) (fine []ChunkWithMeta, coarse []ChunkWit
 			Content:     b.String(),
 			Section:     sec,
 			Offset:      group[0].Offset,
+			PageStart:   group[0].PageStart,
+			PageEnd:     group[len(group)-1].PageEnd,
 			SectionID:   sec,
 			SectionRole: classifySectionRole(sec),
 		}
