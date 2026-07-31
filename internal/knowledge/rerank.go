@@ -78,7 +78,7 @@ func WithRerankTimeout(d time.Duration) InfinityRerankerOption {
 func NewInfinityReranker(opts ...InfinityRerankerOption) *InfinityReranker {
 	r := &InfinityReranker{
 		endpointURL: "http://localhost:7997/rerank",
-		model:   "gte-multilingual-reranker-base",
+		model:       "gte-multilingual-reranker-base",
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},

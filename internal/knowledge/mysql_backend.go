@@ -619,6 +619,57 @@ func (mb *MySQLBackend) WriteSource(kbName, slug string, data []byte, ext string
 	return nil
 }
 
+// ReadRawText reads the stored raw text for a document (export helper).
+func (mb *MySQLBackend) ReadRawText(kbName, slug string) (string, error) {
+	var rawText sql.NullString
+	err := mb.db.QueryRow(
+		"SELECT raw_text FROM documents WHERE kb_name = ? AND slug = ?",
+		kbName, slug,
+	).Scan(&rawText)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("document %q not found", slug)
+	}
+	if err != nil {
+		return "", fmt.Errorf("read raw text %q: %w", slug, err)
+	}
+	return rawText.String, nil
+}
+
+// ReadSource reads the stored source file data and extension (export helper).
+func (mb *MySQLBackend) ReadSource(kbName, slug string) (data []byte, ext string, err error) {
+	var sourceExt sql.NullString
+	err = mb.db.QueryRow(
+		"SELECT source_data, source_ext FROM documents WHERE kb_name = ? AND slug = ?",
+		kbName, slug,
+	).Scan(&data, &sourceExt)
+	if err == sql.ErrNoRows {
+		return nil, "", fmt.Errorf("document %q not found", slug)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("read source %q: %w", slug, err)
+	}
+	if sourceExt.Valid {
+		ext = sourceExt.String
+	}
+	return data, ext, nil
+}
+
+// ReadKBDescription reads the description for a knowledge base (export helper).
+func (mb *MySQLBackend) ReadKBDescription(kbName string) (string, error) {
+	var desc string
+	err := mb.db.QueryRow(
+		"SELECT COALESCE(description,'') FROM knowledge_bases WHERE name = ?",
+		kbName,
+	).Scan(&desc)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read KB description %q: %w", kbName, err)
+	}
+	return desc, nil
+}
+
 // ── INDEX.md ───────────────────────────────────────────────────────────────────
 
 func (mb *MySQLBackend) ReadIndex(kbName string) (string, error) {
@@ -859,6 +910,5 @@ func (mb *MySQLBackend) ActiveVersion(kbName, slug string) (int, error) {
 	return v, nil
 }
 
-// Ensure interfaces are satisfied at compile time.
-var _ StorageBackend = (*FileBackend)(nil)
+// Ensure interface is satisfied at compile time.
 var _ StorageBackend = (*MySQLBackend)(nil)

@@ -1,10 +1,10 @@
 // Package knowledge — version management for document indexing.
 //
 // This file extends the data model with versioning fields that enable:
-//  - Detecting whether a document has changed since last index
-//  - Tracking which chunking strategy was used
-//  - Managing index versions for atomic switch-over
-//  - Tombstone-based soft-delete with TTL
+//   - Detecting whether a document has changed since last index
+//   - Tracking which chunking strategy was used
+//   - Managing index versions for atomic switch-over
+//   - Tombstone-based soft-delete with TTL
 package knowledge
 
 import (
@@ -48,10 +48,10 @@ type DocumentVersionInfo struct {
 // IndexVersionState tracks the state of a single index version for a document.
 // Multiple versions can exist simultaneously during a rolling upgrade:
 //
-//   active    — the version that search queries read from
-//   building  — a new version being built in the background (not yet active)
-//   retired   — a previous version kept for rollback (can be deleted after grace period)
-//   tombstone — the document has been soft-deleted; search filters it out
+//	active    — the version that search queries read from
+//	building  — a new version being built in the background (not yet active)
+//	retired   — a previous version kept for rollback (can be deleted after grace period)
+//	tombstone — the document has been soft-deleted; search filters it out
 type IndexVersionState string
 
 const (
@@ -65,12 +65,12 @@ const (
 // It is stored as INDEX_VERSION.json in the version subdirectory.
 type IndexVersionMeta struct {
 	DocSlug     string            `json:"doc_slug"`
-	Version     int               `json:"version"`      // index version number (distinct from doc version)
-	State       IndexVersionState `json:"state"`        // current state of this version
-	DocVersion  int               `json:"doc_version"`   // DocumentMeta.DocVersion this was built from
+	Version     int               `json:"version"`     // index version number (distinct from doc version)
+	State       IndexVersionState `json:"state"`       // current state of this version
+	DocVersion  int               `json:"doc_version"` // DocumentMeta.DocVersion this was built from
 	SourceHash  string            `json:"source_hash"`
 	TextHash    string            `json:"text_hash"`
-	Strategy    string            `json:"strategy"`      // ChunkingStrategyVersion()
+	Strategy    string            `json:"strategy"` // ChunkingStrategyVersion()
 	ChunkCount  int               `json:"chunk_count"`
 	BuiltAt     time.Time         `json:"built_at"`
 	ActivatedAt *time.Time        `json:"activated_at,omitempty"` // when this version became active
@@ -104,12 +104,12 @@ func (m *IndexVersionMeta) IsSearchable() bool {
 // tombstoned documents. After the TTL expires, a background cleaner removes
 // the physical files.
 type Tombstone struct {
-	DocSlug     string    `json:"doc_slug"`
-	DeletedAt   time.Time `json:"deleted_at"`
-	TTLSeconds  int64     `json:"ttl_seconds"` // 0 = never auto-clean (manual only)
-	Reason      string    `json:"reason,omitempty"` // optional reason for deletion
-	DocVersion  int       `json:"doc_version"` // version at time of deletion
-	IndexVersion int     `json:"index_version"` // index version at time of deletion
+	DocSlug      string    `json:"doc_slug"`
+	DeletedAt    time.Time `json:"deleted_at"`
+	TTLSeconds   int64     `json:"ttl_seconds"`      // 0 = never auto-clean (manual only)
+	Reason       string    `json:"reason,omitempty"` // optional reason for deletion
+	DocVersion   int       `json:"doc_version"`      // version at time of deletion
+	IndexVersion int       `json:"index_version"`    // index version at time of deletion
 }
 
 // Expired reports whether the tombstone's TTL has elapsed and the document

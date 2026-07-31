@@ -27,40 +27,40 @@ import (
 // ChunkManifest is the authoritative, versioned list of chunks for a document.
 // It is persisted as MANIFEST.json alongside meta.json.
 type ChunkManifest struct {
-	DocSlug     string `json:"doc_slug"`     // document slug (unique identifier)
-	Version     int    `json:"version"`       // monotonically increasing manifest version
-	SourceHash  string `json:"source_hash"`   // SHA256 of the original source file
-	TextHash    string `json:"text_hash"`     // SHA256 of the parsed plain text
-	Strategy    string `json:"strategy"`      // ChunkingStrategyVersion() that produced this manifest
-	ChunkCount  int    `json:"chunk_count"`   // total number of fine-grained chunks
-	SectionCount int   `json:"section_count"` // total number of section-level chunks
-	CreatedAt   time.Time `json:"created_at"` // when this manifest version was created
-	Chunks      []ChunkManifestEntry `json:"chunks"`       // ordered fine-grained chunk entries
-	Sections    []ChunkManifestEntry `json:"sections"`     // ordered section-level chunk entries
+	DocSlug      string               `json:"doc_slug"`      // document slug (unique identifier)
+	Version      int                  `json:"version"`       // monotonically increasing manifest version
+	SourceHash   string               `json:"source_hash"`   // SHA256 of the original source file
+	TextHash     string               `json:"text_hash"`     // SHA256 of the parsed plain text
+	Strategy     string               `json:"strategy"`      // ChunkingStrategyVersion() that produced this manifest
+	ChunkCount   int                  `json:"chunk_count"`   // total number of fine-grained chunks
+	SectionCount int                  `json:"section_count"` // total number of section-level chunks
+	CreatedAt    time.Time            `json:"created_at"`    // when this manifest version was created
+	Chunks       []ChunkManifestEntry `json:"chunks"`        // ordered fine-grained chunk entries
+	Sections     []ChunkManifestEntry `json:"sections"`      // ordered section-level chunk entries
 }
 
 // ChunkManifestEntry describes one chunk in the manifest.
 type ChunkManifestEntry struct {
-	ID          string `json:"id"`            // content-based chunk ID (e.g. "C3f2a8b1c0d1")
-	LegacyID    string `json:"legacy_id,omitempty"` // legacy sequential ID for backward compat
-	Section     string `json:"section,omitempty"`   // nearest markdown heading
-	Offset      int    `json:"offset"`              // character offset in original text
-	SectionID   string `json:"section_id,omitempty"` // parent section chunk ID
+	ID          string `json:"id"`                     // content-based chunk ID (e.g. "C3f2a8b1c0d1")
+	LegacyID    string `json:"legacy_id,omitempty"`    // legacy sequential ID for backward compat
+	Section     string `json:"section,omitempty"`      // nearest markdown heading
+	Offset      int    `json:"offset"`                 // character offset in original text
+	SectionID   string `json:"section_id,omitempty"`   // parent section chunk ID
 	SectionRole string `json:"section_role,omitempty"` // classified role
-	CharCount   int    `json:"char_count"`          // character count (for filtering)
+	CharCount   int    `json:"char_count"`             // character count (for filtering)
 }
 
 // NewChunkManifest creates a new manifest for the given document and chunk
 // metadata. The version starts at 1.
 func NewChunkManifest(docSlug, sourceHash, textHash string, fineChunks, coarseChunks []ChunkWithMeta) *ChunkManifest {
 	m := &ChunkManifest{
-		DocSlug:    docSlug,
-		Version:    1,
-		SourceHash: sourceHash,
-		TextHash:   textHash,
-		Strategy:   ChunkingStrategyVersion(),
-		CreatedAt:  time.Now().Truncate(time.Second),
-		ChunkCount: len(fineChunks),
+		DocSlug:      docSlug,
+		Version:      1,
+		SourceHash:   sourceHash,
+		TextHash:     textHash,
+		Strategy:     ChunkingStrategyVersion(),
+		CreatedAt:    time.Now().Truncate(time.Second),
+		ChunkCount:   len(fineChunks),
 		SectionCount: len(coarseChunks),
 	}
 
@@ -251,8 +251,8 @@ const ManifestFilename = "MANIFEST.json"
 type sortedManifestEntrySlice []ChunkManifestEntry
 
 func (s sortedManifestEntrySlice) Len() int           { return len(s) }
-func (s sortedManifestEntrySlice) Less(i, j int) bool  { return s[i].ID < s[j].ID }
-func (s sortedManifestEntrySlice) Swap(i, j int)       { s[i], s[j] = s[j], s[i] }
+func (s sortedManifestEntrySlice) Less(i, j int) bool { return s[i].ID < s[j].ID }
+func (s sortedManifestEntrySlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // SortManifestEntries returns a sorted copy of the entries (by ID).
 func SortManifestEntries(entries []ChunkManifestEntry) []ChunkManifestEntry {

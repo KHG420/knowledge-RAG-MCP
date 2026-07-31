@@ -35,6 +35,10 @@ func (s *Store) RemoveDocument(slug string) error {
 	if metaErr == nil {
 		s.removeFromIndex(slug, meta)
 	}
+
+	// Invalidate cache for this document.
+	s.InvalidateDoc(slug)
+
 	log.Infof("RemoveDocument %q done", slug)
 	return nil
 }

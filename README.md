@@ -20,6 +20,12 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 - **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
 - **KB descriptions** — assign a brief description when creating a KB; view all KBs and their descriptions via `knowledge_list_kbs` tool
 - **MySQL/MariaDB backend** — optional database storage backend replacing the default filesystem, configurable via DSN, env vars, or TOML
+- **Intelligent KB routing** — auto-route queries to the most relevant knowledge base(s) using four-dimension weighted scoring (keyword + embedding + description + domain constraints), with Top-K KB selection
+- **Domain dictionary support** — load YAML-based domain synonym dictionaries for query expansion (e.g. ship motion terminology)
+- **Redis cache** — optional exact-match query result cache with configurable TTL, keyed by normalized query hash + KB version; incremental chunk/meta/index caching for fast reads
+- **Soft delete (tombstone)** — document removal uses a TTL tombstone pattern: documents are hidden from search immediately while physical cleanup follows on expiry
+- **Incremental indexing & versioning** — re-uploading a document increments its version; only changed chunks are re-indexed, preserving search consistency
+- **Evidence quality signals** — each result carries source_confidence, answer_relevance, and completeness metadata for the calling agent to assess reliability
 
 ## Installation
 
@@ -78,6 +84,11 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `mysql_port` | `MYSQL_PORT` | `3306` | MySQL port |
 | `mysql_database` | `MYSQL_DATABASE` | `knowledge_rag` | MySQL database name |
 | `mysql_socket_path` | `MYSQL_SOCKET_PATH` | — | MySQL Unix socket path (takes precedence over host:port) |
+| `redis_enabled` | `REDIS_ENABLED` | `false` | Enable Redis query result cache |
+| `redis_addr` | `REDIS_ADDR` | `127.0.0.1:6379` | Redis server address |
+| `redis_password` | `REDIS_PASSWORD` | — | Redis password (optional) |
+| `redis_db` | `REDIS_DB` | `0` | Redis database number |
+| `redis_prefix` | `REDIS_PREFIX` | `kmcp:` | Redis key namespace prefix |
 
 ## Quick Start
 
@@ -331,6 +342,16 @@ When the MySQL backend is enabled, all knowledge base data is stored in database
 | `MYSQL_DATABASE` | `knowledge_rag` | Database name |
 | `MYSQL_SOCKET_PATH` | — | Unix socket path (takes precedence over host:port) |
 
+### Redis Cache
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_ENABLED` | `false` | Set to `true` or `1` to enable |
+| `REDIS_ADDR` | `127.0.0.1:6379` | Redis server address |
+| `REDIS_PASSWORD` | — | Redis password (optional) |
+| `REDIS_DB` | `0` | Redis database number |
+| `REDIS_PREFIX` | `kmcp:` | Key namespace prefix |
+
 ## MCP Tools
 
 ### `knowledge_search`
@@ -373,6 +394,48 @@ List all knowledge bases with their descriptions.
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | _(none)_ | — | Returns count of KBs and each KB's name + description |
+
+### `knowledge_list`
+
+List documents in a knowledge base, with optional KB scope filtering.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `kbName` | no | Knowledge base name. When set, list only documents in that KB. When omitted, list all KBs |
+
+### `knowledge_upload`
+
+Upload single documents or batch-import entire directories into a knowledge base.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `filePath` | conditional | Path to a single document file. Mutually exclusive with `directory` |
+| `directory` | conditional | Directory path for batch upload. Mutually exclusive with `filePath` |
+| `recursive` | no | When `true`, recursively walk subdirectories (for batch upload) |
+| `tags` | no | Comma-separated tags assigned to the uploaded document(s) |
+| `kbName` | conditional | KB name. Required when no default KB is configured |
+
+### `knowledge_remove`
+
+Remove a document from a knowledge base by its slug.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `docSlug` | **yes** | Document slug (from list/search results) |
+| `kbName` | no | KB name. When omitted, the document is removed from all KBs |
+
+## KB Routing
+
+When `knowledge_search` is called without a specific `kbName`, the KB Router scores every knowledge base against the query using four weighted dimensions:
+
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| keyword | 0.35 | Term overlap between query and KB name/description |
+| embedding | 0.35 | Cosine similarity of query vector vs KB description vector |
+| desc | 0.15 | Description substring match bonus |
+| constraint | 0.15 | Domain-specific routing constraints |
+
+Top-K selection: if the score gap between #1 and #2 is > 0.25, only the top KB is used. Otherwise, up to 3 KBs are selected for joint retrieval.
 
 ## Search Pipeline
 
@@ -428,30 +491,49 @@ internal/
     config.go            — TOML config loading, env-var fallback, defaults
   setup/
     setup.go             — Interactive configuration wizard ("knowledge-mcp setup")
-    probe.go             — Endpoint connectivity probes
+    i18n.go              — Internationalization strings for the setup wizard
   logging/
     logger.go            — Structured file logger (DEBUG/INFO/WARN/ERROR, module-scoped)
+  cache/
+    cache.go             — Cache interface + NoopCache fallback
+    redis.go             — Redis-backed cache implementation
+    keys.go              — Cache key naming conventions (query, chunk, meta, index, KB list)
   knowledge/
     store.go             — Store struct, data dir management, CHUNKS.toml I/O, KB CRUD
     storage.go           — StorageBackend interface (storage backend abstraction)
-    file_backend.go      — Filesystem storage backend (default)
-    mysql_backend.go     — MySQL/MariaDB storage backend (optional)
-    search.go            — Search, HybridSearch, SearchDocuments, coarseToFine, rerankTop
-    chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge
-    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit, ChunksIndex
-    embed.go             — Embedder interface, OpenAIEmbedder
+    mysql_backend.go     — MySQL/MariaDB storage backend
+    search.go            — Search, HybridSearch, SearchDocuments, SearchAll, coarseToFine, rerankTop
+    chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge, page-aware chunking
+    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit, EvidenceMeta, ChunksIndex
+    embed.go             — Embedder interface, OpenAIEmbedder (OpenAI & Ollama native format)
     rerank.go            — InfinityReranker (Cohere/Infinity-compatible), Reranker interface
+    vector_index.go      — HNSW vector index (M=48, efConstruction=400) for ANN search
     gpu_scheduler.go     — GPU scheduler, coordinates embedding/reranker model sleep/wake
-    rewrite.go           — QueryRewriter interface, SynonymRewriter
+    kb_router.go         — Multi-KB intelligent router (keyword + embedding + desc + constraint scoring)
+    rewrite.go           — QueryRewriter interface, SynonymRewriter (built-in + YAML dictionaries)
     rewrite_llm.go       — LLMQueryRewriter (optional LLM-based query expansion)
+    dict_loader.go       — Domain dictionary loader from YAML files
     manage.go            — Web management UI server, KB CRUD, upload/delete/search handlers
+    manage_enhanced.go   — Extended management features (search console, config, tool descriptions)
     upload.go            — UploadDocument, UploadDirectory
+    upload_task.go       — Persistent upload task tracking
     parser.go            — Document parser dispatch — external HTTP API + tabula fallback (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
     inverted.go          — Global inverted index (INVERTED.gob) for accelerated candidate lookup
     list.go              — ListPreview, ReadChunk, ReadChunkContext
     remove.go            — RemoveDocument
-    searchlog.go         — FileSearchLogger (.searchlog.jsonl)
-    meta_extract.go      — Paper metadata extraction (title, authors, abstract, section roles)
+    tomstone.go          — Soft-delete tombstone manager with TTL-based cleanup
+    version.go           — Document/index version tracking for incremental updates
+    store_incremental.go — Incremental re-indexing on document re-upload
+    manifest.go          — Chunk manifest tracking for index integrity
+    reconcile.go         — Index consistency verification and repair
+    state_machine.go     — Document lifecycle state machine
+    chunk_id.go          — Chunk ID generation and management
+    config_api.go        — Runtime configuration read/write API
+    store_settings.go    — Store runtime settings management
+    middleware.go         — HTTP middleware (CORS, logging, recovery)
+    tool_descs.go         — Default MCP tool descriptions (customisable via Web UI)
+    searchlog.go          — FileSearchLogger (.searchlog.jsonl)
+    meta_extract.go       — Paper metadata extraction (title, authors, abstract, section roles)
   retrieval/
     bm25.go              — Tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
 scripts/

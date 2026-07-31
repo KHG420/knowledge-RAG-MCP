@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -17,9 +18,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"knowledge-mcp/internal/cache"
 	"knowledge-mcp/internal/config"
-	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/knowledge"
+	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/setup"
 )
 
@@ -80,7 +82,6 @@ func main() {
 // logger from the given config. It sets up the embedder, reranker, and GPU
 // scheduler as configured. The caller must call logger.Close() when done.
 func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) {
-	dataDir := cfg.DataDir
 	defaultKB := cfg.DefaultKB
 
 	logPath := cfg.LogFile
@@ -100,47 +101,42 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	log := logger.WithModule("startup")
 	log.Infof("log file: %s level=%s", logPath, []string{"debug", "info"}[logLevel])
 
-	// Create the appropriate storage backend.
-	useMySQL := cfg.MySQLDSN != "" || cfg.MySQLHost != "" || cfg.MySQLSocketPath != ""
-	var store *knowledge.Store
-	if useMySQL {
-		mysqlCfg := knowledge.MySQLBackendConfig{
-			DSN:        cfg.MySQLDSN,
-			User:       cfg.MySQLUser,
-			Password:   cfg.MySQLPassword,
-			Host:       cfg.MySQLHost,
-			Port:       cfg.MySQLPort,
-			Database:   cfg.MySQLDatabase,
-			SocketPath: cfg.MySQLSocketPath,
-		}
-		// Apply defaults for empty fields.
-		if mysqlCfg.User == "" {
-			mysqlCfg.User = "root"
-		}
-		if mysqlCfg.Host == "" && mysqlCfg.SocketPath == "" {
-			mysqlCfg.Host = "127.0.0.1"
-		}
-		if mysqlCfg.Port == "" && mysqlCfg.Host != "" {
-			mysqlCfg.Port = "3306"
-		}
-		if mysqlCfg.Database == "" {
-			mysqlCfg.Database = "knowledge_rag"
-		}
-
-		backend, err := knowledge.NewMySQLBackend(mysqlCfg)
-		if err != nil {
-			log.Errorf("failed to connect to MySQL: %v", err)
-			os.Exit(1)
-		}
-		store = knowledge.NewStoreWithBackend(backend)
-		log.Infof("MySQL backend: %s/%s", mysqlCfg.Host, mysqlCfg.Database)
-	} else {
-		store = knowledge.NewStore()
-		if dataDir != "" {
-			store = store.WithDataDir(dataDir)
-		}
-		log.Infof("File backend: %s", dataDir)
+	// Create the MySQL storage backend (required).
+	if cfg.MySQLDSN == "" && cfg.MySQLHost == "" && cfg.MySQLSocketPath == "" {
+		fmt.Fprintf(os.Stderr, "MySQL configuration is required. Set mysql_dsn, mysql_host, or mysql_socket_path in config.\n")
+		os.Exit(1)
 	}
+
+	mysqlCfg := knowledge.MySQLBackendConfig{
+		DSN:        cfg.MySQLDSN,
+		User:       cfg.MySQLUser,
+		Password:   cfg.MySQLPassword,
+		Host:       cfg.MySQLHost,
+		Port:       cfg.MySQLPort,
+		Database:   cfg.MySQLDatabase,
+		SocketPath: cfg.MySQLSocketPath,
+	}
+	// Apply defaults for empty fields.
+	if mysqlCfg.User == "" {
+		mysqlCfg.User = "root"
+	}
+	if mysqlCfg.Host == "" && mysqlCfg.SocketPath == "" {
+		mysqlCfg.Host = "127.0.0.1"
+	}
+	if mysqlCfg.Port == "" && mysqlCfg.Host != "" {
+		mysqlCfg.Port = "3306"
+	}
+	if mysqlCfg.Database == "" {
+		mysqlCfg.Database = "knowledge_rag"
+	}
+
+	backend, err := knowledge.NewMySQLBackend(mysqlCfg)
+	if err != nil {
+		log.Errorf("failed to connect to MySQL: %v", err)
+		os.Exit(1)
+	}
+	store := knowledge.NewStoreWithBackend(backend)
+	log.Infof("MySQL backend: %s/%s", mysqlCfg.Host, mysqlCfg.Database)
 	store.SetLogger(logger.WithModule("store"))
 	store.SetConfig(cfg, findConfigPath())
 	if defaultKB != "" {
@@ -151,6 +147,26 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		log.Errorf("failed to init data dir: %v", err)
 		os.Exit(1)
 	}
+
+	// --- v4: Load domain dictionaries for query expansion ---
+	rewriter := knowledge.NewSynonymRewriter()
+	dictDir := filepath.Join(filepath.Dir(findConfigPath()), "dictionaries")
+	if _, err := os.Stat(dictDir); err == nil {
+		entries, loadErr := knowledge.LoadDictionaries(dictDir)
+		if loadErr != nil {
+			log.Warnf("dictionary load failed: %v", loadErr)
+		} else if len(entries) > 0 {
+			syns := knowledge.DictToSynonyms(entries)
+			for term, synonyms := range syns {
+				for _, syn := range synonyms {
+					rewriter.AddSynonym(term, syn)
+				}
+			}
+			store.SetDictionaryRelatedTerms(knowledge.DictToRelatedTerms(entries))
+			log.Infof("dictionaries: loaded %d terms from %s", len(entries), dictDir)
+		}
+	}
+	store.SetRewriter(rewriter)
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
 	if cfg.EmbedEndpoint != "" {
@@ -171,6 +187,15 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
 		log.Infof("embedder: %s (model=%s)", cfg.EmbedEndpoint, model)
+
+		// v4: KB Router for intelligent multi-KB routing (same embedder instance).
+		kbRouter := knowledge.NewKBRouter(store.Embedder())
+		store.SetKBRouter(kbRouter)
+		if err := store.SyncKBRouterDescs(); err != nil {
+			log.Warnf("kb router: failed to sync KB descriptions: %v", err)
+		} else {
+			log.Infof("kb router: enabled (top-K multi-KB routing)")
+		}
 	} else {
 		log.Infof("embedder not configured (EMBED_API_ENDPOINT empty)")
 	}
@@ -262,6 +287,25 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		} else {
 			log.Infof("GPU scheduler: endpoints reachable — %s", summary)
 		}
+	}
+
+	// --- Optional: Redis cache backend ---
+	if cfg.RedisEnabled {
+		redisCfg := cache.RedisConfig{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
+			Prefix:   cfg.RedisPrefix,
+			PoolSize: cfg.RedisPoolSize,
+		}
+		if redisCache, rerr := cache.NewRedisCache(redisCfg); rerr != nil {
+			log.Warnf("Redis cache: %v — caching disabled", rerr)
+		} else {
+			store.SetCache(redisCache, cfg)
+			log.Infof("Redis cache: connected to %s (db=%d prefix=%s)", cfg.RedisAddr, cfg.RedisDB, cfg.RedisPrefix)
+		}
+	} else {
+		log.Infof("Redis cache: not configured (redis_enabled=false)")
 	}
 
 	return store, logger
@@ -453,34 +497,19 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 
 func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_search",
-		mcp.WithDescription(`BM25/hybrid keyword search across all documents in the knowledge base.
-
-**IMPORTANT — kbName (knowledge base selection)**: Before calling, THINK about which knowledge base (KB) the user's question refers to. Infer the most likely KB from the user's context, workspace, or project context — then pass that KB name in the "kbName" parameter to scope the search and get accurate results. Only omit "kbName" when the user explicitly asks to search across ALL knowledge bases, or when absolutely no single KB can be reasonably inferred.
-
-BEFORE CALLING: you MUST rewrite the user's question into a space-separated string of distinctive keywords and phrases. Do NOT pass the raw question verbatim. Fix typos, resolve pronouns from conversation context, add synonyms and related terms (Chinese + English where applicable).
-
-Examples of required rewriting:
-  User: "how to chunk documents?"
-    → search_keywords: "chunking text splitting segmentation document chunk longChunk shortChunk overlap"
-  User: (after discussing chunking) "它的参数有哪些？"
-    → search_keywords: "分块 chunking 参数 longChunk shortChunk overlapChars fragmentThreshold"
-  User: "embeding vs retrieval"
-    → search_keywords: "embedding vector retrieval search dense sparse BM25 hybrid"`),
-		mcp.WithString("search_keywords",
+		mcp.WithDescription(store.ToolSearchDesc()),
+		mcp.WithString("question",
 			mcp.Required(),
-			mcp.Description("REWRITTEN keyword string (space-separated terms) — NOT the user's raw question. Fix typos, expand context, add synonyms. Use distinctive keywords the documents are likely to contain."),
+			mcp.Description("The user's original natural language question. Pass it verbatim — do NOT rewrite into keywords, do NOT add synonyms or translations. The internal query analyzer handles all expansion automatically."),
 		),
-		mcp.WithString("original_question",
-			mcp.Description("The user's original question verbatim, for logging purposes."),
-		),
-		mcp.WithString("query",
-			mcp.Description("DEPRECATED: use search_keywords instead. Fallback for backward compatibility."),
+		mcp.WithString("search_keywords",
+			mcp.Description("DEPRECATED: use 'question' instead. Space-separated keyword string. Only for backward compatibility with older Agent versions."),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum results to return. Default 8, max 20."),
 		),
 		mcp.WithString("mode",
-			mcp.Description("Search mode: 'bm25' (default, keyword) or 'hybrid' (BM25 + embedding). Requires embedder for hybrid."),
+			mcp.Description("DEPRECATED: the system auto-selects the best retrieval strategy. Accepted for backward compatibility only."),
 			mcp.Enum("bm25", "hybrid"),
 		),
 		mcp.WithString("sourceType",
@@ -502,18 +531,21 @@ Examples of required rewriting:
 			mcp.Description("Enable coarse-to-fine 2-phase search: first score sections, then only search within top-3 sections."),
 		),
 		mcp.WithString("kbName",
-			mcp.Description("REQUIRED when a specific knowledge base matches the user's question. Before calling, think: which KB does the user's context most likely refer to? Pass that KB name here to scope the search. Omit ONLY when the user explicitly asks to search across all KBs, or when absolutely no KB can be inferred from context."),
+			mcp.Description(store.ToolSearchKbNameDesc()),
 		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Prefer search_keywords; fall back to deprecated query param.
-		searchKW := getString(req, "search_keywords")
+		// question takes priority; fall back to search_keywords → query (deprecated).
+		searchKW := getString(req, "question")
 		if searchKW == "" {
-			searchKW = getString(req, "query")
+			searchKW = getString(req, "search_keywords")
 		}
 		if searchKW == "" {
-			return mcp.NewToolResultError("search_keywords is required — rewrite the user's question into distinctive keywords before calling"), nil
+			searchKW = getString(req, "query") // truly ancient fallback
+		}
+		if searchKW == "" {
+			return mcp.NewToolResultError("question is required — pass the user's original question verbatim"), nil
 		}
 
 		limit := 8
@@ -537,33 +569,46 @@ Examples of required rewriting:
 		if kbName != "" && strings.Contains(kbName, "..") {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
 		}
-		searchStore := store
-		if kbName != "" {
-			searchStore = store.WithKB(kbName)
+
+		// v4: When kbName is empty, use KB Router to select best 1–3 KBs.
+		var routedKBs []string
+		if kbName == "" {
+			routedKBs = store.RouteKBs(searchKW)
 		}
 
 		var hits []knowledge.SearchHit
 		var err error
-		switch strings.ToLower(getString(req, "mode")) {
-		case "hybrid":
-			if kbName != "" {
+
+		// v4: Default to hybrid unless explicitly set to "bm25" for backward compat.
+		useMode := strings.ToLower(getString(req, "mode"))
+		isHybrid := useMode != "bm25" // default: hybrid
+
+		if kbName != "" {
+			searchStore := store.WithKB(kbName)
+			if isHybrid {
 				hits, err = searchStore.HybridSearch(searchKW, limit, filter)
 			} else {
-				// HybridSearchAll not implemented; fallback to SearchAll
-				hits, err = searchStore.SearchAll(searchKW, limit, filter)
-			}
-		default:
-			if kbName != "" {
 				hits, err = searchStore.Search(searchKW, limit, filter)
+			}
+		} else if len(routedKBs) > 0 {
+			routedMode := "bm25"
+			if isHybrid {
+				routedMode = "hybrid"
+			}
+			hits, err = searchMultiKB(store, searchKW, limit, filter, routedMode, routedKBs)
+		} else {
+			if isHybrid {
+				hits, err = store.SearchAll(searchKW, limit, filter)
 			} else {
-				hits, err = searchStore.SearchAll(searchKW, limit, filter)
+				hits, err = store.SearchAll(searchKW, limit, filter)
 			}
 		}
+
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
 		}
 		tlog := logger.WithModule("tool")
-		tlog.Debugf("knowledge_search: query=%q limit=%d kb=%q mode=%q hits=%d", searchKW, limit, kbName, getString(req, "mode"), len(hits))
+		tlog.Debugf("knowledge_search: query=%q limit=%d kb=%q routed=%v mode=%q hybrid=%v hits=%d", searchKW, limit, kbName, routedKBs, useMode, isHybrid, len(hits))
 		if len(hits) == 0 {
 			return mcp.NewToolResultText("No matching chunks found."), nil
 		}
@@ -574,11 +619,7 @@ Examples of required rewriting:
 
 func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_read",
-		mcp.WithDescription(`Read a specific chunk from a document in the knowledge base.
-
-**kbName**: When you have search results, pass the same kbName from the search call to scope the read to the correct KB. If you don't know the KB, you may omit it — the system will search all KBs.
-
-If search results show multiple hits from the same section (SectionHint field is non-empty), consider reading with level=section to get the full section context instead of just the individual chunk.`),
+		mcp.WithDescription(store.ToolReadDesc()),
 		mcp.WithString("docSlug",
 			mcp.Required(),
 			mcp.Description("Document slug (from list/search results)."),
@@ -595,7 +636,7 @@ If search results show multiple hits from the same section (SectionHint field is
 			mcp.Enum("chunk", "section"),
 		),
 		mcp.WithString("kbName",
-			mcp.Description("Pass the same kbName from the search call that produced these results. If you don't know the KB, you may omit it — the system searches all KBs."),
+			mcp.Description(store.ToolReadKbNameDesc()),
 		),
 	)
 
@@ -651,8 +692,11 @@ If search results show multiple hits from the same section (SectionHint field is
 
 func readSection(store *knowledge.Store, docSlug, chunkID string) (string, error) {
 	index, err := store.ReadChunksIndex(docSlug)
-	if err != nil || index == nil {
-		return "", fmt.Errorf("no index found for document %q", docSlug)
+	if err != nil {
+		return "", fmt.Errorf("index corrupted for document %q: %w", docSlug, err)
+	}
+	if index == nil {
+		return "", fmt.Errorf("no CHUNKS index found for document %q (document may not be fully indexed)", docSlug)
 	}
 	for _, entry := range index.Chunks {
 		if entry.ID == chunkID && entry.SectionChunkID != "" {
@@ -723,11 +767,17 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 	meta, metaErr := s.ReadMeta(docSlug)
 	if metaErr != nil {
 		// Degrade gracefully: return content without metadata.
+		feats := knowledge.ExtractEvidenceFeatures(text)
 		data, _ := json.MarshalIndent(knowledge.EvidenceChunk{
-			Document: knowledge.DocumentInfo{ID: docSlug},
-			Location: knowledge.LocationInfo{ChunkID: chunkID},
-			Content:  text,
+			Document:   knowledge.DocumentInfo{ID: docSlug},
+			Location:   knowledge.LocationInfo{ChunkID: chunkID},
+			Content:    text,
 			CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
+			Evidence: knowledge.EvidenceMeta{
+				SourceConfidence: "exact_section",
+				AnswerRelevance:  knowledge.ClassifyAnswerRelevance(feats),
+				Completeness:     knowledge.ClassifyCompleteness(feats),
+			},
 		}, "", "  ")
 		return string(data), nil
 	}
@@ -766,6 +816,15 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 		Content:    text,
 		CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
 	}
+
+	// v4: Feature-based evidence quality signals (pure rules, 0 extra cost).
+	feats := knowledge.ExtractEvidenceFeatures(text)
+	evidence.Evidence = knowledge.EvidenceMeta{
+		SourceConfidence: "exact_section", // read path always targets an exact section/chunk
+		AnswerRelevance:  knowledge.ClassifyAnswerRelevance(feats),
+		Completeness:     knowledge.ClassifyCompleteness(feats),
+	}
+
 	data, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return "", err
@@ -773,13 +832,49 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 	return string(data), nil
 }
 
+// searchMultiKB searches across multiple routed KBs and merges results,
+// picking top-N per KB then re-ranking globally by score (v4 multi-KB).
+func searchMultiKB(store *knowledge.Store, query string, limit int, filter knowledge.SearchFilter, mode string, kbNames []string) ([]knowledge.SearchHit, error) {
+	perKB := limit
+	if len(kbNames) > 1 {
+		// Distribute limit across KBs; ensure at least 3 per KB.
+		perKB = limit / len(kbNames)
+		if perKB < 3 {
+			perKB = 3
+		}
+	}
+
+	var allHits []knowledge.SearchHit
+	for _, kb := range kbNames {
+		kbStore := store.WithKB(kb)
+		var hits []knowledge.SearchHit
+		var err error
+		switch mode {
+		case "hybrid":
+			hits, err = kbStore.HybridSearch(query, perKB, filter)
+		default:
+			hits, err = kbStore.Search(query, perKB, filter)
+		}
+		if err != nil {
+			// Log and continue — one KB failure shouldn't block others.
+			continue
+		}
+		allHits = append(allHits, hits...)
+	}
+
+	// Sort merged results by score descending and truncate to limit.
+	sort.Slice(allHits, func(i, j int) bool {
+		return allHits[i].Score > allHits[j].Score
+	})
+	if len(allHits) > limit {
+		allHits = allHits[:limit]
+	}
+	return allHits, nil
+}
+
 func registerListKBs(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_list_kbs",
-		mcp.WithDescription(`List all knowledge bases with their descriptions.
-
-Returns the count of knowledge bases and each KB's name and description.
-The description is the brief summary provided when the KB was created.
-Knowledge bases without a description will show "(no description)".`),
+		mcp.WithDescription(store.ToolListKBsDesc()),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -811,7 +906,7 @@ Knowledge bases without a description will show "(no description)".`),
 
 func registerList(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_list",
-		mcp.WithDescription(`List all uploaded documents in the knowledge base.`),
+		mcp.WithDescription(store.ToolListDesc()),
 		mcp.WithString("kbName",
 			mcp.Description("Optional knowledge base name. When set, list only documents in that KB. When omitted, list all KBs."),
 		),
@@ -847,7 +942,7 @@ func registerList(s *server.MCPServer, store *knowledge.Store, logger *logging.L
 
 func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_upload",
-		mcp.WithDescription(`Upload a document file or batch-upload a directory into the knowledge base. Supports PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT.`),
+		mcp.WithDescription(store.ToolUploadDesc()),
 		mcp.WithString("filePath",
 			mcp.Description("Path to a single document file. Mutually exclusive with 'directory'."),
 		),
@@ -860,7 +955,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 		mcp.WithString("tags",
 			mcp.Description("Comma-separated tags to assign to the uploaded document(s)."),
 		),
-	mcp.WithString("kbName",
+		mcp.WithString("kbName",
 			mcp.Description("Knowledge base name. Required when no default KB is configured via KNOWLEDGE_MCP_DEFAULT_KB."),
 		),
 	)
@@ -923,7 +1018,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 
 func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_remove",
-		mcp.WithDescription(`Remove a document and all its chunks from the knowledge base.`),
+		mcp.WithDescription(store.ToolRemoveDesc()),
 		mcp.WithString("docSlug",
 			mcp.Required(),
 			mcp.Description("Document slug to remove (from list results)."),

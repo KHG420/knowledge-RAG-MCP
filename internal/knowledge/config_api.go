@@ -3,6 +3,8 @@ package knowledge
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -65,25 +67,25 @@ type configAPIResponse struct {
 	APIToken string `json:"apiToken,omitempty"` // masked
 
 	// Search
-	SearchMode           string  `json:"searchMode"`           // bm25, vector, hybrid
-	RerankEnabled        bool    `json:"rerankEnabled"`
-	RRFK                 int     `json:"rrfK"`
-	AbstractBoost        float64 `json:"abstractBoost"`
-	BM25K1               float64 `json:"bm25K1"`
-	BM25B                float64 `json:"bm25B"`
+	SearchMode    string  `json:"searchMode"` // bm25, vector, hybrid
+	RerankEnabled bool    `json:"rerankEnabled"`
+	RRFK          int     `json:"rrfK"`
+	AbstractBoost float64 `json:"abstractBoost"`
+	BM25K1        float64 `json:"bm25K1"`
+	BM25B         float64 `json:"bm25B"`
 
 	// Chunking
-	ChunkMinChars       int     `json:"chunkMinChars"`
-	ChunkMaxChars       int     `json:"chunkMaxChars"`
-	ChunkOverlapChars   int     `json:"chunkOverlapChars"`
+	ChunkMinChars          int     `json:"chunkMinChars"`
+	ChunkMaxChars          int     `json:"chunkMaxChars"`
+	ChunkOverlapChars      int     `json:"chunkOverlapChars"`
 	ChunkSemanticThreshold float64 `json:"chunkSemanticThreshold"`
 
 	// Upload
 	UploadMaxSizeMB int `json:"uploadMaxSizeMb"`
 
 	// Read-only metadata
-	ConfigPath         string `json:"configPath"`
-	RestartRequired    bool   `json:"restartRequired,omitempty"` // true when changes pending that need restart
+	ConfigPath      string `json:"configPath"`
+	RestartRequired bool   `json:"restartRequired,omitempty"` // true when changes pending that need restart
 }
 
 // handleConfigGet returns the current runtime configuration.
@@ -141,16 +143,16 @@ func (s *Store) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 
 		APIToken: mask(cfg.APIToken),
 
-		SearchMode:     string(s.GetSearchMode()),
-		RerankEnabled:  s.GetRerankEnabled(),
-		RRFK:           s.GetRRFK(),
-		AbstractBoost:  s.AbstractBoost,
-		BM25K1:         s.GetBM25K1(),
-		BM25B:          s.GetBM25B(),
+		SearchMode:    string(s.GetSearchMode()),
+		RerankEnabled: s.GetRerankEnabled(),
+		RRFK:          s.GetRRFK(),
+		AbstractBoost: s.AbstractBoost,
+		BM25K1:        s.GetBM25K1(),
+		BM25B:         s.GetBM25B(),
 
-		ChunkMinChars:         s.GetChunkMinChars(),
-		ChunkMaxChars:         s.GetChunkMaxChars(),
-		ChunkOverlapChars:     s.GetChunkOverlapChars(),
+		ChunkMinChars:          s.GetChunkMinChars(),
+		ChunkMaxChars:          s.GetChunkMaxChars(),
+		ChunkOverlapChars:      s.GetChunkOverlapChars(),
 		ChunkSemanticThreshold: s.GetChunkSemanticThreshold(),
 
 		UploadMaxSizeMB: s.GetUploadMaxSizeMB(),
@@ -165,10 +167,10 @@ func (s *Store) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 // Only the fields that are safe to change at runtime are accepted.
 type configUpdateRequest struct {
 	// Embedder (hot-reloadable)
-	EmbedEndpoint        *string `json:"embedEndpoint,omitempty"`
-	EmbedModel           *string `json:"embedModel,omitempty"`
-	EmbedDim             *int    `json:"embedDim,omitempty"`
-	EmbedAPIKey          *string `json:"embedApiKey,omitempty"`
+	EmbedEndpoint *string `json:"embedEndpoint,omitempty"`
+	EmbedModel    *string `json:"embedModel,omitempty"`
+	EmbedDim      *int    `json:"embedDim,omitempty"`
+	EmbedAPIKey   *string `json:"embedApiKey,omitempty"`
 
 	// Reranker (hot-reloadable)
 	RerankEndpoint       *string `json:"rerankEndpoint,omitempty"`
@@ -196,12 +198,12 @@ type configUpdateRequest struct {
 	APIToken *string `json:"apiToken,omitempty"`
 
 	// Search (hot-reloadable)
-	SearchMode     *string  `json:"searchMode,omitempty"`
-	RerankEnabled  *bool    `json:"rerankEnabled,omitempty"`
-	RRFK           *int     `json:"rrfK,omitempty"`
-	AbstractBoost  *float64 `json:"abstractBoost,omitempty"`
-	BM25K1         *float64 `json:"bm25K1,omitempty"`
-	BM25B          *float64 `json:"bm25B,omitempty"`
+	SearchMode    *string  `json:"searchMode,omitempty"`
+	RerankEnabled *bool    `json:"rerankEnabled,omitempty"`
+	RRFK          *int     `json:"rrfK,omitempty"`
+	AbstractBoost *float64 `json:"abstractBoost,omitempty"`
+	BM25K1        *float64 `json:"bm25K1,omitempty"`
+	BM25B         *float64 `json:"bm25B,omitempty"`
 
 	// Chunking (hot-reloadable)
 	ChunkMinChars          *int     `json:"chunkMinChars,omitempty"`
@@ -535,4 +537,109 @@ func parseIntParam(r *http.Request, key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+// ── Tool Descriptions API ──
+
+// toolDescriptionsResponse wraps current custom descriptions plus their
+// built-in defaults so the UI can show both side-by-side.
+type toolDescriptionsResponse struct {
+	Custom   ToolDescriptions `json:"custom"`   // user-overridden values (empty = use default)
+	Defaults ToolDescriptions `json:"defaults"` // hardcoded defaults for reference
+}
+
+func getDefaultToolDescriptions() ToolDescriptions {
+	return ToolDescriptions{
+		SearchDesc:       DefaultSearchDesc,
+		SearchKbNameDesc: DefaultSearchKbNameDesc,
+		ReadDesc:         DefaultReadDesc,
+		ReadKbNameDesc:   DefaultReadKbNameDesc,
+		ListDesc:         DefaultListDesc,
+		ListKBsDesc:      DefaultListKBsDesc,
+		UploadDesc:       DefaultUploadDesc,
+		RemoveDesc:       DefaultRemoveDesc,
+	}
+}
+
+func (s *Store) handleToolDescriptionsGet(w http.ResponseWriter, r *http.Request) {
+	resp := toolDescriptionsResponse{
+		Custom:   s.GetToolDescriptions(),
+		Defaults: getDefaultToolDescriptions(),
+	}
+	writeManageJSON(w, http.StatusOK, resp)
+}
+
+func (s *Store) handleToolDescriptionsPut(w http.ResponseWriter, r *http.Request) {
+	var td ToolDescriptions
+	if err := json.NewDecoder(r.Body).Decode(&td); err != nil {
+		writeManageError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Persist to runtime settings.
+	s.SetToolDescriptions(td)
+
+	// Persist to TOML config file.
+	if s.config != nil {
+		s.config.ToolSearchDesc = td.SearchDesc
+		s.config.ToolSearchKbNameDesc = td.SearchKbNameDesc
+		s.config.ToolReadDesc = td.ReadDesc
+		s.config.ToolReadKbNameDesc = td.ReadKbNameDesc
+		s.config.ToolListDesc = td.ListDesc
+		s.config.ToolListKBsDesc = td.ListKBsDesc
+		s.config.ToolUploadDesc = td.UploadDesc
+		s.config.ToolRemoveDesc = td.RemoveDesc
+
+		if s.configPath != "" {
+			if err := config.Save(s.configPath, s.config); err != nil {
+				s.logger.WithModule("manage").Warnf("tool-descriptions: save config failed: %v", err)
+			}
+		}
+	}
+
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"warning": "工具描述已保存到配置文件。重启 MCP 服务后生效。",
+	})
+}
+
+// handleRestart triggers a service restart. It returns immediately and then
+// spawns a goroutine that waits 500ms before executing the restart — giving
+// the HTTP response time to flush.
+func (s *Store) handleRestart(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+
+	writeManageJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "正在重启 MCP 服务，请稍候…",
+	})
+
+	// Flush the response before we kill ourselves.
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+
+		// Try service-manager.sh first (in the same dir as the binary).
+		execPath, _ := os.Executable()
+		scriptDir := filepath.Dir(execPath)
+		script := filepath.Join(scriptDir, "service-manager.sh")
+
+		if _, err := os.Stat(script); err == nil {
+			log.Infof("restart: executing %s restart knowledge", script)
+			cmd := exec.Command("bash", script, "restart", "knowledge")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				log.Errorf("restart: script failed: %v, falling back to exit", err)
+				os.Exit(0)
+			}
+			return
+		}
+
+		log.Infof("restart: no service-manager.sh found, exiting (rely on process manager to restart)")
+		os.Exit(0)
+	}()
 }

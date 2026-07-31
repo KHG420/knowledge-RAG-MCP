@@ -1,0 +1,103 @@
+[
+  {
+    "id": "q001",
+    "question": "什么是同步横摇？",
+    "type": "concept_explanation",
+    "complexity": "simple",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["synchronous rolling", "encounter frequency", "natural frequency", "beam sea", "primary resonance"],
+    "min_relevant_chunks": 3
+  },
+  {
+    "id": "q002",
+    "question": "Ikeda方法包含哪些阻尼成分？",
+    "type": "method_detail",
+    "complexity": "medium",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["friction damping", "eddy damping", "wave damping", "lift damping", "bilge keel damping"],
+    "min_relevant_chunks": 5
+  },
+  {
+    "id": "q003",
+    "question": "比较Ikeda方法和Himeno方法在非线性横摇阻尼预测中的差异",
+    "type": "comparison",
+    "complexity": "complex",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["Ikeda", "Himeno", "nonlinear roll damping", "comparison", "prediction accuracy"],
+    "min_relevant_chunks": 6
+  },
+  {
+    "id": "q004",
+    "question": "船舶加装舭龙骨后为什么横摇降低但阻力增加？",
+    "type": "mechanism_explanation",
+    "complexity": "medium",
+    "multi_kb": true,
+    "expected_kb": ["横摇论文", "阻力论文"],
+    "expected_keywords": ["bilge keel", "roll damping", "resistance increase", "eddy making", "drag", "appendage"],
+    "min_relevant_chunks": 5
+  },
+  {
+    "id": "q005",
+    "question": "参数横摇的发生条件是什么？",
+    "type": "concept_explanation",
+    "complexity": "simple",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["parametric rolling", "Mathieu instability", "GM variation", "encounter frequency", "twice natural frequency"],
+    "min_relevant_chunks": 4
+  },
+  {
+    "id": "q006",
+    "question": "横摇阻尼的非线性特性如何影响船舶在横浪中的运动响应？",
+    "type": "mechanism_explanation",
+    "complexity": "medium",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["nonlinear damping", "roll response", "beam sea", "quadratic damping", "cubic damping", "equivalent linearization"],
+    "min_relevant_chunks": 4
+  },
+  {
+    "id": "q007",
+    "question": "Ikeda和Himeno阻尼模型预测能力分析",
+    "type": "comparison",
+    "complexity": "complex",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["Ikeda", "Himeno", "damping model", "prediction", "comparison", "accuracy"],
+    "min_relevant_chunks": 5
+  },
+  {
+    "id": "q008",
+    "question": "大幅横摇的非线性动力学分析方法",
+    "type": "method_detail",
+    "complexity": "medium",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["large amplitude roll", "nonlinear dynamics", "bifurcation", "phase plane", "Melnikov method"],
+    "min_relevant_chunks": 4
+  },
+  {
+    "id": "q009",
+    "question": "横摇减摇装置的种类及其工作原理",
+    "type": "concept_explanation",
+    "complexity": "medium",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["bilge keel", "fin stabilizer", "anti-roll tank", "gyrostabilizer", "roll reduction"],
+    "min_relevant_chunks": 5
+  },
+  {
+    "id": "q010",
+    "question": "船舶在横浪中为什么会出现大幅运动？",
+    "type": "mechanism_explanation",
+    "complexity": "medium",
+    "expected_kb": "横摇论文",
+    "expected_keywords": ["beam sea", "large amplitude roll", "resonance", "encounter frequency", "natural frequency"],
+    "min_relevant_chunks": 4
+  },
+  {
+    "id": "q011",
+    "question": "舭龙骨降低横摇但增加阻力的机理是什么？",
+    "type": "mechanism_explanation",
+    "complexity": "medium",
+    "multi_kb": true,
+    "expected_kb": ["横摇论文", "阻力论文"],
+    "expected_keywords": ["bilge keel", "roll damping", "resistance", "appendage drag", "eddy making", "pressure distribution", "flow separation"],
+    "min_relevant_chunks": 5
+  }
+]

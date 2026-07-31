@@ -1,8 +1,8 @@
 // Package knowledge implements a local knowledge base with pluggable storage backends.
 //
 // StorageBackend abstracts all persistent storage operations so the knowledge base
-// can be backed by either the local filesystem (FileBackend) or a MySQL-compatible
-// database (MySQLBackend). The Store struct delegates all I/O to its configured backend.
+// is backed by a MySQL-compatible database (MySQLBackend). The Store struct
+// delegates all I/O to its configured backend.
 package knowledge
 
 // StorageBackend defines the interface for all persistent storage operations.
@@ -51,6 +51,7 @@ type StorageBackend interface {
 
 	// ── Full raw text & source file ──────────────────────────────────────────
 	WriteRawText(kbName, slug, text string) error
+	ReadRawText(kbName, slug string) (string, error)
 	WriteSource(kbName, slug string, data []byte, ext string) error
 
 	// ── INDEX.md (KB-level document index) ───────────────────────────────────

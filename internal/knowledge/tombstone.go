@@ -12,9 +12,9 @@
 //     the new version takes over.
 //
 // This prevents:
-//  - "Zombie chunks" — a concurrent search seeing chunks from a deleted doc
-//  - Lost deletes — a delete message arriving before a previous upload
-//    finishes (tombstone acts as a barrier)
+//   - "Zombie chunks" — a concurrent search seeing chunks from a deleted doc
+//   - Lost deletes — a delete message arriving before a previous upload
+//     finishes (tombstone acts as a barrier)
 package knowledge
 
 import (
@@ -29,8 +29,8 @@ import (
 // TombstoneManager handles tombstone records for the knowledge base.
 // It is owned by Store and provides the delete-then-clean lifecycle.
 type TombstoneManager struct {
-	dir    string           // directory where TOMBSTONES.json is stored
-	mu     sync.RWMutex
+	dir     string // directory where TOMBSTONES.json is stored
+	mu      sync.RWMutex
 	records map[string]*Tombstone // keyed by doc slug
 }
 

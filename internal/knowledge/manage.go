@@ -78,6 +78,13 @@ func (s *Store) StartManageServer(port string) error {
 	mux.HandleFunc("GET /api/config", s.handleConfigGet)
 	mux.HandleFunc("PUT /api/config", s.handleConfigPut)
 
+	// API: tool descriptions
+	mux.HandleFunc("GET /api/tool-descriptions", s.handleToolDescriptionsGet)
+	mux.HandleFunc("PUT /api/tool-descriptions", s.handleToolDescriptionsPut)
+
+	// API: restart service
+	mux.HandleFunc("POST /api/restart", s.handleRestart)
+
 	// API: knowledge-bases management
 	mux.HandleFunc("GET /api/knowledge-bases", func(w http.ResponseWriter, r *http.Request) {
 		kbs, err := s.ListKBsInfo()
@@ -137,10 +144,10 @@ func (s *Store) StartManageServer(port string) error {
 	// API: model info (embedder + reranker)
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
 		writeManageJSON(w, http.StatusOK, map[string]any{
-			"embedder":            s.EmbedderInfo(),
-			"reranker":            s.RerankerInfo(),
+			"embedder":             s.EmbedderInfo(),
+			"reranker":             s.RerankerInfo(),
 			"rerankCandidateLimit": s.RerankCandidateLimit(),
-			"docParser":           DocParserInfo(),
+			"docParser":            DocParserInfo(),
 		})
 	})
 
@@ -164,6 +171,7 @@ func (s *Store) StartManageServer(port string) error {
 
 	// API: vector statistics and rebuild
 	mux.HandleFunc("GET /api/vector-stats", s.handleVectorStats)
+	mux.HandleFunc("GET /api/vector-index", s.handleVectorIndexInfo)
 	mux.HandleFunc("POST /api/rebuild-vectors", s.handleRebuildVectors)
 
 	// API: GPU scheduler status
@@ -190,6 +198,20 @@ func (s *Store) StartManageServer(port string) error {
 		defer ticker.Stop()
 		for range ticker.C {
 			s.TaskManager().Cleanup(30 * time.Minute)
+		}
+	}()
+
+	// Background cleanup of expired tombstones every hour.
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleaned, err := s.CleanExpiredTombstones()
+			if err != nil {
+				s.logger.WithModule("manage").Errorf("tombstone cleanup failed: %v", err)
+			} else if cleaned > 0 {
+				s.logger.WithModule("manage").Infof("tombstone cleanup: %d expired document(s) physically deleted", cleaned)
+			}
 		}
 	}()
 
@@ -224,18 +246,19 @@ func (s *Store) StartManageServer(port string) error {
 // --- API handlers ---
 
 type manageDocItem struct {
-	Slug       string   `json:"slug"`
-	Name       string   `json:"name"`
-	SourceType string   `json:"sourceType"`
-	ChunkCount int      `json:"chunkCount"`
-	TotalChars int      `json:"totalChars"`
-	AddedAt    string   `json:"addedAt"`
-	Title      string   `json:"title,omitempty"`
-	Authors    []string `json:"authors,omitempty"`
-	IsPaper    bool     `json:"isPaper"`
-	Tags       []string `json:"tags"`
-	HasVectors bool     `json:"hasVectors"`
-	VectorDim  int      `json:"vectorDim,omitempty"`
+	Slug         string   `json:"slug"`
+	Name         string   `json:"name"`
+	SourceType   string   `json:"sourceType"`
+	ChunkCount   int      `json:"chunkCount"`
+	TotalChars   int      `json:"totalChars"`
+	AddedAt      string   `json:"addedAt"`
+	Title        string   `json:"title,omitempty"`
+	Authors      []string `json:"authors,omitempty"`
+	IsPaper      bool     `json:"isPaper"`
+	Tags         []string `json:"tags"`
+	HasVectors   bool     `json:"hasVectors"`
+	VectorDim    int      `json:"vectorDim,omitempty"`
+	IsTombstoned bool     `json:"isTombstoned"`
 }
 
 func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
@@ -304,16 +327,17 @@ func (s *Store) handleManageList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, manageDocItem{
-			Slug:       d.Slug,
-			Name:       d.OriginalName,
-			SourceType: d.SourceType,
-			ChunkCount: d.ChunkCount,
-			TotalChars: d.TotalChars,
-			AddedAt:    d.AddedAt.Format(time.RFC3339),
-			Title:      d.Title,
-			Authors:    d.Authors,
-			IsPaper:    d.IsPaper,
-			Tags:       d.Tags,
+			Slug:         d.Slug,
+			Name:         d.OriginalName,
+			SourceType:   d.SourceType,
+			ChunkCount:   d.ChunkCount,
+			TotalChars:   d.TotalChars,
+			AddedAt:      d.AddedAt.Format(time.RFC3339),
+			Title:        d.Title,
+			Authors:      d.Authors,
+			IsPaper:      d.IsPaper,
+			Tags:         d.Tags,
+			IsTombstoned: s.IsTombstoned(d.Slug),
 		})
 		totalChunks += d.ChunkCount
 		if d.IsPaper {
@@ -612,13 +636,14 @@ func (s *Store) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 		writeManageError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	status, slug, errMsg := task.Snapshot()
 	writeManageJSON(w, http.StatusOK, map[string]any{
 		"id":        task.ID,
 		"fileName":  task.FileName,
 		"kbName":    task.KBName,
-		"status":    task.Status,
-		"slug":      task.Slug,
-		"error":     task.Error,
+		"status":    status,
+		"slug":      slug,
+		"error":     errMsg,
 		"createdAt": task.CreatedAt,
 		"events":    task.Events(),
 	})
@@ -971,12 +996,12 @@ func (s *Store) handleTombstoneList(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("TombstoneList: kb=%q count=%d", s.kbName, len(records))
 
 	type tombstoneItem struct {
-		DocSlug     string `json:"docSlug"`
-		DeletedAt   string `json:"deletedAt"`
-		TTLSeconds  int64  `json:"ttlSeconds"`
-		Expired     bool   `json:"expired"`
-		Reason      string `json:"reason,omitempty"`
-		DocVersion  int    `json:"docVersion"`
+		DocSlug    string `json:"docSlug"`
+		DeletedAt  string `json:"deletedAt"`
+		TTLSeconds int64  `json:"ttlSeconds"`
+		Expired    bool   `json:"expired"`
+		Reason     string `json:"reason,omitempty"`
+		DocVersion int    `json:"docVersion"`
 	}
 	now := time.Now()
 	items := make([]tombstoneItem, len(records))
@@ -1217,6 +1242,61 @@ func (s *Store) handleVectorStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeManageJSON(w, http.StatusOK, stats)
+}
+
+// handleVectorIndexInfo returns HNSW index metadata combined with vector coverage stats.
+func (s *Store) handleVectorIndexInfo(w http.ResponseWriter, r *http.Request) {
+	log := s.logger.WithModule("manage")
+	kb := r.URL.Query().Get("kb")
+	if kb != "" {
+		s = s.WithKB(kb)
+	}
+	log.Infof("VectorIndexInfo: kb=%q", s.kbName)
+
+	resp := map[string]any{
+		"kbName": s.kbName,
+	}
+
+	// HNSW index metadata — try in-memory first, fall back to disk.
+	s.mu.Lock()
+	idx := s.vectorIndex
+	if idx == nil {
+		// Not yet loaded for this KB; try the persisted VECTOR.gob.
+		loaded, loadErr := s.loadVectorIndex()
+		if loadErr != nil {
+			log.Warnf("VectorIndexInfo: load VECTOR.gob failed: %v (path=%s)", loadErr, s.vectorIndexPath())
+		}
+		if loaded != nil {
+			s.vectorIndex = loaded
+			idx = loaded
+			log.Infof("VectorIndexInfo: loaded VECTOR.gob (%d vectors)", loaded.Len())
+		} else {
+			log.Infof("VectorIndexInfo: VECTOR.gob not found (path=%s)", s.vectorIndexPath())
+		}
+	}
+	s.mu.Unlock()
+	if idx != nil {
+		resp["index"] = idx.Stats()
+	} else {
+		resp["index"] = nil
+	}
+
+	// Vector coverage stats.
+	stats, err := s.GetVectorStats()
+	if err != nil {
+		log.Errorf("VectorIndexInfo: stats failed: %v", err)
+		// Still return index info even if stats fail.
+		writeManageJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp["stats"] = stats
+
+	// Embedder info.
+	if s.embedder != nil {
+		resp["embedder"] = s.EmbedderInfo()
+	}
+
+	writeManageJSON(w, http.StatusOK, resp)
 }
 
 // ── Vector rebuild handler ─────────────────────────────────────────────────

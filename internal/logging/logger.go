@@ -150,7 +150,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 type nopCloser struct{}
 
 func (nopCloser) Write(p []byte) (int, error) { return len(p), nil }
-func (nopCloser) Close() error               { return nil }
+func (nopCloser) Close() error                { return nil }
 
 // Ensure standard library log is imported (used by Write's %s formatting).
 var _ = log.New(nopCloser{}, "", 0)

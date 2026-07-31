@@ -1,0 +1,161 @@
+# 船舶运动领域同义词词典
+# 格式: canonical_term → {exact_synonyms, related_terms}
+#
+# exact_synonyms: BM25 搜索时使用的严格同义词
+# related_terms:   只加入 Vector 语义搜索，不影响 BM25 精度
+#
+# 新增领域: 在此目录新增 .yaml 文件即可，无需重新编译
+
+同步横摇:
+  exact_synonyms:
+    - synchronous rolling
+    - synchronous roll
+    - primary resonance
+    - roll resonance
+  related_terms:
+    - encounter frequency
+    - natural frequency
+    - beam sea
+
+参数横摇:
+  exact_synonyms:
+    - parametric rolling
+    - parametric roll
+    - Mathieu instability
+    - parametric resonance
+  related_terms:
+    - GM variation
+    - nonlinear dynamics
+
+横摇阻尼:
+  exact_synonyms:
+    - roll damping
+    - damping coefficient
+  related_terms:
+    - Ikeda
+    - bilge keel
+    - eddy damping
+    - friction damping
+    - wave damping
+
+遭遇频率:
+  exact_synonyms:
+    - encounter frequency
+    - frequency of encounter
+    - wave encounter frequency
+  related_terms:
+    - wave frequency
+    - heading angle
+    - ship speed
+
+自然频率:
+  exact_synonyms:
+    - natural frequency
+    - eigenfrequency
+    - natural roll frequency
+    - undamped natural frequency
+  related_terms:
+    - roll period
+    - GM
+
+非线性阻尼:
+  exact_synonyms:
+    - nonlinear damping
+    - quadratic damping
+    - cubic damping
+  related_terms:
+    - equivalent linearization
+    - large amplitude roll
+
+舭龙骨:
+  exact_synonyms:
+    - bilge keel
+    - bilge keels
+  related_terms:
+    - roll damping
+    - resistance increase
+    - eddy making
+
+减摇鳍:
+  exact_synonyms:
+    - fin stabilizer
+    - anti-roll fin
+    - stabilizer fin
+  related_terms:
+    - active roll control
+
+减摇水舱:
+  exact_synonyms:
+    - anti-roll tank
+    - roll tank
+    - U-tube tank
+  related_terms:
+    - passive roll control
+    - free surface
+
+倾覆:
+  exact_synonyms:
+    - capsize
+    - capsizing
+    - overturning
+    - loss of stability
+  related_terms:
+    - large amplitude roll
+    - safety
+
+横甩:
+  exact_synonyms:
+    - broaching
+    - broaching-to
+  related_terms:
+    - following sea
+    - manoeuvring
+
+横浪:
+  exact_synonyms:
+    - beam sea
+    - beam waves
+    - transverse waves
+  related_terms:
+    - synchronous rolling
+    - parametric rolling
+
+耐波性:
+  exact_synonyms:
+    - seakeeping
+    - seaworthiness
+    - seakeeping performance
+  related_terms:
+    - roll
+    - pitch
+    - heave
+
+非线性动力学:
+  exact_synonyms:
+    - nonlinear dynamics
+    - nonlinear analysis
+  related_terms:
+    - bifurcation
+    - Melnikov method
+    - chaos
+
+CFD:
+  exact_synonyms:
+    - computational fluid dynamics
+    - 计算流体力学
+    - 数值模拟
+  related_terms:
+    - RANS
+    - free surface
+    - overset grid
+
+Ikeda:
+  exact_synonyms:
+    - Ikeda method
+    - Ikeda's method
+  related_terms:
+    - roll damping
+    - friction damping
+    - eddy damping
+    - wave damping
+    - lift damping

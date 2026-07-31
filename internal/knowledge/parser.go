@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"knowledge-mcp/internal/logging"
 	"github.com/tsawler/tabula"
+	"knowledge-mcp/internal/logging"
 )
 
 // ---------------------------------------------------------------------------

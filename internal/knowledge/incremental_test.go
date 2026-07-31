@@ -678,10 +678,10 @@ func TestComputeChunkID_Unicode(t *testing.T) {
 	ids := map[string]string{}
 	contents := []string{
 		"Hello, 世界！🌍",
-		"Hello, 世界！🌎", // different emoji
-		"",                // empty
+		"Hello, 世界！🌎",               // different emoji
+		"",                          // empty
 		strings.Repeat("x", 100000), // very long
-		"\x00\x01\x02",   // binary
+		"\x00\x01\x02",              // binary
 	}
 	for _, c := range contents {
 		id := ComputeChunkID(c)
@@ -987,102 +987,6 @@ func TestTombstoneManager_GetReturnsCopy(t *testing.T) {
 	ts.TTLSeconds = originalTTL
 }
 
-// ── AtomicIndex extended ──────────────────────────────────────────────────────
-
-func TestAtomicIndexBuilder_RollbackMissingRetire(t *testing.T) {
-	dir := t.TempDir()
-	docDir := filepath.Join(dir, "doc1")
-	os.MkdirAll(filepath.Join(docDir, "chunks"), 0755)
-	builder := NewAtomicIndexBuilder(docDir)
-
-	err := builder.Rollback(1)
-	if err == nil {
-		t.Error("Rollback(v1) should error (no previous version)")
-	}
-}
-
-func TestAtomicIndexBuilder_RollbackNoChunks(t *testing.T) {
-	dir := t.TempDir()
-	docDir := filepath.Join(dir, "doc1")
-	retireDir := filepath.Join(docDir, "versions", "v1")
-	os.MkdirAll(retireDir, 0755) // No chunks inside!
-	builder := NewAtomicIndexBuilder(docDir)
-
-	err := builder.Rollback(2)
-	if err == nil {
-		t.Error("Rollback should error when retire dir has no chunks/")
-	}
-}
-
-func TestAtomicIndexBuilder_PromoteCleanRollback(t *testing.T) {
-	dir := t.TempDir()
-	docDir := filepath.Join(dir, "doc1")
-
-	// Create initial "active" content.
-	activeChunks := filepath.Join(docDir, "chunks")
-	os.MkdirAll(activeChunks, 0755)
-	os.WriteFile(filepath.Join(activeChunks, "000.md"), []byte("old chunk"), 0644)
-	os.WriteFile(filepath.Join(docDir, "CHUNKS.toml"), []byte("[old]"), 0644)
-	os.WriteFile(filepath.Join(docDir, "MANIFEST.json"), []byte(`{"version":1}`), 0644)
-
-	builder := NewAtomicIndexBuilder(docDir)
-
-	// Prepare staging.
-	if err := builder.PrepareStaging(); err != nil {
-		t.Fatalf("PrepareStaging: %v", err)
-	}
-	// Write new chunk to staging.
-	os.WriteFile(builder.StagingChunkPath("new-chunk"), []byte("new content"), 0644)
-	os.WriteFile(builder.StagingChunksIndexPath(), []byte("[new]"), 0644)
-	os.WriteFile(builder.StagingManifestPath(), []byte(`{"version":2}`), 0644)
-
-	// Promote.
-	if err := builder.PromoteAtomically(2); err != nil {
-		t.Fatalf("PromoteAtomically: %v", err)
-	}
-
-	// Verify active is now v2 content.
-	if data, err := os.ReadFile(filepath.Join(docDir, "MANIFEST.json")); err != nil || string(data) != `{"version":2}` {
-		t.Errorf("after promote, manifest = %q, want version 2", string(data))
-	}
-
-	// Verify v1 is in versions/.
-	if _, err := os.Stat(filepath.Join(docDir, "versions", "v1", "chunks", "000.md")); err != nil {
-		t.Error("v1 chunks should exist in versions/")
-	}
-
-	// Rollback.
-	if err := builder.Rollback(2); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-
-	// Verify active is back to v1.
-	if data, err := os.ReadFile(filepath.Join(docDir, "MANIFEST.json")); err != nil || string(data) != `{"version":1}` {
-		t.Errorf("after rollback, manifest = %q, want version 1 (error: %v)", string(data), err)
-	}
-}
-
-func TestAtomicIndexBuilder_StagingCleanup(t *testing.T) {
-	dir := t.TempDir()
-	docDir := filepath.Join(dir, "doc1")
-	builder := NewAtomicIndexBuilder(docDir)
-
-	// Create some junk in staging.
-	stagingDir := filepath.Join(docDir, ".staging")
-	os.MkdirAll(filepath.Join(stagingDir, "chunks"), 0755)
-	os.WriteFile(filepath.Join(stagingDir, "junk.txt"), []byte("leftover"), 0644)
-
-	// PrepareStaging should clean it.
-	if err := builder.PrepareStaging(); err != nil {
-		t.Fatalf("PrepareStaging: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(stagingDir, "junk.txt")); !os.IsNotExist(err) {
-		t.Error("PrepareStaging should remove leftover staging files")
-	}
-}
-
-// ── Reconcile extended ────────────────────────────────────────────────────────
-
 func TestReconciler_ValidateManifestNil(t *testing.T) {
 	r := NewReconciler()
 	if r.ValidateManifest(nil) {
@@ -1137,8 +1041,12 @@ func TestReconciler_HasErrorsFatal(t *testing.T) {
 // ── Store incremental integration ─────────────────────────────────────────────
 
 func TestStore_WriteChunksAtomic(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore().WithDataDir(dir)
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	store.dataDir = t.TempDir()
+	if err := store.CreateKB("", ""); err != nil {
+		t.Fatalf("CreateKB: %v", err)
+	}
 	if err := store.EnsureDir(); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
@@ -1175,8 +1083,12 @@ func TestStore_WriteChunksAtomic(t *testing.T) {
 }
 
 func TestStore_TombstoneLifecycle(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore().WithDataDir(dir)
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	store.dataDir = t.TempDir()
+	if err := store.CreateKB("", ""); err != nil {
+		t.Fatalf("CreateKB: %v", err)
+	}
 	if err := store.EnsureDir(); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
@@ -1213,8 +1125,9 @@ func TestStore_TombstoneLifecycle(t *testing.T) {
 }
 
 func TestStore_TombstoneNotTombstoned(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore().WithDataDir(dir)
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	store.dataDir = t.TempDir()
 	if err := store.EnsureDir(); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
@@ -1227,8 +1140,12 @@ func TestStore_TombstoneNotTombstoned(t *testing.T) {
 }
 
 func TestStore_ReconcileEmptyKB(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore().WithDataDir(dir)
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	store.dataDir = t.TempDir()
+	if err := store.CreateKB("", ""); err != nil {
+		t.Fatalf("CreateKB: %v", err)
+	}
 	if err := store.EnsureDir(); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
@@ -1258,8 +1175,8 @@ func TestValidateComponent_PathTraversal(t *testing.T) {
 		{"normal-doc-name", true},
 		{"doc-2026-01-01", true},
 		{"", true},
-		{"a..b", false},        // contains ".."
-		{".", true},            // "." is a valid path component (no ".." substring)
+		{"a..b", false}, // contains ".."
+		{".", true},     // "." is a valid path component (no ".." substring)
 	}
 	for _, tt := range tests {
 		err := validateComponent(tt.input)

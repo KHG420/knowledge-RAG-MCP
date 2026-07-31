@@ -27,13 +27,16 @@
 // reuses the internal/retrieval BM25 engine already in use by history/memory.
 package knowledge
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // DocumentMeta is the per-document metadata persisted in meta.json.
 type DocumentMeta struct {
 	OriginalName string    `json:"original_name"`
-	Slug         string    `json:"slug"`          // unique identifier, e.g. "2501-05366v1-20260713-094555"
-	SourceType   string    `json:"source_type"`   // e.g. "pdf", "docx", "md", "txt"
+	Slug         string    `json:"slug"`        // unique identifier, e.g. "2501-05366v1-20260713-094555"
+	SourceType   string    `json:"source_type"` // e.g. "pdf", "docx", "md", "txt"
 	AddedAt      time.Time `json:"added_at"`
 	ChunkCount   int       `json:"chunk_count"`
 	TotalChars   int       `json:"total_chars"`
@@ -54,9 +57,9 @@ type DocumentInfo struct {
 
 // LocationInfo pinpoints where a chunk sits inside its source document.
 type LocationInfo struct {
-	ChunkID   string `json:"chunk_id"`            // e.g. "005"
-	Section   string `json:"section,omitempty"`   // nearest markdown heading
-	Offset    int    `json:"offset,omitempty"`    // character offset in the original text (0-based)
+	ChunkID   string `json:"chunk_id"`             // e.g. "005"
+	Section   string `json:"section,omitempty"`    // nearest markdown heading
+	Offset    int    `json:"offset,omitempty"`     // character offset in the original text (0-based)
 	PageStart int    `json:"page_start,omitempty"` // PDF page number (future; requires PDF parser support)
 	PageEnd   int    `json:"page_end,omitempty"`   // PDF page number (future; requires PDF parser support)
 }
@@ -73,7 +76,112 @@ type EvidenceChunk struct {
 	Document   DocumentInfo `json:"document"`
 	Location   LocationInfo `json:"location"`
 	Content    string       `json:"content"`
-	CitationID string       `json:"citation_id"` // stable reference, e.g. "{slug}_{chunkID}"
+	CitationID string       `json:"citation_id"`        // stable reference, e.g. "{slug}_{chunkID}"
+	Evidence   EvidenceMeta `json:"evidence,omitempty"` // v4: feature-based evidence quality metadata
+}
+
+// EvidenceMeta records lightweight evidence-quality signals computed from the
+// chunk text with pure text rules (no LLM, no embedding).
+type EvidenceMeta struct {
+	SourceConfidence string `json:"source_confidence"` // "exact_section" | "related_section" | "semantic_match"
+	AnswerRelevance  string `json:"answer_relevance"`  // "high" | "medium" | "low"
+	Completeness     string `json:"completeness"`      // "complete" | "partial" | "context_only"
+}
+
+// evidenceFeatures captures structural signals extracted from a chunk of text.
+// All fields are determined by lightweight string matching — zero extra API calls.
+type evidenceFeatures struct {
+	hasDefinition   bool // "是"、"定义"、"指"、"refers to"、"defined as"
+	hasMechanism    bool // "因为"、"由于"、"导致"、"because"、"机理"
+	hasQuantitative bool // digit count ≥3 or unit symbols present
+	hasConclusion   bool // "因此"、"结果表明"、"thus"、"therefore"
+}
+
+// ExtractEvidenceFeatures scans text and returns structural content signals.
+func ExtractEvidenceFeatures(text string) evidenceFeatures {
+	lower := strings.ToLower(text)
+	digitCount := 0
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			digitCount++
+		}
+	}
+	return evidenceFeatures{
+		hasDefinition: strings.Contains(lower, "是") ||
+			strings.Contains(lower, "定义") ||
+			strings.Contains(lower, "指") ||
+			strings.Contains(lower, "refers to") ||
+			strings.Contains(lower, "defined as") ||
+			strings.Contains(lower, "称为") ||
+			strings.Contains(lower, "即"),
+		hasMechanism: strings.Contains(lower, "因为") ||
+			strings.Contains(lower, "由于") ||
+			strings.Contains(lower, "导致") ||
+			strings.Contains(lower, "because") ||
+			strings.Contains(lower, "机理") ||
+			strings.Contains(lower, "机制") ||
+			strings.Contains(lower, "原理") ||
+			strings.Contains(lower, "due to") ||
+			strings.Contains(lower, "caused by"),
+		hasQuantitative: digitCount >= 3 ||
+			strings.Contains(lower, "m/s") ||
+			strings.Contains(lower, "deg") ||
+			strings.Contains(lower, "n·m") ||
+			strings.Contains(lower, "rad/s") ||
+			strings.Contains(lower, "mm") ||
+			strings.Contains(lower, "kg") ||
+			strings.Contains(lower, "kn") ||
+			strings.Contains(lower, "%") ||
+			strings.Contains(lower, "°"),
+		hasConclusion: strings.Contains(lower, "因此") ||
+			strings.Contains(lower, "结果表明") ||
+			strings.Contains(lower, "thus") ||
+			strings.Contains(lower, "therefore") ||
+			strings.Contains(lower, "综上") ||
+			strings.Contains(lower, "conclusion") ||
+			strings.Contains(lower, "最后"),
+	}
+}
+
+// ClassifyCompleteness maps evidenceFeatures to a completeness label.
+//
+//	"complete"      — has definition AND (mechanism OR quantitative data)
+//	"partial"       — has definition OR mechanism
+//	"context_only"  — none of the above (pure descriptive text)
+func ClassifyCompleteness(feats evidenceFeatures) string {
+	if feats.hasDefinition && (feats.hasMechanism || feats.hasQuantitative) {
+		return "complete"
+	}
+	if feats.hasDefinition || feats.hasMechanism {
+		return "partial"
+	}
+	return "context_only"
+}
+
+// ClassifyAnswerRelevance estimates how directly the chunk answers a question
+// based on the presence of structural evidence signals.
+func ClassifyAnswerRelevance(feats evidenceFeatures) string {
+	count := 0
+	if feats.hasDefinition {
+		count++
+	}
+	if feats.hasMechanism {
+		count++
+	}
+	if feats.hasQuantitative {
+		count++
+	}
+	if feats.hasConclusion {
+		count++
+	}
+	switch {
+	case count >= 3:
+		return "high"
+	case count >= 2:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 // ChunkWithMeta is a chunk bundled with position metadata: which section of the

@@ -11,11 +11,11 @@ import (
 
 // Chunk parameter defaults (overridable at runtime via SetChunkParams).
 var (
-	chunkShortChunk            = 200   // chars below this are merged into the preceding chunk
-	chunkLongChunk             = 2000  // chars above this are re-split on sentence boundaries
-	chunkFragmentThreshold     = 60    // chars below this are merged into the preceding chunk after splitLong
-	chunkOverlapChars          = 200   // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
-	chunkSemanticThreshold     = 0.75  // cosine similarity threshold for semantic chunk merging
+	chunkShortChunk        = 200  // chars below this are merged into the preceding chunk
+	chunkLongChunk         = 2000 // chars above this are re-split on sentence boundaries
+	chunkFragmentThreshold = 60   // chars below this are merged into the preceding chunk after splitLong
+	chunkOverlapChars      = 200  // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
+	chunkSemanticThreshold = 0.75 // cosine similarity threshold for semantic chunk merging
 )
 
 // PageBreak records the character offset where a new PDF page starts.
@@ -48,6 +48,19 @@ func (po PageOffsets) pageAt(offset int) int {
 // ensureSorted sorts the page breaks by offset so binary-ish lookup works.
 func (po PageOffsets) ensureSorted() {
 	sort.Slice(po, func(i, j int) bool { return po[i].Offset < po[j].Offset })
+}
+
+// shiftLeft subtracts n from every break offset so the offsets align with a
+// trimmed substring. When n ≤ 0 it returns the receiver unchanged.
+func (po PageOffsets) shiftLeft(n int) PageOffsets {
+	if n <= 0 || len(po) == 0 {
+		return po
+	}
+	out := make(PageOffsets, len(po))
+	for i, b := range po {
+		out[i] = PageBreak{Offset: b.Offset - n, Page: b.Page}
+	}
+	return out
 }
 
 // SetChunkParams allows runtime adjustment of chunking parameters.
@@ -99,6 +112,11 @@ func ChunkTextWithPages(text string, pageOffsets PageOffsets) []ChunkWithMeta {
 }
 
 func chunkText(text string, pageOffsets PageOffsets) []ChunkWithMeta {
+	// Record the leading offset so pageAt lookups work against the original
+	// (pre-trim) text that the caller's PageOffsets are based on.
+	trimOffset := len(text) - len(strings.TrimLeft(text, " \t\n\r"))
+	pageOffsets = pageOffsets.shiftLeft(trimOffset)
+
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil

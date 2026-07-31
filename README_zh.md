@@ -20,6 +20,12 @@
 - **多知识库** — 将文档组织到独立的知识库中；跨知识库搜索和列表；通过管理页面创建/删除知识库
 - **KB 描述** — 创建知识库时可填写简要描述；通过 `knowledge_list_kbs` 工具查看所有 KB 及其描述
 - **MySQL/MariaDB 后端** — 可选的数据库存储后端，替代默认的文件系统存储，支持 DSN/环境变量/Toml 配置
+- **智能知识库路由** — 使用四维度加权评分（关键词 + 嵌入 + 描述 + 领域约束）自动将查询路由到最相关的知识库，支持 Top-K 多库联合检索
+- **领域词典支持** — 加载 YAML 格式的领域同义词词典进行查询扩展（如船舶运动术语）
+- **Redis 缓存** — 可选的精确匹配查询结果缓存，按归一化查询哈希 + KB 版本建立缓存键，配置 TTL；同时支持分块/元数据/索引的增量缓存加速读取
+- **软删除（Tombstone）** — 文档删除采用 TTL 墓碑模式：删除后立即从搜索中隐藏，物理清理在过期后执行
+- **增量索引与版本管理** — 重新上传文档时自动递增版本号，仅对变更的分块重新建索引，保持搜索一致性
+- **证据质量信号** — 每个结果附带 source_confidence（来源置信度）、answer_relevance（答案相关性）和 completeness（完整度）元数据，供调用方 Agent 评估可靠性
 
 ## 安装
 
@@ -78,6 +84,11 @@ knowledge-mcp setup
 | `mysql_port` | `MYSQL_PORT` | `3306` | MySQL 端口 |
 | `mysql_database` | `MYSQL_DATABASE` | `knowledge_rag` | MySQL 数据库名 |
 | `mysql_socket_path` | `MYSQL_SOCKET_PATH` | — | MySQL Unix Socket 路径（设置后优先于 host:port） |
+| `redis_enabled` | `REDIS_ENABLED` | `false` | 启用 Redis 查询结果缓存 |
+| `redis_addr` | `REDIS_ADDR` | `127.0.0.1:6379` | Redis 服务器地址 |
+| `redis_password` | `REDIS_PASSWORD` | — | Redis 密码（可选） |
+| `redis_db` | `REDIS_DB` | `0` | Redis 数据库编号 |
+| `redis_prefix` | `REDIS_PREFIX` | `kmcp:` | Redis 键命名空间前缀 |
 
 ## 快速开始
 
@@ -116,19 +127,31 @@ knowledge-mcp serve
 详见 [docs/deployment-models.md](docs/deployment-models.md) / [中文版](docs/deployment-models_zh.md) 了解详细模型部署说明。
 
 ```bash
-# 嵌入服务 (Ollama + BGE-M3)
+# 嵌入服务 (Ollama + BGE-M3 / Qwen3-Embedding)
 ollama pull bge-m3
+# 或使用 Qwen3-Embedding（2560 维，支持中文更佳）
+ollama pull qwen3-embedding
+
+# Ollama 支持两种嵌入 API：
+#   OpenAI 兼容:  http://localhost:11434/v1/embeddings   （推荐，与 OpenAI SDK 一致）
+#   Ollama 原生:  http://localhost:11434/api/embed         （也完全支持）
+# 二选一填入 EMBED_API_ENDPOINT 即可，两种格式本项目均已兼容。
 
 # 重排序服务 (Infinity + gte-multilingual-reranker-base)
 pip install infinity-emb[all]
 infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
 
-# knowledge-mcp
+# knowledge-mcp（使用 OpenAI 兼容端点）
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
 EMBED_MODEL=bge-m3 \
 RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 RERANK_CANDIDATE_LIMIT=100 \
 KNOWLEDGE_MCP_DATA_DIR=./kb-data \
+  knowledge-mcp serve
+
+# 或使用 Ollama 原生端点
+EMBED_API_ENDPOINT=http://localhost:11434/api/embed \
+EMBED_MODEL=qwen3-embedding:q4_k_m \
   knowledge-mcp serve
 ```
 
@@ -329,6 +352,16 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 | `MYSQL_DATABASE` | `knowledge_rag` | 数据库名 |
 | `MYSQL_SOCKET_PATH` | — | Unix Socket 路径（设置后优先于 host:port） |
 
+### Redis 缓存
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `REDIS_ENABLED` | `false` | 设为 `true` 或 `1` 开启 |
+| `REDIS_ADDR` | `127.0.0.1:6379` | Redis 服务器地址 |
+| `REDIS_PASSWORD` | — | Redis 密码（可选） |
+| `REDIS_DB` | `0` | Redis 数据库编号 |
+| `REDIS_PREFIX` | `kmcp:` | 键命名空间前缀 |
+
 ## MCP 工具
 
 ### `knowledge_search`
@@ -371,6 +404,35 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 |-----------|----------|-------------|
 | _(无)_ | — | 返回 KB 数量及每个 KB 的名称 + 描述 |
 
+### `knowledge_list`
+
+列出知识库中的文档，支持按知识库筛选。
+
+| 参数 | 必填 | 说明 |
+|-----------|----------|-------------|
+| `kbName` | 否 | 知识库名称。设置后仅列出该 KB；不传则列出所有 KB |
+
+### `knowledge_upload`
+
+上传单个文档或批量导入整个目录到知识库。
+
+| 参数 | 必填 | 说明 |
+|-----------|----------|-------------|
+| `filePath` | 条件必填 | 单个文档文件的路径。与 `directory` 互斥 |
+| `directory` | 条件必填 | 批量上传的目录路径。与 `filePath` 互斥 |
+| `recursive` | 否 | 设为 `true` 时递归遍历子目录 |
+| `tags` | 否 | 逗号分隔的标签，赋予上传的文档 |
+| `kbName` | 条件必填 | 知识库名称。未配置默认 KB 时必填 |
+
+### `knowledge_remove`
+
+按 slug 从知识库中删除文档。
+
+| 参数 | 必填 | 说明 |
+|-----------|----------|-------------|
+| `docSlug` | **是** | 文档 slug（来自列表/搜索结果） |
+| `kbName` | 否 | 知识库名称。不传则从所有 KB 中删除 |
+
 ### 证据格式
 
 `knowledge_search` 和 `knowledge_read` 返回结构化证据，包含完整的来源追踪信息：
@@ -404,20 +466,48 @@ API 不可用时自动回退到本地 tabula 库，不会中断上传流程。
 
 ### PDF 页码支持
 
-分块器提供 `ChunkTextWithPages` 和 `ChunkTextHierarchicalWithPages` 两个接口，接受 `PageOffsets` 参数——由 PDF 解析器生成的页边界映射：
+分块器提供 `ChunkTextWithPages` 和 `ChunkTextHierarchicalWithPages` 两个接口，接受 `PageOffsets` 参数：
 
 ```go
-// PDF 解析器构建页边界
+// PDF 解析器构建页边界 — Offset 是原始文本中的 **字节偏移**（0-based），
+// Page 是 1-based 页码。只需列出每页起始位置即可，无需每页结束位置。
 breaks := knowledge.PageOffsets{
     {Offset: 0, Page: 1},
     {Offset: 3500, Page: 2},
     {Offset: 7200, Page: 3},
 }
-chunks := knowledge.ChunkTextWithPages(text, breaks)
-// 每个 chunk 的 PageStart/PageEnd 自动填充
+// 文本就是传给 ChunkTextWithPages 的同一个 text —— chunker 内部会自动
+// 处理 TrimSpace 导致的偏移修正，调用方无需关心。
+fine, coarse := knowledge.ChunkTextHierarchicalWithPages(text, breaks)
 ```
 
-页信息随分块一起存入 `CHUNKS.toml`，搜索时透传到 `SearchHit.Location`，`knowledge_read` 展开时保留在 `EvidenceChunk.Location` 中。
+**对 PDF 解析器的要求：**
+
+1. **Offset 是字节偏移**，不是 rune 偏移。Go 的 `len(string)` 即字节数，直接可用
+2. **基于传给 ChunkTextWithPages 的同一个完整文本**来计算，chunker 会自动修正 trim 偏移
+3. **只需标注每页起始位置**，不需要结束位置——`PageEnd` 由 chunker 根据 chunk 的字符范围自动推算
+4. **页边界列表必须按 Offset 升序排列**（或调用前 `ensureSorted()`）
+5. 建议在 PDF 解析时逐页提取文本并拼接，同时记录每页起始位置，例如：
+   ```
+   第1页: "Attention Is All You Need\n\n...\n" → offset 0
+   第2页: "the model achieves...\n"           → offset 3500
+   ...
+   ```
+
+页信息随分块存入 `CHUNKS.toml`，搜索时透传到 `SearchHit.Location`，`knowledge_read` 展开时保留在 `EvidenceChunk.Location` 中。未注入时 `page_start`/`page_end` 为 0，JSON 自动省略。
+
+## KB 智能路由
+
+当 `knowledge_search` 未指定 `kbName` 时，KB Router 使用四个加权维度对每个知识库进行评分：
+
+| 维度 | 权重 | 说明 |
+|-----------|--------|-------------|
+| keyword | 0.35 | 查询词与 KB 名称/描述的词重叠 |
+| embedding | 0.35 | 查询向量与 KB 描述向量的余弦相似度 |
+| desc | 0.15 | 描述子串匹配奖励 |
+| constraint | 0.15 | 领域特定路由约束 |
+
+Top-K 选择策略：如果第 1 名与第 2 名的分数差距 > 0.25，仅使用得分最高的 KB；否则最多选择 3 个 KB 进行联合检索。
 
 ## 搜索流程
 
@@ -471,30 +561,49 @@ internal/
     config.go            — TOML 配置加载、环境变量回退、默认值
   setup/
     setup.go             — 交互式配置向导 ("knowledge-mcp setup")
-    probe.go             — 端点连通性探测
+    i18n.go              — 配置向导国际化文本
   logging/
-    logger.go            — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，模块化)
+    logger.go            — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，按模块)
+  cache/
+    cache.go             — Cache 接口 + NoopCache 空实现
+    redis.go             — Redis 缓存实现
+    keys.go              — 缓存键命名规范（query/chunk/meta/index/KB list）
   knowledge/
     store.go             — Store 结构体、数据目录管理、CHUNKS.toml I/O、KB CRUD
     storage.go           — StorageBackend 接口（存储后端抽象层）
-    file_backend.go      — 文件系统存储后端（默认实现）
-    mysql_backend.go     — MySQL/MariaDB 存储后端（可选）
-    search.go            — Search、HybridSearch、SearchDocuments、coarseToFine、rerankTop
-    chunker.go           — ChunkText、ChunkTextHierarchical、语义合并
-    doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit、ChunksIndex
-    embed.go             — Embedder 接口、OpenAIEmbedder
+    mysql_backend.go     — MySQL/MariaDB 存储后端
+    search.go            — Search、HybridSearch、SearchDocuments、SearchAll、coarseToFine、rerankTop
+    chunker.go           — ChunkText、ChunkTextHierarchical、语义合并、页码感知分块
+    doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit、EvidenceMeta、ChunksIndex
+    embed.go             — Embedder 接口、OpenAIEmbedder（兼容 OpenAI + Ollama 原生格式）
     rerank.go            — InfinityReranker（兼容 Cohere/Infinity）、Reranker 接口
+    vector_index.go      — HNSW 向量索引 (M=48, efConstruction=400)，用于 ANN 搜索
     gpu_scheduler.go     — GPU 调度器，协调嵌入/重排序模型的休眠与唤醒
-    rewrite.go           — QueryRewriter 接口、SynonymRewriter
+    kb_router.go         — 多知识库智能路由（关键词 + 嵌入 + 描述 + 约束四维评分）
+    rewrite.go           — QueryRewriter 接口、SynonymRewriter（内置 + YAML 词典）
     rewrite_llm.go       — LLMQueryRewriter（可选的 LLM 查询扩展）
+    dict_loader.go       — YAML 格式领域词典加载器
     manage.go            — Web 管理页面服务、知识库 CRUD、上传/删除/搜索处理器
+    manage_enhanced.go   — 增强管理功能（搜索控制台、配置、工具描述管理）
     upload.go            — UploadDocument、UploadDirectory
+    upload_task.go       — 持久化上传任务记录
     parser.go            — 文档解析调度 — 外部 HTTP API + tabula 回退 (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
     inverted.go          — 全局倒排索引 (INVERTED.gob)，加速候选查找
     list.go              — ListPreview、ReadChunk、ReadChunkContext
     remove.go            — RemoveDocument
-    searchlog.go         — FileSearchLogger (.searchlog.jsonl)
-    meta_extract.go      — 论文元数据提取（标题、作者、摘要、章节角色）
+    tomstone.go          — 软删除墓碑管理器，支持 TTL 过期清理
+    version.go           — 文档/索引版本跟踪，支持增量更新
+    store_incremental.go — 文档重上传时的增量重新索引
+    manifest.go          — 分块清单跟踪，保证索引完整性
+    reconcile.go         — 索引一致性校验与修复
+    state_machine.go     — 文档生命周期状态机
+    chunk_id.go          — 分块 ID 生成与管理
+    config_api.go        — 运行时配置读写 API
+    store_settings.go    — Store 运行时设置管理
+    middleware.go         — HTTP 中间件（CORS、日志、异常恢复）
+    tool_descs.go         — 默认 MCP 工具描述（可通过 Web UI 自定义）
+    searchlog.go          — FileSearchLogger (.searchlog.jsonl)
+    meta_extract.go       — 论文元数据提取（标题、作者、摘要、章节角色）
   retrieval/
     bm25.go              — 分词器（CJK 双字感知）、BM25Score、MakeSnippet
 scripts/

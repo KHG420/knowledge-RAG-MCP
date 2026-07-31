@@ -20,11 +20,11 @@ type storeSettings struct {
 	mu sync.RWMutex
 
 	// Search settings
-	searchMode     SearchMode // bm25, vector, hybrid
-	rerankEnabled  bool
-	rrfK           int     // RRF fusion constant k
-	bm25K1         float64 // BM25 term frequency saturation
-	bm25B          float64 // BM25 length normalization
+	searchMode    SearchMode // bm25, vector, hybrid
+	rerankEnabled bool
+	rrfK          int     // RRF fusion constant k
+	bm25K1        float64 // BM25 term frequency saturation
+	bm25B         float64 // BM25 length normalization
 
 	// Chunking settings
 	chunkMinChars          int
@@ -34,6 +34,9 @@ type storeSettings struct {
 
 	// Upload
 	uploadMaxSizeMB int
+
+	// MCP Tool Descriptions (customised via Web UI)
+	toolDescs ToolDescriptions
 }
 
 func defaultSettings() storeSettings {
@@ -244,4 +247,134 @@ func (st *storeSettings) applyFromConfig(cfg *config.Config) {
 	if cfg.UploadMaxSizeMB > 0 {
 		st.uploadMaxSizeMB = cfg.UploadMaxSizeMB
 	}
+
+	// Tool descriptions: only override when a custom value is provided.
+	if cfg.ToolSearchDesc != "" {
+		st.toolDescs.SearchDesc = cfg.ToolSearchDesc
+	}
+	if cfg.ToolSearchKbNameDesc != "" {
+		st.toolDescs.SearchKbNameDesc = cfg.ToolSearchKbNameDesc
+	}
+	if cfg.ToolReadDesc != "" {
+		st.toolDescs.ReadDesc = cfg.ToolReadDesc
+	}
+	if cfg.ToolReadKbNameDesc != "" {
+		st.toolDescs.ReadKbNameDesc = cfg.ToolReadKbNameDesc
+	}
+	if cfg.ToolListDesc != "" {
+		st.toolDescs.ListDesc = cfg.ToolListDesc
+	}
+	if cfg.ToolListKBsDesc != "" {
+		st.toolDescs.ListKBsDesc = cfg.ToolListKBsDesc
+	}
+	if cfg.ToolUploadDesc != "" {
+		st.toolDescs.UploadDesc = cfg.ToolUploadDesc
+	}
+	if cfg.ToolRemoveDesc != "" {
+		st.toolDescs.RemoveDesc = cfg.ToolRemoveDesc
+	}
+}
+
+// ── Tool Descriptions ──
+
+// ToolDescriptions holds customisable MCP tool descriptions.
+// Each field maps to a specific description slot on an MCP tool.
+// An empty string means "use the hardcoded default".
+type ToolDescriptions struct {
+	SearchDesc       string `json:"SearchDesc"`        // knowledge_search top-level description
+	SearchKbNameDesc string `json:"SearchKbNameDesc"`  // knowledge_search kbName parameter description
+	ReadDesc         string `json:"ReadDesc"`          // knowledge_read top-level description
+	ReadKbNameDesc   string `json:"ReadKbNameDesc"`    // knowledge_read kbName parameter description
+	ListDesc         string `json:"ListDesc"`          // knowledge_list top-level description
+	ListKBsDesc      string `json:"ListKBsDesc"`       // knowledge_list_kbs top-level description
+	UploadDesc       string `json:"UploadDesc"`        // knowledge_upload top-level description
+	RemoveDesc       string `json:"RemoveDesc"`        // knowledge_remove top-level description
+}
+
+// GetToolDescriptions returns a copy of the current tool descriptions.
+func (s *Store) GetToolDescriptions() ToolDescriptions {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	return s.settings.toolDescs
+}
+
+// SetToolDescriptions replaces all tool descriptions and persists to the config file.
+func (s *Store) SetToolDescriptions(td ToolDescriptions) {
+	s.settings.mu.Lock()
+	s.settings.toolDescs = td
+	s.settings.mu.Unlock()
+}
+
+// ── Tool description getters (custom → default fallback) ──
+
+func (s *Store) ToolSearchDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.SearchDesc != "" {
+		return s.settings.toolDescs.SearchDesc
+	}
+	return DefaultSearchDesc
+}
+
+func (s *Store) ToolSearchKbNameDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.SearchKbNameDesc != "" {
+		return s.settings.toolDescs.SearchKbNameDesc
+	}
+	return DefaultSearchKbNameDesc
+}
+
+func (s *Store) ToolReadDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.ReadDesc != "" {
+		return s.settings.toolDescs.ReadDesc
+	}
+	return DefaultReadDesc
+}
+
+func (s *Store) ToolReadKbNameDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.ReadKbNameDesc != "" {
+		return s.settings.toolDescs.ReadKbNameDesc
+	}
+	return DefaultReadKbNameDesc
+}
+
+func (s *Store) ToolListDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.ListDesc != "" {
+		return s.settings.toolDescs.ListDesc
+	}
+	return DefaultListDesc
+}
+
+func (s *Store) ToolListKBsDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.ListKBsDesc != "" {
+		return s.settings.toolDescs.ListKBsDesc
+	}
+	return DefaultListKBsDesc
+}
+
+func (s *Store) ToolUploadDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.UploadDesc != "" {
+		return s.settings.toolDescs.UploadDesc
+	}
+	return DefaultUploadDesc
+}
+
+func (s *Store) ToolRemoveDesc() string {
+	s.settings.mu.RLock()
+	defer s.settings.mu.RUnlock()
+	if s.settings.toolDescs.RemoveDesc != "" {
+		return s.settings.toolDescs.RemoveDesc
+	}
+	return DefaultRemoveDesc
 }

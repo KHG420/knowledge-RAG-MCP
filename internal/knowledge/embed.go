@@ -103,13 +103,41 @@ type embedResponse struct {
 	// vectors are returned as a flat 2D array keyed by "embeddings".
 	Embeddings [][]float64 `json:"embeddings"`
 
+	// RawError captures the provider-specific error field so decodeAPIError
+	// can normalise both OpenAI object and Ollama string formats.
+	RawError json.RawMessage `json:"error,omitempty"`
+
 	APIError *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
-	} `json:"error,omitempty"`
+	} `json:"-"` // populated manually after decode
+
 	Usage struct {
 		TotalTokens int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// decodeAPIError normalises the provider-specific error field into APIError.
+func (r *embedResponse) decodeAPIError() {
+	if len(r.RawError) == 0 {
+		return
+	}
+	// Try OpenAI object format: {"message":"...","type":"..."}
+	r.APIError = &struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}{}
+	if json.Unmarshal(r.RawError, r.APIError) == nil && r.APIError.Message != "" {
+		return
+	}
+	// Try Ollama string format: "model not found"
+	var msg string
+	if json.Unmarshal(r.RawError, &msg) == nil && msg != "" {
+		r.APIError = &struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		}{Message: msg, Type: "ollama_error"}
+	}
 }
 
 // maxTokensPerBatch is the approximate token limit per embedding API request.
@@ -205,6 +233,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("embed decode: %w", err)
 	}
+	result.decodeAPIError()
 
 	// Check for API-level errors (e.g. Ollama returns 200 + {"error": {...}}).
 	if result.APIError != nil && result.APIError.Message != "" {
@@ -239,6 +268,10 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 
 	// Validate: server returned 200 OK but no data in any format.
 	if len(result.Data) == 0 && len(result.Embeddings) == 0 && len(texts) > 0 {
+		// If there was a provider-level error, surface it.
+		if result.APIError != nil && result.APIError.Message != "" {
+			return nil, fmt.Errorf("embed api error: %s", result.APIError.Message)
+		}
 		return nil, fmt.Errorf("embed: server returned 200 OK with no embedding data (%d texts sent)", len(texts))
 	}
 
@@ -386,6 +419,11 @@ func (s *Store) SetRerankBatchSize(n int) {
 // enabling hybrid (BM25 + dense) search.
 func (s *Store) SetEmbedder(e Embedder) {
 	s.embedder = e
+}
+
+// Embedder returns the configured vector embedder, or nil if none.
+func (s *Store) Embedder() Embedder {
+	return s.embedder
 }
 
 // SetSearchLogger configures an optional search logger on the store. When set,

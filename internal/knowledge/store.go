@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"knowledge-mcp/internal/cache"
 	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/logging"
 	"knowledge-mcp/internal/retrieval"
@@ -22,54 +24,59 @@ const maxTermsPerChunk = 50 // top-N frequent terms retained in CHUNKS.toml
 const boundaryMergeN = 5 // G12: number of old tail chunks for incremental boundary merge
 const boundaryMergeM = 5 // G12: number of new head chunks for incremental boundary merge
 
-// Store manages the knowledge base with a pluggable storage backend.
-// By default uses FileBackend rooted at ~/knowledge_base/; call
-// NewStoreWithBackend to use an alternative backend (e.g. MySQL).
+// Store manages the knowledge base with a MySQL-backed StorageBackend.
+// Use NewStoreWithBackend to create a Store with a MySQL backend.
 type Store struct {
-	backend StorageBackend // pluggable storage (default: FileBackend)
-	kbName  string         // knowledge base name; empty means flat legacy mode (no subdirectory)
-	rewriter           QueryRewriter
-	embedder           Embedder
-	reranker           Reranker
-	gpuScheduler       *GPUScheduler
-	rerankCandidateLimit int   // max candidates fed to reranker (default 100)
-	rerankBatchSize     int   // max documents per reranker request (default 20)
-	searchLogger       SearchLogger
-	AbstractBoost float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
-	logger    *logging.Logger
-	mu        *sync.Mutex
-	taskManager      *UploadTaskManager
-	vectorIndex      *HNSWIndex         // per-KB vector index for fast ANN search
-	tombstoneManager *TombstoneManager   // cached tombstone manager (lazy init)
+	backend              StorageBackend // pluggable storage (MySQLBackend)
+	kbName               string         // knowledge base name; empty means flat legacy mode (no subdirectory)
+	dataDir              string         // root directory for file-based artifacts (VECTOR.gob, tasks, etc.)
+	rewriter             QueryRewriter
+	embedder             Embedder
+	reranker             Reranker
+	kbRouter             *KBRouter // v4: KB router for multi-KB retrieval
+	gpuScheduler         *GPUScheduler
+	dictRelatedTerms     []string // v4: related_terms from dictionaries/*.yaml
+	rerankCandidateLimit int // max candidates fed to reranker (default 100)
+	rerankBatchSize      int // max documents per reranker request (default 20)
+	searchLogger         SearchLogger
+	AbstractBoost        float64 // G13: multiplier for abstract-section chunks in papers (default 1.1)
+	logger               *logging.Logger
+	mu                   *sync.Mutex
+	taskManager          *UploadTaskManager
+	vectorIndex          *HNSWIndex        // per-KB vector index for fast ANN search
+	tombstoneManager     *TombstoneManager // cached tombstone manager (lazy init)
 
 	// Runtime configuration
 	config     *config.Config // reference to loaded configuration for API exposure
-	configPath string          // path to the config file on disk
-	settings   *storeSettings   // hot-reloadable runtime settings (pointer to avoid lock copy)
-}
+	configPath string         // path to the config file on disk
+	settings   *storeSettings // hot-reloadable runtime settings (pointer to avoid lock copy)
 
-// NewStore returns a Store backed by the local filesystem under ~/knowledge_base/.
-func NewStore() *Store {
-	s := defaultSettings()
-	return &Store{
-		backend:       NewFileBackend(""),
-		AbstractBoost: 1.1,
-		logger:        logging.NewNopLogger(),
-		mu:            &sync.Mutex{},
-		settings:      &s,
-	}
+	// ── Cache layer ──
+	cacheClient    cache.Cache // pluggable cache backend (nil or NoopCache = disabled)
+	queryCacheTTL  time.Duration
+	chunkCacheTTL  time.Duration
+	metaCacheTTL   time.Duration
+	indexCacheTTL  time.Duration
+	kbListCacheTTL time.Duration
 }
 
 // NewStoreWithBackend returns a Store using the given StorageBackend.
 // The caller is responsible for calling backend.Init() and backend.Close().
+// A default file-system directory is used for file-based artifacts like
+// VECTOR.gob and task persistence.
 func NewStoreWithBackend(backend StorageBackend) *Store {
 	s := defaultSettings()
+	homeDir, _ := os.UserHomeDir()
+	dataDir := filepath.Join(homeDir, "knowledge_base")
+	tasksDir := filepath.Join(dataDir, "tasks")
 	return &Store{
 		backend:       backend,
+		dataDir:       dataDir,
 		AbstractBoost: 1.1,
 		logger:        logging.NewNopLogger(),
 		mu:            &sync.Mutex{},
 		settings:      &s,
+		taskManager:   NewUploadTaskManager(tasksDir, logging.NewNopLogger()),
 	}
 }
 
@@ -92,14 +99,6 @@ func (s *Store) ConfigPath() string { return s.configPath }
 
 // Backend returns the underlying StorageBackend for inspection.
 func (s *Store) Backend() StorageBackend { return s.backend }
-
-// WithDataDir sets an explicit data directory for the knowledge base (FileBackend only).
-func (s *Store) WithDataDir(dir string) *Store {
-	if _, ok := s.backend.(*FileBackend); ok {
-		s.backend = NewFileBackend(dir)
-	}
-	return s
-}
 
 // validateComponent rejects path components that contain parent-directory
 // references ("..") or absolute paths, preventing path-traversal attacks
@@ -128,7 +127,13 @@ func (s *Store) WithKB(name string) *Store {
 	}
 	cp := *s
 	cp.kbName = name
-	cp.vectorIndex = nil // each KB has its own vector index
+	// Try loading the persisted HNSW index for this KB.
+	// Each KB has its own VECTOR.gob; if present, use it.
+	if idx, err := cp.loadVectorIndex(); err == nil && idx != nil {
+		cp.vectorIndex = idx
+	} else {
+		cp.vectorIndex = nil
+	}
 	return &cp
 }
 
@@ -136,6 +141,57 @@ func (s *Store) WithKB(name string) *Store {
 func (s *Store) SetLogger(l *logging.Logger) {
 	s.logger = l
 	SetParserLogger(l)
+}
+
+// SetKBRouter configures the KB router for multi-KB joint retrieval (v4).
+// When set, knowledge_search without an explicit kbName will use the router
+// to select the best 1–3 KBs instead of searching all KBs blindly.
+func (s *Store) SetKBRouter(r *KBRouter) {
+	s.kbRouter = r
+}
+
+// SyncKBRouterDescs refreshes the KB router's cached name/description list
+// from the backend. Call after CreateKB or DeleteKB.
+func (s *Store) SyncKBRouterDescs() error {
+	if s.kbRouter == nil {
+		return nil
+	}
+	kbs, err := s.backend.ListKBs()
+	if err != nil {
+		return err
+	}
+	descs := make([]kbDesc, len(kbs))
+	for i, kb := range kbs {
+		descs[i] = kbDesc{Name: kb.Name, Desc: kb.Description}
+	}
+	s.kbRouter.SetKBDescs(descs)
+	return nil
+}
+
+// RouteKBs uses the configured KB router to select the best 1–3 KBs for the
+// query. Returns nil when no router is configured (caller should fall back to
+// cross-KB search).
+func (s *Store) RouteKBs(query string) []string {
+	if s.kbRouter == nil {
+		return nil
+	}
+	result := s.kbRouter.Route(context.Background(), query, nil)
+	if result == nil {
+		return nil
+	}
+	return result.Selected
+}
+
+// SetDictionaryRelatedTerms stores related_terms loaded from dictionaries/*.yaml.
+// Called once at startup; read-only thereafter.
+func (s *Store) SetDictionaryRelatedTerms(terms []string) {
+	s.dictRelatedTerms = terms
+}
+
+// GetDictionaryRelatedTerms returns the dictionary related_terms for appending
+// to search queries.
+func (s *Store) GetDictionaryRelatedTerms() []string {
+	return s.dictRelatedTerms
 }
 
 // TaskManager returns the store's UploadTaskManager, creating it lazily if needed.
@@ -166,11 +222,57 @@ func (s *Store) SetGPUScheduler(g *GPUScheduler) {
 	SetParserGPUScheduler(g)
 }
 
-func (s *Store) kbDir() string {
-	return ""
+// SetCache configures the pluggable cache backend and TTL values.
+// Pass nil or cache.NoopCache to disable caching.
+func (s *Store) SetCache(c cache.Cache, cfg *config.Config) {
+	if cache.IsNoop(c) {
+		s.cacheClient = nil
+		return
+	}
+	s.cacheClient = c
+	if cfg != nil {
+		s.queryCacheTTL = time.Duration(cfg.CacheQueryTTL) * time.Second
+		s.chunkCacheTTL = time.Duration(cfg.CacheChunkTTL) * time.Second
+		s.metaCacheTTL = time.Duration(cfg.CacheMetaTTL) * time.Second
+		s.indexCacheTTL = time.Duration(cfg.CacheIndexTTL) * time.Second
+		s.kbListCacheTTL = time.Duration(cfg.CacheKBListTTL) * time.Second
+	}
 }
 
+// cacheEnabled returns true when the cache backend is active.
+func (s *Store) cacheEnabled() bool { return s.cacheClient != nil && !cache.IsNoop(s.cacheClient) }
 
+// InvalidateDoc removes all cached entries for a document (chunks, meta, index).
+func (s *Store) InvalidateDoc(docSlug string) {
+	if !s.cacheEnabled() {
+		return
+	}
+	pattern := cache.DocInvalidatePattern(s.kbName, docSlug)
+	log := s.logger.WithModule("cache")
+	n, err := s.cacheClient.DeletePattern(context.Background(), pattern)
+	if err != nil {
+		log.Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, pattern, err)
+		return
+	}
+	if n > 0 {
+		log.Infof("invalidate doc %q: deleted %d keys (pattern=%q)", docSlug, n, pattern)
+	} else {
+		log.Debugf("invalidate doc %q: no keys matched (pattern=%q)", docSlug, pattern)
+	}
+}
+
+// InvalidateKBList removes the cached KB list (used after create/delete KB).
+func (s *Store) InvalidateKBList() {
+	if !s.cacheEnabled() {
+		return
+	}
+	log := s.logger.WithModule("cache")
+	if err := s.cacheClient.Delete(context.Background(), cache.KBListKey()); err != nil {
+		log.Warnf("invalidate kblist FAILED: err=%v", err)
+	} else {
+		log.Debugf("invalidate kblist: deleted")
+	}
+}
 
 // KBInfo holds metadata about a knowledge base.
 type KBInfo struct {
@@ -178,8 +280,21 @@ type KBInfo struct {
 	Description string `json:"description"`
 }
 
-// ListKBs returns knowledge base names from the backend.
+// ListKBs returns knowledge base names from the backend, with Redis cache.
 func (s *Store) ListKBs() ([]string, error) {
+	// Try cache first.
+	if s.cacheEnabled() {
+		key := cache.KBListKey()
+		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
+			var names []string
+			if json.Unmarshal(raw, &names) == nil {
+				s.logger.WithModule("cache").Debugf("kblist HIT: %d KBs", len(names))
+				return names, nil
+			}
+		}
+		s.logger.WithModule("cache").Debugf("kblist MISS")
+	}
+
 	kbs, err := s.backend.ListKBs()
 	if err != nil {
 		return nil, err
@@ -188,6 +303,19 @@ func (s *Store) ListKBs() ([]string, error) {
 	for i, kb := range kbs {
 		names[i] = kb.Name
 	}
+
+	// Store in cache.
+	if s.cacheEnabled() {
+		key := cache.KBListKey()
+		if raw, jerr := json.Marshal(names); jerr == nil {
+			if setErr := s.cacheClient.Set(context.Background(), key, raw, s.kbListCacheTTL); setErr != nil {
+				s.logger.WithModule("cache").Warnf("kblist SET failed: err=%v", setErr)
+			} else {
+				s.logger.WithModule("cache").Debugf("kblist SET: %d KBs ttl=%v", len(names), s.kbListCacheTTL)
+			}
+		}
+	}
+
 	return names, nil
 }
 
@@ -204,6 +332,7 @@ func (s *Store) CreateKB(name, description string) error {
 		s.logger.Errorf("KB %q: create failed: %v", name, err)
 		return err
 	}
+	s.InvalidateKBList()
 	s.logger.Infof("KB %q: created (description=%q)", name, description)
 	return nil
 }
@@ -216,23 +345,19 @@ func (s *Store) DeleteKB(name string) error {
 		s.logger.Errorf("KB %q: delete failed: %v", name, err)
 		return err
 	}
+	s.InvalidateKBList()
 	s.logger.Infof("KB %q: deleted", name)
 	return nil
 }
 
-// knowledgeDir returns the data directory path (FileBackend only).
+// knowledgeDir returns the data directory path for file-based artifacts.
 func (s *Store) knowledgeDir() string {
-	return ""
+	return s.dataDir
 }
 
 // EnsureDir initializes the storage backend.
 func (s *Store) EnsureDir() error {
 	return s.backend.Init()
-}
-
-// IndexPath returns the path to INDEX.md.
-func (s *Store) IndexPath() string {
-	return filepath.Join(s.kbDir(), "INDEX.md")
 }
 
 // ReadIndex delegates to the backend.
@@ -245,61 +370,43 @@ func (s *Store) WriteIndex(content string) error {
 	return s.backend.WriteIndex(s.kbName, content)
 }
 
-// DocDir always returns empty (path helpers retained for backward compat only).
-func (s *Store) DocDir(slug string) string {
-	if err := validateComponent(slug); err != nil {
-		s.logger.Warnf("DocDir: %v", err)
-		return ""
-	}
-	return filepath.Join(s.kbDir(), slug)
-}
-
-// MetaPath returns the path to a document's meta.json.
-func (s *Store) MetaPath(slug string) string {
-	return filepath.Join(s.DocDir(slug), "meta.json")
-}
-
-// ChunksDir returns the path to a document's chunks/ directory.
-func (s *Store) ChunksDir(slug string) string {
-	return filepath.Join(s.DocDir(slug), "chunks")
-}
-
-// ChunkPath returns the path to a chunk file (e.g. "005" → ".../chunks/005.md").
-// Returns empty string when slug or chunkID fails validation (path-traversal guard).
-func (s *Store) ChunkPath(slug, chunkID string) string {
-	if err := validateComponent(chunkID); err != nil {
-		s.logger.Warnf("ChunkPath: %v", err)
-		return ""
-	}
-	return filepath.Join(s.ChunksDir(slug), chunkID+".md")
-}
-
-// SectionsDir returns the path to a document's section chunks directory.
-func (s *Store) SectionsDir(slug string) string {
-	return filepath.Join(s.ChunksDir(slug), "sections")
-}
-
-// SectionChunkPath returns the path to a section-level chunk file (e.g. "S00" → ".../chunks/sections/S00.md").
-// Returns empty string when slug or sectionID fails validation (path-traversal guard).
-func (s *Store) SectionChunkPath(slug, sectionID string) string {
-	if err := validateComponent(sectionID); err != nil {
-		s.logger.Warnf("SectionChunkPath: %v", err)
-		return ""
-	}
-	return filepath.Join(s.SectionsDir(slug), sectionID+".md")
-}
-
 // WriteMeta delegates to the backend.
 func (s *Store) WriteMeta(slug string, meta DocumentMeta) error {
 	return s.backend.WriteMeta(s.kbName, slug, &meta)
 }
 
-// ReadMeta delegates to the backend.
+// ReadMeta delegates to the backend, with cache layer.
 func (s *Store) ReadMeta(slug string) (DocumentMeta, error) {
+	// Try cache first.
+	if s.cacheEnabled() {
+		key := cache.MetaKey(s.kbName, slug)
+		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
+			var meta DocumentMeta
+			if json.Unmarshal(raw, &meta) == nil {
+				s.logger.WithModule("cache").Debugf("meta HIT: slug=%q kb=%q", slug, s.kbName)
+				return meta, nil
+			}
+		}
+		s.logger.WithModule("cache").Debugf("meta MISS: slug=%q kb=%q", slug, s.kbName)
+	}
+
 	meta, err := s.backend.ReadMeta(s.kbName, slug)
 	if err != nil {
 		return DocumentMeta{}, err
 	}
+
+	// Store in cache.
+	if s.cacheEnabled() && meta.OriginalName != "" {
+		key := cache.MetaKey(s.kbName, slug)
+		if raw, jerr := json.Marshal(meta); jerr == nil {
+			if setErr := s.cacheClient.Set(context.Background(), key, raw, s.metaCacheTTL); setErr != nil {
+				s.logger.WithModule("cache").Warnf("meta SET failed: slug=%q err=%v", slug, setErr)
+			} else {
+				s.logger.WithModule("cache").Debugf("meta SET: slug=%q kb=%q ttl=%v", slug, s.kbName, s.metaCacheTTL)
+			}
+		}
+	}
+
 	return *meta, nil
 }
 
@@ -607,9 +714,33 @@ func (s *Store) ReadSectionChunk(slug, sectionID string) (string, error) {
 	return s.backend.ReadSectionChunk(s.kbName, slug, sectionID)
 }
 
-// ReadChunk delegates to the backend.
+// ReadChunk delegates to the backend, with cache layer.
 func (s *Store) ReadChunk(slug, chunkID string) (string, error) {
-	return s.backend.ReadChunk(s.kbName, slug, chunkID)
+	// Try cache first.
+	if s.cacheEnabled() {
+		key := cache.ChunkKey(s.kbName, slug, chunkID)
+		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
+			s.logger.WithModule("cache").Debugf("chunk HIT: slug=%q chunk=%s kb=%q", slug, chunkID, s.kbName)
+			return string(raw), nil
+		}
+	}
+
+	text, err := s.backend.ReadChunk(s.kbName, slug, chunkID)
+	if err != nil {
+		return "", err
+	}
+
+	// Store in cache.
+	if s.cacheEnabled() && text != "" {
+		key := cache.ChunkKey(s.kbName, slug, chunkID)
+		if setErr := s.cacheClient.Set(context.Background(), key, []byte(text), s.chunkCacheTTL); setErr != nil {
+			s.logger.WithModule("cache").Warnf("chunk SET failed: slug=%q chunk=%s err=%v", slug, chunkID, setErr)
+		} else {
+			s.logger.WithModule("cache").Debugf("chunk SET: slug=%q chunk=%s kb=%q size=%d", slug, chunkID, s.kbName, len(text))
+		}
+	}
+
+	return text, nil
 }
 
 // ListChunks delegates to the backend.
@@ -765,11 +896,6 @@ func (s *Store) Exists(slug string) bool {
 	return err == nil && ok
 }
 
-// ChunksIndexPath returns the path to a document's CHUNKS.toml.
-func (s *Store) ChunksIndexPath(slug string) string {
-	return filepath.Join(s.DocDir(slug), "CHUNKS.toml")
-}
-
 // WriteChunksIndex delegates to the backend and updates the inverted index.
 func (s *Store) WriteChunksIndex(slug string, index *ChunksIndex) error {
 	if err := s.backend.WriteChunksIndex(s.kbName, slug, index); err != nil {
@@ -782,9 +908,39 @@ func (s *Store) WriteChunksIndex(slug string, index *ChunksIndex) error {
 	return nil
 }
 
-// ReadChunksIndex delegates to the backend.
+// ReadChunksIndex delegates to the backend, with cache layer.
 func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
-	return s.backend.ReadChunksIndex(s.kbName, slug)
+	// Try cache first.
+	if s.cacheEnabled() {
+		key := cache.IndexKey(s.kbName, slug)
+		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
+			var idx ChunksIndex
+			if json.Unmarshal(raw, &idx) == nil {
+				s.logger.WithModule("cache").Debugf("index HIT: slug=%q kb=%q chunks=%d", slug, s.kbName, len(idx.Chunks))
+				return &idx, nil
+			}
+		}
+		s.logger.WithModule("cache").Debugf("index MISS: slug=%q kb=%q", slug, s.kbName)
+	}
+
+	idx, err := s.backend.ReadChunksIndex(s.kbName, slug)
+	if err != nil || idx == nil {
+		return idx, err
+	}
+
+	// Store in cache.
+	if s.cacheEnabled() {
+		key := cache.IndexKey(s.kbName, slug)
+		if raw, jerr := json.Marshal(idx); jerr == nil {
+			if setErr := s.cacheClient.Set(context.Background(), key, raw, s.indexCacheTTL); setErr != nil {
+				s.logger.WithModule("cache").Warnf("index SET failed: slug=%q err=%v", slug, setErr)
+			} else {
+				s.logger.WithModule("cache").Debugf("index SET: slug=%q kb=%q chunks=%d ttl=%v", slug, s.kbName, len(idx.Chunks), s.indexCacheTTL)
+			}
+		}
+	}
+
+	return idx, nil
 }
 
 // writeChunksIndexFromMeta builds and persists a ChunksIndex from chunk
@@ -904,24 +1060,36 @@ func (s *Store) ReadChunkContext(slug, chunkID string, context int) (string, err
 		return s.ReadChunk(slug, chunkID)
 	}
 
-	// Parse chunk ID to integer.
-	id := chunkIDToInt(chunkID)
-
 	// Collect all chunk IDs.
 	allIDs, err := s.ListChunks(slug)
 	if err != nil {
 		return "", err
 	}
 
-	// Determine the window.
-	start := id - context
+	if len(allIDs) == 0 {
+		return "", fmt.Errorf("chunk %q not found in document %q (document has no chunks)", chunkID, slug)
+	}
+
+	// Find the position of the target chunk ID in the list.
+	targetPos := -1
+	for i, cid := range allIDs {
+		if cid == chunkID {
+			targetPos = i
+			break
+		}
+	}
+	if targetPos < 0 {
+		return "", fmt.Errorf("chunk %q not found in document %q", chunkID, slug)
+	}
+
+	// Determine the context window.
+	start := targetPos - context
 	if start < 0 {
 		start = 0
 	}
-	end := id + context + 1 // +1 to include the target
-	maxID := len(allIDs)
-	if end > maxID {
-		end = maxID
+	end := targetPos + context + 1 // +1 to include the target
+	if end > len(allIDs) {
+		end = len(allIDs)
 	}
 
 	// Try to load section metadata from CHUNKS.toml for richer output.
@@ -941,7 +1109,7 @@ func (s *Store) ReadChunkContext(slug, chunkID string, context int) (string, err
 		// Rich output: merge adjacent chunks under the same section header.
 		var lastSection string
 		for i := start; i < end; i++ {
-			cid := fmt.Sprintf("%03d", i)
+			cid := allIDs[i]
 			text, err := s.ReadChunk(slug, cid)
 			if err != nil {
 				continue
@@ -963,7 +1131,7 @@ func (s *Store) ReadChunkContext(slug, chunkID string, context int) (string, err
 	} else {
 		// Fallback: chunk ID markers for documents without section metadata.
 		for i := start; i < end; i++ {
-			cid := fmt.Sprintf("%03d", i)
+			cid := allIDs[i]
 			text, err := s.ReadChunk(slug, cid)
 			if err != nil {
 				continue
@@ -982,6 +1150,7 @@ func (s *Store) ReadChunkContext(slug, chunkID string, context int) (string, err
 }
 
 // chunkIDToInt parses a zero-padded chunk ID like "005" to its integer value.
+// Deprecated: use with the actual chunk ID list from ListChunks instead.
 func chunkIDToInt(chunkID string) int {
 	id := 0
 	for _, r := range chunkID {
@@ -1049,13 +1218,18 @@ func (s *Store) ensureVectorIndexLocked() {
 		return
 	}
 
+	log := s.logger.WithModule("vector")
+
 	// Try loading from persistent cache.
 	if idx, err := s.loadVectorIndex(); err == nil && idx != nil {
 		s.vectorIndex = idx
-		s.logger.WithModule("vector").Infof("loaded vector index: %d vectors", idx.Len())
+		log.Infof("loaded vector index from disk: %d vectors, dim=%d", idx.Len(), idx.Dim())
 		return
+	} else if err != nil {
+		log.Warnf("failed to load vector index from disk, will rebuild: %v", err)
 	}
 
+	log.Infof("no cached vector index found, building from scratch...")
 	s.buildVectorIndexLocked()
 }
 
@@ -1067,10 +1241,12 @@ func (s *Store) buildVectorIndexLocked() {
 	log := s.logger.WithModule("vector")
 
 	if s.embedder == nil {
+		log.Debugf("buildVectorIndex: no embedder configured, skipping")
 		return
 	}
 	dim := s.embedder.Dim()
 	if dim <= 0 {
+		log.Debugf("buildVectorIndex: embedder dim=%d, skipping", dim)
 		return
 	}
 
@@ -1080,23 +1256,38 @@ func (s *Store) buildVectorIndexLocked() {
 		return
 	}
 
+	start := time.Now()
+	log.Infof("buildVectorIndex: scanning %d documents for vectors (dim=%d)...", len(slugs), dim)
+
 	idx := NewHNSWIndex(dim)
 	added := 0
-	for _, slug := range slugs {
+	docsWithVectors := 0
+	for i, slug := range slugs {
 		index, idxErr := s.ReadChunksIndex(slug)
 		if idxErr != nil || index == nil {
 			continue
 		}
+		docAdded := 0
 		for _, e := range index.Chunks {
 			if len(e.Vector) == dim {
 				id := slug + "/" + e.ID
 				idx.Add(id, e.Vector)
 				added++
+				docAdded++
 			}
+		}
+		if docAdded > 0 {
+			docsWithVectors++
+		}
+		// Log progress every 50 documents or on the last one.
+		if (i+1)%50 == 0 || i == len(slugs)-1 {
+			log.Debugf("buildVectorIndex: progress %d/%d docs, %d vectors so far", i+1, len(slugs), added)
 		}
 	}
 	s.vectorIndex = idx
-	log.Infof("built vector index: %d vectors (dim=%d) from %d documents", added, dim, len(slugs))
+	elapsed := time.Since(start)
+	log.Infof("built vector index: %d vectors from %d/%d documents (dim=%d) in %v",
+		added, docsWithVectors, len(slugs), dim, elapsed.Round(time.Millisecond))
 
 	// Persist so the next start doesn't need a full rebuild.
 	if saveErr := s.saveVectorIndex(idx); saveErr != nil {
@@ -1111,11 +1302,18 @@ func (s *Store) BuildVectorIndex() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	log := s.logger.WithModule("vector")
+	log.Infof("BuildVectorIndex: forcing full rebuild")
+
 	s.vectorIndex = nil
 	s.buildVectorIndexLocked()
 	if s.vectorIndex != nil {
+		stats := s.vectorIndex.Stats()
+		log.Infof("BuildVectorIndex: done — %d vectors, %d nodes, maxLevel=%d, avgDegree=%.1f",
+			stats.NodeCount, stats.NodeCount, stats.MaxLevel, stats.AvgDegree)
 		return s.saveVectorIndex(s.vectorIndex)
 	}
+	log.Infof("BuildVectorIndex: done — no vectors (embedder not configured?)")
 	return nil
 }
 
@@ -1126,16 +1324,28 @@ func (s *Store) updateVectorIndex(slug string, entries []ChunkIndexEntry) {
 		return
 	}
 
-	// Remove old entries for this document.
+	log := s.logger.WithModule("vector")
+
+	// Count vectors before removing old entries.
+	removed := 0
 	for _, e := range entries {
-		s.vectorIndex.Remove(slug + "/" + e.ID)
+		if s.vectorIndex.Remove(slug + "/" + e.ID) {
+			removed++
+		}
 	}
 
 	// Add new entries.
+	added := 0
 	for _, e := range entries {
 		if len(e.Vector) > 0 {
 			s.vectorIndex.Add(slug+"/"+e.ID, e.Vector)
+			added++
 		}
+	}
+
+	if added > 0 || removed > 0 {
+		log.Debugf("updateVectorIndex: doc=%s added=%d removed=%d total=%d",
+			slug, added, removed, s.vectorIndex.Len())
 	}
 }
 
@@ -1144,22 +1354,30 @@ func (s *Store) removeDocFromVectorIndex(slug string) {
 	if s.vectorIndex == nil {
 		return
 	}
+	log := s.logger.WithModule("vector")
 	// We don't know the chunk IDs, so iterate through all nodes. This is fine
 	// because HNSW Remove is cheap (it only unlinks, no rebalancing).
 	prefix := slug + "/"
+	removed := 0
 	for _, id := range s.vectorIndex.allIDs() {
 		if len(id) > len(prefix) && id[:len(prefix)] == prefix {
-			s.vectorIndex.Remove(id)
+			if s.vectorIndex.Remove(id) {
+				removed++
+			}
 		}
+	}
+	if removed > 0 {
+		log.Debugf("removeDocFromVectorIndex: doc=%s removed=%d vectors, remaining=%d",
+			slug, removed, s.vectorIndex.Len())
 	}
 }
 
 // vectorIndexPath returns the path to the persisted VECTOR.gob file.
 func (s *Store) vectorIndexPath() string {
-	if fb, ok := s.backend.(*FileBackend); ok {
-		return filepath.Join(fb.kbDir(s.kbName), "VECTOR.gob")
+	if s.dataDir == "" || s.kbName == "" {
+		return ""
 	}
-	return ""
+	return filepath.Join(s.dataDir, s.kbName, "VECTOR.gob")
 }
 
 // loadVectorIndex loads the HNSW index from VECTOR.gob.
@@ -1168,7 +1386,14 @@ func (s *Store) loadVectorIndex() (*HNSWIndex, error) {
 	if p == "" {
 		return nil, nil
 	}
-	return LoadHNSWIndex(p)
+	idx, err := LoadHNSWIndex(p)
+	if err != nil {
+		return nil, err
+	}
+	if idx != nil {
+		s.logger.WithModule("vector").Debugf("loadVectorIndex: path=%s vectors=%d dim=%d", p, idx.Len(), idx.Dim())
+	}
+	return idx, nil
 }
 
 // saveVectorIndex persists the HNSW index to VECTOR.gob.
@@ -1177,21 +1402,27 @@ func (s *Store) saveVectorIndex(idx *HNSWIndex) error {
 	if p == "" {
 		return nil
 	}
-	return idx.Save(p)
+	start := time.Now()
+	if err := idx.Save(p); err != nil {
+		return err
+	}
+	s.logger.WithModule("vector").Debugf("saveVectorIndex: path=%s vectors=%d elapsed=%v",
+		p, idx.Len(), time.Since(start).Round(time.Millisecond))
+	return nil
 }
 
 // ── Vector statistics & rebuild ────────────────────────────────────────────────
 
 // VectorStats summarises vector coverage in a knowledge base.
 type VectorStats struct {
-	KBName          string           `json:"kbName"`
-	TotalDocs       int              `json:"totalDocs"`
-	DocsWithVectors int              `json:"docsWithVectors"`
-	TotalChunks     int              `json:"totalChunks"`
-	ChunksWithVectors int            `json:"chunksWithVectors"`
-	VectorDim       int              `json:"vectorDim"`
-	EmbedderModel   string           `json:"embedderModel,omitempty"`
-	Docs            []DocVectorStats `json:"docs,omitempty"`
+	KBName            string           `json:"kbName"`
+	TotalDocs         int              `json:"totalDocs"`
+	DocsWithVectors   int              `json:"docsWithVectors"`
+	TotalChunks       int              `json:"totalChunks"`
+	ChunksWithVectors int              `json:"chunksWithVectors"`
+	VectorDim         int              `json:"vectorDim"`
+	EmbedderModel     string           `json:"embedderModel,omitempty"`
+	Docs              []DocVectorStats `json:"docs,omitempty"`
 }
 
 // DocVectorStats holds per-document vector coverage.
@@ -1298,9 +1529,6 @@ func (s *Store) ReEmbedMissingVectors(ctx context.Context, slug string, progress
 	result := &RebuildResult{}
 	dim := s.embedder.Dim()
 
-	// Ensure HNSW index is ready for updates.
-	s.ensureVectorIndexLocked()
-
 	for si, slug := range slugs {
 		select {
 		case <-ctx.Done():
@@ -1392,18 +1620,19 @@ func (s *Store) ReEmbedMissingVectors(ctx context.Context, slug string, progress
 				return result, fmt.Errorf("write chunks_index for %q: %w", slug, err)
 			}
 
-			// Update HNSW vector index.
-			s.updateVectorIndex(slug, index.Chunks)
-			if s.vectorIndex != nil {
-				if saveErr := s.saveVectorIndex(s.vectorIndex); saveErr != nil {
-					log.Warnf("save vector index after rebuild: %v", saveErr)
-				}
-			}
-
 			result.DocsProcessed++
 			result.ChunksEmbedded += embedded
 			log.Infof("embedded %d vectors for %q", embedded, slug)
 		}
+	}
+
+	// Build / rebuild the HNSW index once after all embeddings are done.
+	// This covers three cases:
+	//   - vectors were just embedded  → full rebuild with complete data
+	//   - VECTOR.gob was missing      → build from existing vectors in CHUNKS.toml
+	//   - both                        → one clean rebuild after embed
+	if result.DocsProcessed > 0 || s.vectorIndex == nil {
+		s.buildVectorIndexLocked()
 	}
 
 	return result, nil

@@ -51,6 +51,15 @@ func (t *UploadTask) Events() []ProgressEvent {
 	return cp
 }
 
+// Snapshot returns a consistent, thread-safe copy of the task's mutable
+// fields (Status, Slug, Error) for readers that run concurrently with
+// MarkDone / MarkError / processing goroutines.
+func (t *UploadTask) Snapshot() (status, slug, errMsg string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.Status, t.Slug, t.Error
+}
+
 // MarkDone transitions the task to done status with the given slug
 // and cleans up the temporary directory.
 func (t *UploadTask) MarkDone(slug string) {
@@ -105,7 +114,7 @@ func (t *UploadTask) cleanupLocked() {
 type UploadTaskManager struct {
 	mu     sync.RWMutex
 	tasks  map[string]*UploadTask
-	dir    string          // directory for task persistence (tasks/*.json)
+	dir    string // directory for task persistence (tasks/*.json)
 	logger *logging.Logger
 }
 

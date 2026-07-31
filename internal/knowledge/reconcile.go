@@ -10,16 +10,16 @@
 //  3. On demand — triggered by an API call for manual verification.
 //
 // For each document in the knowledge base, the reconciler verifies:
-//  - Manifest exists and is valid
-//  - Every chunk listed in the manifest has a chunk file on disk
-//  - Every chunk file on disk is listed in the manifest (no orphan files)
-//  - CHUNKS.toml checksums match the manifest
-//  - Vector index entries exist for all chunks that should have vectors
+//   - Manifest exists and is valid
+//   - Every chunk listed in the manifest has a chunk file on disk
+//   - Every chunk file on disk is listed in the manifest (no orphan files)
+//   - CHUNKS.toml checksums match the manifest
+//   - Vector index entries exist for all chunks that should have vectors
 //
 // Drift is categorized by severity:
-//  - WARN:  missing optional data (section chunks, source file)
-//  - ERROR: missing required data (chunk file, CHUNKS.toml entry)
-//  - FATAL: document is completely missing or manifest is corrupt
+//   - WARN:  missing optional data (section chunks, source file)
+//   - ERROR: missing required data (chunk file, CHUNKS.toml entry)
+//   - FATAL: document is completely missing or manifest is corrupt
 package knowledge
 
 import (
@@ -49,12 +49,12 @@ type ReconcileFinding struct {
 
 // ReconcileReport summarizes the results of a reconciliation run.
 type ReconcileReport struct {
-	KBName     string             `json:"kb_name"`
-	StartedAt  time.Time          `json:"started_at"`
-	Duration   time.Duration      `json:"duration"`
-	DocsChecked int               `json:"docs_checked"`
-	DocsOK     int                `json:"docs_ok"`
-	Findings   []ReconcileFinding `json:"findings"`
+	KBName      string             `json:"kb_name"`
+	StartedAt   time.Time          `json:"started_at"`
+	Duration    time.Duration      `json:"duration"`
+	DocsChecked int                `json:"docs_checked"`
+	DocsOK      int                `json:"docs_ok"`
+	Findings    []ReconcileFinding `json:"findings"`
 }
 
 // ── Reconciler ────────────────────────────────────────────────────────────────

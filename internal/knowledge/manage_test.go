@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"knowledge-mcp/internal/logging"
 )
@@ -20,8 +21,10 @@ import (
 func newTestStore(t *testing.T) (*Store, string, string) {
 	t.Helper()
 	tmp := t.TempDir()
-	fb := NewFileBackend(tmp)
-	store := NewStoreWithBackend(fb)
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	// Override dataDir to use temp dir for file artifacts (VECTOR.gob, tasks).
+	store.dataDir = tmp
 	store.logger = logging.NewNopLogger()
 	if err := store.CreateKB("test-kb", "test knowledge base"); err != nil {
 		t.Fatalf("CreateKB: %v", err)
@@ -106,10 +109,10 @@ func newManageMux(s *Store) *http.ServeMux {
 	})
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
 		writeManageJSON(w, http.StatusOK, map[string]any{
-			"embedder":            s.EmbedderInfo(),
-			"reranker":            s.RerankerInfo(),
+			"embedder":             s.EmbedderInfo(),
+			"reranker":             s.RerankerInfo(),
 			"rerankCandidateLimit": s.RerankCandidateLimit(),
-			"docParser":           DocParserInfo(),
+			"docParser":            DocParserInfo(),
 		})
 	})
 	mux.HandleFunc("POST /api/models/probe", s.handleModelProbe)
@@ -120,6 +123,9 @@ func newManageMux(s *Store) *http.ServeMux {
 	mux.HandleFunc("POST /api/tombstones/clean", s.handleTombstoneClean)
 	mux.HandleFunc("POST /api/reconcile", s.handleReconcile)
 	mux.HandleFunc("GET /api/documents/{slug}/manifest", s.handleManifestView)
+	mux.HandleFunc("GET /api/vector-stats", s.handleVectorStats)
+	mux.HandleFunc("GET /api/vector-index", s.handleVectorIndexInfo)
+	mux.HandleFunc("POST /api/rebuild-vectors", s.handleRebuildVectors)
 	return mux
 }
 
@@ -704,4 +710,145 @@ func TestManage_ConcurrentRequests(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+// ── 向量重建 SSE 事件验证 ─────────────────────────────────────────────────────
+
+func TestRebuildVectors_SSEEvents(t *testing.T) {
+	// 创建带 MockEmbedder 的 store，确保文档已有向量。
+	tmp := t.TempDir()
+	backend := newMockBackend()
+	store := NewStoreWithBackend(backend)
+	store.dataDir = tmp
+	store.logger = logging.NewNopLogger()
+
+	// 设置 mock embedder，这样上传时自动生成向量。
+	store.embedder = NewMockEmbedder(256)
+
+	if err := store.CreateKB("test-kb", ""); err != nil {
+		t.Fatalf("CreateKB: %v", err)
+	}
+	store = store.WithKB("test-kb")
+
+	src := filepath.Join(tmp, "doc.md")
+	if err := os.WriteFile(src, []byte("# Test\n\nContent for vector testing."), 0644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	if _, err := store.UploadDocument(src); err != nil {
+		t.Fatalf("UploadDocument: %v", err)
+	}
+
+	// 发起向量重建。
+	w := doRequest(store, "POST", "/api/rebuild-vectors?kb=test-kb", nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("rebuild-vectors: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var startResp struct {
+		TaskID  string `json:"taskId"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &startResp); err != nil {
+		t.Fatalf("decode rebuild response: %v", err)
+	}
+	if startResp.TaskID == "" {
+		t.Fatal("taskId is empty")
+	}
+	t.Logf("rebuild started, taskId=%s", startResp.TaskID)
+
+	// 直接检查 TaskManager 中的 task。
+	tm := store.TaskManager()
+	if tsk := tm.Get(startResp.TaskID); tsk != nil {
+		st, _, _ := tsk.Snapshot()
+		t.Logf("task found in TM: status=%s", st)
+	} else {
+		t.Logf("task NOT found in TM after rebuild")
+	}
+
+	// 轮询等待任务完成。
+	mux := newManageMux(store)
+	var taskStatus string
+	for i := 0; i < 50; i++ {
+		statusReq := httptest.NewRequest("GET", "/api/tasks/"+startResp.TaskID, nil)
+		statusW := httptest.NewRecorder()
+		mux.ServeHTTP(statusW, statusReq)
+		if statusW.Code == http.StatusOK {
+			var ts struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(statusW.Body.Bytes(), &ts); err == nil {
+				taskStatus = ts.Status
+				if ts.Status == "done" || ts.Status == "error" {
+					t.Logf("task status: %s", ts.Status)
+					break
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("final task status: %s", taskStatus)
+
+	// 连接 SSE，收集所有事件。
+	sseURL := "/api/tasks/" + startResp.TaskID + "/events"
+	sseReq := httptest.NewRequest("GET", sseURL, nil)
+	sseReq.Header.Set("Accept", "text/event-stream")
+	sseW := httptest.NewRecorder()
+
+	mux.ServeHTTP(sseW, sseReq)
+
+	if sseW.Code != http.StatusOK {
+		t.Fatalf("SSE: expected 200, got %d: %s", sseW.Code, sseW.Body.String())
+	}
+
+	// 解析 SSE 事件。
+	body := sseW.Body.String()
+	events := parseSSEEvents(body)
+	t.Logf("received %d SSE events: %v", len(events), events)
+
+	// 验证收到了 complete 事件。
+	foundComplete := false
+	foundError := false
+	for _, ev := range events {
+		switch ev.eventType {
+		case "complete":
+			foundComplete = true
+		case "error":
+			foundError = true
+			t.Errorf("unexpected SSE error event: %s", ev.data)
+		}
+	}
+
+	if !foundComplete {
+		t.Errorf("expected 'complete' SSE event, but not found in events: %v", events)
+	}
+	if foundError {
+		t.Error("received 'error' SSE event when rebuild was successful")
+	}
+}
+
+// sseEvent is a parsed SSE event.
+type sseEvent struct {
+	eventType string
+	data      string
+}
+
+// parseSSEEvents parses an SSE stream body into a slice of events.
+func parseSSEEvents(body string) []sseEvent {
+	var events []sseEvent
+	lines := strings.Split(body, "\n")
+	var currentType, currentData string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "event: ") {
+			currentType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			currentData = strings.TrimPrefix(line, "data: ")
+		} else if line == "" && currentData != "" {
+			events = append(events, sseEvent{
+				eventType: currentType,
+				data:      currentData,
+			})
+			currentType = ""
+			currentData = ""
+		}
+	}
+	return events
 }

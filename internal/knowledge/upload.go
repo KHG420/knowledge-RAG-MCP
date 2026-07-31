@@ -40,13 +40,13 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 // UploadDocumentWithProgress ingests a file into the knowledge base and calls
 // progress for each processing stage:
 //
-//	1. parsing   — ParseFile extracts the full text.
-//	2. chunking  — ChunkText splits it into paragraph-level chunks.
-//	3. merging   — Optional semantic merging (skipped without embedder).
-//	4. metadata  — Slug, paper metadata extraction.
-//	5. writing   — Persist chunks, section chunks, and meta.json.
-//	6. indexing  — Write CHUNKS.toml search index with vector embeddings.
-//	7. complete  — Copy source, write raw text, update INDEX.md.
+//  1. parsing   — ParseFile extracts the full text.
+//  2. chunking  — ChunkText splits it into paragraph-level chunks.
+//  3. merging   — Optional semantic merging (skipped without embedder).
+//  4. metadata  — Slug, paper metadata extraction.
+//  5. writing   — Persist chunks, section chunks, and meta.json.
+//  6. indexing  — Write CHUNKS.toml search index with vector embeddings.
+//  7. complete  — Copy source, write raw text, update INDEX.md.
 func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, tags ...string) (DocumentMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -8,10 +8,36 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"knowledge-mcp/internal/logging"
 )
+
+// modelState tracks which model is currently active on the GPU.
+type modelState int
+
+const (
+	stateIdle      modelState = iota // all models sleeping
+	stateEmbedding                   // embedding model loaded
+	stateReranker                    // reranker model loaded
+	stateDocParser                   // doc parser model loaded
+)
+
+func (s modelState) String() string {
+	switch s {
+	case stateIdle:
+		return "idle"
+	case stateEmbedding:
+		return "embedding"
+	case stateReranker:
+		return "reranker"
+	case stateDocParser:
+		return "doc-parser"
+	default:
+		return "unknown"
+	}
+}
 
 // GPUScheduler manages the sleep/wake lifecycle of embedding, reranker,
 // and document parser models on a shared GPU, ensuring only one model is
@@ -21,7 +47,14 @@ import (
 // Each model has its own sleep/wake API URLs since they may use different
 // endpoints or require different request bodies (e.g. reranker sleep
 // requires a JSON body with sleep level).
+//
+// Concurrency: all PrepareFor* methods acquire an internal mutex and return
+// a restore function that releases it. Only one model operation can be in
+// flight at a time. Callers MUST call the restore function before invoking
+// another PrepareFor* — failing to do so will deadlock.
 type GPUScheduler struct {
+	mu sync.Mutex
+
 	embeddingSleepURL  string        // URL to sleep the embedding model
 	embeddingSleepBody string        // Optional JSON body for embedding sleep request
 	rerankerSleepURL   string        // URL to sleep the reranker model
@@ -29,9 +62,13 @@ type GPUScheduler struct {
 	docParserSleepURL  string        // URL to sleep the document parser model
 	docParserSleepBody string        // Optional JSON body for doc parser sleep request
 	timeout            time.Duration // HTTP timeout for sleep requests (default 30s)
+	sleepCooldown      time.Duration // wait after sleep to let CUDA free memory (default 3s)
 	enabled            bool
 	client             *http.Client
 	logger             *logging.Logger
+
+	// State tracking to avoid redundant sleep calls.
+	activeModel modelState
 }
 
 // GPUSchedulerOption configures a GPUScheduler.
@@ -81,6 +118,14 @@ func WithSchedulerEnabled(enabled bool) GPUSchedulerOption {
 	}
 }
 
+// WithSchedulerSleepCooldown sets the wait duration after a sleep request
+// before considering the model unloaded from GPU memory. Default 3s.
+func WithSchedulerSleepCooldown(d time.Duration) GPUSchedulerOption {
+	return func(s *GPUScheduler) {
+		s.sleepCooldown = d
+	}
+}
+
 // NewGPUScheduler creates a GPUScheduler from environment variables.
 // Environment variables (all optional):
 //
@@ -92,12 +137,14 @@ func WithSchedulerEnabled(enabled bool) GPUSchedulerOption {
 //	GPU_SCHEDULER_DOC_PARSER_SLEEP_URL   — Document parser model sleep API URL (default: empty)
 //	GPU_SCHEDULER_DOC_PARSER_SLEEP_BODY  — JSON body for doc parser sleep request (default: empty)
 //	GPU_SCHEDULER_TIMEOUT                — HTTP timeout (default: "30s")
+//	GPU_SCHEDULER_SLEEP_COOLDOWN          — wait after sleep for CUDA mem free (default: "0", Python services handle this)
 func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 	s := &GPUScheduler{
-		rerankerSleepURL: "",
+		rerankerSleepURL:  "",
 		rerankerSleepBody: `{"level":2}`,
-		timeout:          30 * time.Second,
-		enabled:          false,
+		timeout:           30 * time.Second,
+		sleepCooldown:     0, // Python 端已处理显存释放等待，Go 端默认不重复等待
+		enabled:           false,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -132,6 +179,11 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 			s.client.Timeout = d
 		}
 	}
+	if v := os.Getenv("GPU_SCHEDULER_SLEEP_COOLDOWN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			s.sleepCooldown = d
+		}
+	}
 
 	for _, opt := range opts {
 		opt(s)
@@ -160,8 +212,11 @@ func (s *GPUScheduler) Summary() string {
 	return strings.Join(parts, ", ")
 }
 
-// doSleep sends a POST request to the given URL. If body is non-empty, it is
+// doSleep sends a POST request to the given URL and waits for the cooldown
+// duration to allow CUDA to free GPU memory. If body is non-empty, it is
 // sent as the request body with Content-Type: application/json.
+//
+// IMPORTANT: Caller must hold s.mu.
 func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 	if url == "" {
 		return nil
@@ -177,6 +232,7 @@ func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	start := time.Now()
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("sleep request to %q failed: %w", url, err)
@@ -185,7 +241,16 @@ func (s *GPUScheduler) doSleep(ctx context.Context, url, body string) error {
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("sleep %q returned status %d", url, resp.StatusCode)
 	}
-	s.logger.Debugf("gpu-scheduler: sleep %q → %s", url, resp.Status)
+	s.logger.Infof("gpu-scheduler: sleep %q → %s (took %s)", url, resp.Status, time.Since(start))
+
+	// Wait for CUDA to actually free GPU memory before returning.
+	// The Python services (reranker-server.py, manager-server.py) now
+	// handle GPU memory release verification via wait_gpu_memory_release(),
+	// so this cooldown is disabled by default (set to 0).
+	if s.sleepCooldown > 0 {
+		s.logger.Debugf("gpu-scheduler: cooling down %s for CUDA memory release", s.sleepCooldown)
+		time.Sleep(s.sleepCooldown)
+	}
 	return nil
 }
 
@@ -246,89 +311,183 @@ func (s *GPUScheduler) Probe(ctx context.Context) (string, error) {
 // PrepareForEmbedding ensures the embedding model has GPU access by sleeping
 // the reranker and document parser (if loaded). The embedding API auto-wakes
 // on first call.
-// Returns a restore function that sleeps the embedding model (so the reranker
-// or doc parser can load later). The restore function is idempotent-safe — it
-// logs warnings on failure but does not return an error, making it suitable
-// for defer.
+//
+// This method acquires the scheduler's internal mutex. The returned restore
+// function MUST be called to release the lock — failing to do so will deadlock
+// all other model operations.
+//
+// The restore function only releases the lock; it does NOT sleep the embedding
+// model. The next PrepareFor* call will sleep whatever is currently active.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForEmbedding() (restore func()) {
 	if !s.enabled {
 		return func() {}
 	}
+
+	s.mu.Lock()
 	log := s.logger.WithModule("gpu-scheduler")
 
-	// Sleep reranker and doc parser (releases GPU memory for embedding).
-	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
-		log.Warnf("sleep reranker failed (continuing): %v", err)
-	}
-	if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
-		log.Warnf("sleep doc parser failed (continuing): %v", err)
+	// If already in embedding mode, skip the switch (avoid redundant sleep+cooldown).
+	if s.activeModel == stateEmbedding {
+		log.Debugf("gpu-scheduler: already in embedding mode, skipping switch")
+		return func() {
+			s.mu.Unlock()
+		}
 	}
 
-	return func() {
-		// Restore: sleep embedding (reranker/doc parser auto-wakes on next call).
-		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
-			log.Warnf("sleep embedding (restore) failed: %v", err)
+	log.Infof("gpu-scheduler: switching from %s → embedding", s.activeModel)
+
+	// Sleep whatever is currently active to free GPU memory.
+	switch s.activeModel {
+	case stateReranker:
+		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
+			log.Warnf("sleep reranker failed (continuing): %v", err)
 		}
+	case stateDocParser:
+		if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+			log.Warnf("sleep doc parser failed (continuing): %v", err)
+		}
+	default:
+		// Also sleep other models defensively if state is unknown (idle or uninitialized).
+		if s.activeModel != stateReranker {
+			if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
+				log.Warnf("sleep reranker failed (continuing): %v", err)
+			}
+		}
+		if s.activeModel != stateDocParser {
+			if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+				log.Warnf("sleep doc parser failed (continuing): %v", err)
+			}
+		}
+	}
+
+	s.activeModel = stateEmbedding
+	log.Infof("gpu-scheduler: embedding model ready")
+
+	return func() {
+		log.Debugf("gpu-scheduler: releasing embedding lock")
+		s.mu.Unlock()
 	}
 }
 
 // PrepareForReranking ensures the reranker model has GPU access by sleeping
 // the embedding model and document parser (if loaded). The reranker API
 // auto-wakes on first call.
-// Returns a restore function that sleeps the reranker (so the embedding model
-// or doc parser can load later). The restore function is idempotent-safe.
+//
+// This method acquires the scheduler's internal mutex. The returned restore
+// function MUST be called to release the lock — failing to do so will deadlock
+// all other model operations.
+//
+// The restore function only releases the lock; it does NOT sleep the reranker
+// model. The next PrepareFor* call will sleep whatever is currently active.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForReranking() (restore func()) {
 	if !s.enabled {
 		return func() {}
 	}
+
+	s.mu.Lock()
 	log := s.logger.WithModule("gpu-scheduler")
 
-	// Sleep embedding and doc parser (releases GPU memory for reranker).
-	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
-		log.Warnf("sleep embedding failed (continuing): %v", err)
-	}
-	if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
-		log.Warnf("sleep doc parser failed (continuing): %v", err)
+	if s.activeModel == stateReranker {
+		log.Debugf("gpu-scheduler: already in reranker mode, skipping switch")
+		return func() {
+			s.mu.Unlock()
+		}
 	}
 
-	return func() {
-		// Restore: sleep reranker (embedding/doc parser auto-wakes on next call).
-		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
-			log.Warnf("sleep reranker (restore) failed: %v", err)
+	log.Infof("gpu-scheduler: switching from %s → reranker", s.activeModel)
+
+	switch s.activeModel {
+	case stateEmbedding:
+		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
+			log.Warnf("sleep embedding failed (continuing): %v", err)
 		}
+	case stateDocParser:
+		if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+			log.Warnf("sleep doc parser failed (continuing): %v", err)
+		}
+	default:
+		if s.activeModel != stateEmbedding {
+			if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
+				log.Warnf("sleep embedding failed (continuing): %v", err)
+			}
+		}
+		if s.activeModel != stateDocParser {
+			if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
+				log.Warnf("sleep doc parser failed (continuing): %v", err)
+			}
+		}
+	}
+
+	s.activeModel = stateReranker
+	log.Infof("gpu-scheduler: reranker model ready")
+
+	return func() {
+		log.Debugf("gpu-scheduler: releasing reranker lock")
+		s.mu.Unlock()
 	}
 }
 
 // PrepareForDocParsing ensures the document parser model has GPU access by
 // sleeping the embedding and reranker models (if loaded). The doc parser API
 // auto-wakes on first call.
-// Returns a restore function that sleeps the doc parser (so the embedding or
-// reranker can load later). The restore function is idempotent-safe.
+//
+// This method acquires the scheduler's internal mutex. The returned restore
+// function MUST be called to release the lock — failing to do so will deadlock
+// all other model operations.
+//
+// The restore function only releases the lock; it does NOT sleep the doc parser
+// model. The next PrepareFor* call will sleep whatever is currently active.
 //
 // When the scheduler is disabled, this is a no-op and returns a no-op restore.
 func (s *GPUScheduler) PrepareForDocParsing() (restore func()) {
 	if !s.enabled {
 		return func() {}
 	}
+
+	s.mu.Lock()
 	log := s.logger.WithModule("gpu-scheduler")
 
-	// Sleep embedding and reranker (releases GPU memory for doc parser).
-	if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
-		log.Warnf("sleep embedding failed (continuing): %v", err)
-	}
-	if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
-		log.Warnf("sleep reranker failed (continuing): %v", err)
+	if s.activeModel == stateDocParser {
+		log.Debugf("gpu-scheduler: already in doc-parser mode, skipping switch")
+		return func() {
+			s.mu.Unlock()
+		}
 	}
 
-	return func() {
-		// Restore: sleep doc parser (embedding/reranker auto-wakes on next call).
-		if err := s.doSleep(context.Background(), s.docParserSleepURL, s.docParserSleepBody); err != nil {
-			log.Warnf("sleep doc parser (restore) failed: %v", err)
+	log.Infof("gpu-scheduler: switching from %s → doc-parser", s.activeModel)
+
+	switch s.activeModel {
+	case stateEmbedding:
+		if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
+			log.Warnf("sleep embedding failed (continuing): %v", err)
 		}
+	case stateReranker:
+		if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
+			log.Warnf("sleep reranker failed (continuing): %v", err)
+		}
+	default:
+		if s.activeModel != stateEmbedding {
+			if err := s.doSleep(context.Background(), s.embeddingSleepURL, s.embeddingSleepBody); err != nil {
+				log.Warnf("sleep embedding failed (continuing): %v", err)
+			}
+		}
+		if s.activeModel != stateReranker {
+			if err := s.doSleep(context.Background(), s.rerankerSleepURL, s.rerankerSleepBody); err != nil {
+				log.Warnf("sleep reranker failed (continuing): %v", err)
+			}
+		}
+	}
+
+	s.activeModel = stateDocParser
+	log.Infof("gpu-scheduler: doc-parser model ready")
+
+	return func() {
+		log.Debugf("gpu-scheduler: releasing doc-parser lock")
+		s.mu.Unlock()
 	}
 }
 

@@ -160,71 +160,27 @@ func (s *Store) UploadDocumentAtomicWithProgress(path string, progress ProgressF
 	// ── Stage 5: Write chunks with content-based IDs ───────────────────────
 	emit(StageWriting, "started", "")
 
-	// Prepare staging area for atomic switch.
+	// Prepare staging area (no-op for MySQL, just ensures version tracking).
 	if err := s.backend.PrepareStaging(s.kbName, slug); err != nil {
-		log.Warnf("prepare staging: %v (falling back to direct write)", err)
+		log.Warnf("prepare staging: %v (continuing with direct write)", err)
 	}
 
-	// Use staging directory if available (FileBackend), otherwise write directly.
-	useStaging := false
-	var writeChunkFn func(id, content string) error
-	var writeSectionFn func(id, content string) error
-	var chunksIndexPathFn func() string
+	// Write directly via backend.
+	if err := s.backend.DeleteChunks(s.kbName, slug); err != nil {
+		emit(StageWriting, "error", err.Error())
+		return DocumentMeta{}, fmt.Errorf("upload: remove old chunks: %w", err)
+	}
 
-	if fb, ok := s.backend.(*FileBackend); ok {
-		builder := NewAtomicIndexBuilder(fb.docDir(s.kbName, slug))
-		stagingDir := builder.StagingDir()
-		if _, err := os.Stat(stagingDir); err == nil {
-			useStaging = true
-			writeChunkFn = func(id, content string) error {
-				return os.WriteFile(builder.StagingChunkPath(id), []byte(content), 0644)
-			}
-			writeSectionFn = func(id, content string) error {
-				return os.WriteFile(builder.StagingSectionPath(id), []byte(content), 0644)
-			}
-			chunksIndexPathFn = builder.StagingChunksIndexPath
+	// Write content-based chunk files.
+	for _, entry := range manifest.Chunks {
+		// Find the chunk content by matching legacy IDs.
+		legacyIdx := ParseLegacyChunkID(entry.LegacyID)
+		if legacyIdx < 0 || legacyIdx >= len(fineChunks) {
+			continue
 		}
-	}
-
-	if !useStaging {
-		// Fallback: write directly (legacy path).
-		if err := s.backend.DeleteChunks(s.kbName, slug); err != nil {
+		if err := s.backend.WriteChunk(s.kbName, slug, entry.ID, fineChunks[legacyIdx].Content); err != nil {
 			emit(StageWriting, "error", err.Error())
-			return DocumentMeta{}, fmt.Errorf("upload: remove old chunks: %w", err)
-		}
-
-		// Write content-based chunk files.
-		for _, entry := range manifest.Chunks {
-			// Find the chunk content by matching legacy IDs.
-			legacyIdx := ParseLegacyChunkID(entry.LegacyID)
-			if legacyIdx < 0 || legacyIdx >= len(fineChunks) {
-				continue
-			}
-			if err := s.backend.WriteChunk(s.kbName, slug, entry.ID, fineChunks[legacyIdx].Content); err != nil {
-				emit(StageWriting, "error", err.Error())
-				return DocumentMeta{}, fmt.Errorf("upload: write chunk %s: %w", entry.ID, err)
-			}
-		}
-	} else {
-		// Write to staging.
-		for _, entry := range manifest.Chunks {
-			legacyIdx := ParseLegacyChunkID(entry.LegacyID)
-			if legacyIdx < 0 || legacyIdx >= len(fineChunks) {
-				continue
-			}
-			if err := writeChunkFn(entry.ID, fineChunks[legacyIdx].Content); err != nil {
-				emit(StageWriting, "error", err.Error())
-				return DocumentMeta{}, fmt.Errorf("upload: write chunk %s: %w", entry.ID, err)
-			}
-		}
-		if len(coarseChunks) > 0 {
-			for _, entry := range manifest.Sections {
-				legacyIdx := ParseLegacyChunkID(entry.LegacyID)
-				if legacyIdx < 0 || legacyIdx >= len(coarseChunks) {
-					continue
-				}
-				_ = writeSectionFn(entry.ID, coarseChunks[legacyIdx].Content)
-			}
+			return DocumentMeta{}, fmt.Errorf("upload: write chunk %s: %w", entry.ID, err)
 		}
 	}
 
@@ -234,28 +190,18 @@ func (s *Store) UploadDocumentAtomicWithProgress(path string, progress ProgressF
 	emit(StageIndexing, "started", "")
 
 	// Build index entries using content-based chunk IDs.
-	if err := s.writeChunksIndexFromManifest(slug, manifest, fineChunks, useStaging, chunksIndexPathFn); err != nil {
+	if err := s.writeChunksIndexFromManifest(slug, manifest, fineChunks); err != nil {
 		log.Warnf("writeChunksIndex for %q: %v", slug, err)
 	}
 
 	// ── Stage 7: Write manifest ────────────────────────────────────────────
-	if useStaging {
-		// Write manifest to staging.
-		manifestData, _ := manifest.MarshalJSON()
-		builder := NewAtomicIndexBuilder(s.backend.(*FileBackend).docDir(s.kbName, slug))
-		manifestPath := builder.StagingManifestPath()
-		if err := os.WriteFile(manifestPath, manifestData, 0644); err != nil {
-			log.Warnf("write staging manifest: %v", err)
-		}
-	} else {
-		if err := s.backend.WriteManifest(s.kbName, slug, manifest); err != nil {
-			log.Warnf("write manifest: %v", err)
-		}
+	if err := s.backend.WriteManifest(s.kbName, slug, manifest); err != nil {
+		log.Warnf("write manifest: %v", err)
 	}
 
-	// ── Stage 8: Atomic promote (staging → active) ─────────────────────────
+	// ── Stage 8: Promote (MySQL: mark version as active) ───────────────────
 	newVersion := manifest.Version
-	if isUpdate && useStaging {
+	if isUpdate {
 		if err := s.backend.PromoteStaging(s.kbName, slug, newVersion); err != nil {
 			log.Errorf("atomic promote failed for %q: %v (staging left intact)", slug, err)
 			// Don't fail the upload — the staging data is still there.
@@ -298,9 +244,8 @@ func (s *Store) UploadDocumentAtomicWithProgress(path string, progress ProgressF
 }
 
 // writeChunksIndexFromManifest builds and persists a ChunksIndex using the
-// content-based chunk IDs from the manifest. When useStaging is true and
-// indexPathFn is non-nil, the index is written to a staging location.
-func (s *Store) writeChunksIndexFromManifest(slug string, manifest *ChunkManifest, chunks []ChunkWithMeta, useStaging bool, indexPathFn func() string) error {
+// content-based chunk IDs from the manifest.
+func (s *Store) writeChunksIndexFromManifest(slug string, manifest *ChunkManifest, chunks []ChunkWithMeta) error {
 	index := &ChunksIndex{
 		Slug:       slug,
 		ChunkCount: manifest.ChunkCount,
@@ -374,19 +319,9 @@ func (s *Store) writeChunksIndexFromManifest(slug string, manifest *ChunkManifes
 		index.Chunks[i] = idxEntry
 	}
 
-	// Write index to staging or direct.
-	if useStaging && indexPathFn != nil {
-		indexData, err := tomlMarshal(index)
-		if err != nil {
-			return fmt.Errorf("marshal CHUNKS.toml: %w", err)
-		}
-		if err := os.WriteFile(indexPathFn(), indexData, 0644); err != nil {
-			return fmt.Errorf("write staging CHUNKS.toml: %w", err)
-		}
-	} else {
-		if err := s.WriteChunksIndex(slug, index); err != nil {
-			return fmt.Errorf("write CHUNKS.toml: %w", err)
-		}
+	// Write index via backend.
+	if err := s.WriteChunksIndex(slug, index); err != nil {
+		return fmt.Errorf("write CHUNKS.toml: %w", err)
 	}
 
 	// Update vector index incrementally.
@@ -634,18 +569,11 @@ func (s *Store) getTombstoneManager() *TombstoneManager {
 }
 
 func (s *Store) getTombstoneDir() string {
-	// Tombstone directory: under the KB directory root.
-	if fb, ok := s.backend.(*FileBackend); ok {
-		if s.kbName != "" {
-			return fb.kbDir(s.kbName) + "/.tombstones"
-		}
-		return fb.dataDir + "/.tombstones"
-	}
-	// For non-FileBackend, use a subdirectory path.
+	// Tombstone directory: under the data directory.
 	if s.kbName != "" {
-		return fmt.Sprintf("%s/.tombstones", s.kbName)
+		return filepath.Join(s.dataDir, s.kbName, ".tombstones")
 	}
-	return ".tombstones"
+	return filepath.Join(s.dataDir, ".tombstones")
 }
 
 // tomlMarshal marshals a value to TOML bytes using the project's TOML library.

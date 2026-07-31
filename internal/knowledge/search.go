@@ -3,6 +3,7 @@ package knowledge
 import (
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"knowledge-mcp/internal/cache"
 	"knowledge-mcp/internal/retrieval"
 )
 
@@ -33,7 +35,7 @@ type SearchLogger interface {
 type SearchLogEntry struct {
 	Query      string        `json:"query"`
 	HitCount   int           `json:"hit_count"`
-	HitIDs     []string      `json:"hit_ids,omitempty"`     // returned chunk IDs in ranked order
+	HitIDs     []string      `json:"hit_ids,omitempty"` // returned chunk IDs in ranked order
 	TopScores  []float64     `json:"top_scores,omitempty"`
 	JudgedHits []string      `json:"judged_hits,omitempty"` // human-annotated relevant chunk IDs
 	Filter     *SearchFilter `json:"filter,omitempty"`
@@ -81,8 +83,6 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 		log.Debugf("collectEntries done: terms=%d path=%s elapsed=%v", nTerms, pathLabel, time.Since(start))
 	}()
 
-	kd := s.kbDir()
-
 	// G7: try inverted-index fast path when query terms are available.
 	if len(queryTerms) > 0 {
 		candidates, candErr := s.queryCandidates(queryTerms)
@@ -94,8 +94,8 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 		}
 	}
 
-	// Fallback: full scan (existing logic, unchanged).
-	docDirs, err := listDocDirs(kd)
+	// Fallback: full scan using backend.
+	docDirs, err := s.backend.ListDocSlugs(s.kbName)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
@@ -112,6 +112,10 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 		meta, metaErr := s.ReadMeta(slug)
 		if metaErr != nil {
 			log.Debugf("collectEntries: skipping %q: %v", slug, metaErr)
+			continue
+		}
+		// Skip tombstoned documents (soft-deleted).
+		if s.IsTombstoned(slug) {
 			continue
 		}
 		if filter.SourceType != "" && meta.SourceType != filter.SourceType {
@@ -170,15 +174,15 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 				}
 				tokens := retrieval.Tokens(text)
 				entries = append(entries, searchEntry{
-					docSlug:    slug,
-					chunkID:    id,
-					text:       text,
-					terms:      retrieval.Counts(tokens),
-					termLen:    len(tokens),
-					sourceType: meta.SourceType,
-					title:      meta.Title,
+					docSlug:      slug,
+					chunkID:      id,
+					text:         text,
+					terms:        retrieval.Counts(tokens),
+					termLen:      len(tokens),
+					sourceType:   meta.SourceType,
+					title:        meta.Title,
 					originalName: meta.OriginalName,
-					isPaper:    meta.IsPaper,
+					isPaper:      meta.IsPaper,
 				})
 			}
 		}
@@ -200,6 +204,10 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 		if metaErr != nil {
 			continue
 		}
+		// Skip tombstoned documents (soft-deleted).
+		if s.IsTombstoned(slug) {
+			continue
+		}
 		if filter.SourceType != "" && meta.SourceType != filter.SourceType {
 			continue
 		}
@@ -214,6 +222,7 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 		}
 		index, idxErr := s.ReadChunksIndex(slug)
 		if idxErr != nil || index == nil {
+			s.logger.WithModule("search").Debugf("collectEntriesFromCandidates: skipping doc %q (index missing or corrupt)", slug)
 			continue
 		}
 		for _, e := range index.Chunks {
@@ -246,42 +255,70 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 }
 
 // Search runs a BM25 query across all chunks in the knowledge base and returns
-// ranked hits. It first tries the per-document CHUNKS.toml index for
-// pre-computed term frequencies; documents without an index fall back to
-// reading and tokenising every chunk file.
+// ranked hits.
 //
-// An optional SearchFilter can be passed to narrow results by doc slug, source
-// type, or section. When no filter is passed, all documents are searched.
-//
-// The limit caps the number of results; hits below 15% of the top score are
-// trimmed via retrieval.KeepTopRelativeScore. Chunk text is loaded for all
-// surviving candidates (for reranker and snippet), then the optional reranker
-// re-scores the top candidates before the final cap.
+// Results are cached in the configured cache backend (if enabled).
 func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	// Resolve filter.
+	var filter SearchFilter
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
+
+	// Check query cache.
+	if s.cacheEnabled() && limit > 0 {
+		qhash := cache.QueryHash(query, "bm25", limit, filter.SourceType, filter.Section)
+		ckey := cache.QueryKey(s.kbName, qhash)
+		if raw, cerr := s.cacheClient.Get(context.Background(), ckey); cerr == nil && raw != nil {
+			var hits []SearchHit
+			if json.Unmarshal(raw, &hits) == nil {
+				s.logger.WithModule("cache").Debugf("query HIT: mode=bm25 query=%q hash=%s hits=%d", query, qhash, len(hits))
+				return hits, nil
+			}
+		}
+		s.logger.WithModule("cache").Debugf("query MISS: mode=bm25 query=%q hash=%s", query, qhash)
+	}
+
+	hits, err := s.searchImpl(query, limit, filter)
+	if err != nil {
+		return hits, err
+	}
+
+	// Store in query cache.
+	if s.cacheEnabled() && limit > 0 && len(hits) > 0 {
+		qhash := cache.QueryHash(query, "bm25", limit, filter.SourceType, filter.Section)
+		ckey := cache.QueryKey(s.kbName, qhash)
+		if raw, jerr := json.Marshal(hits); jerr == nil {
+			if setErr := s.cacheClient.Set(context.Background(), ckey, raw, s.queryCacheTTL); setErr != nil {
+				s.logger.WithModule("cache").Warnf("query SET failed: mode=bm25 query=%q err=%v", query, setErr)
+			} else {
+				s.logger.WithModule("cache").Debugf("query SET: mode=bm25 query=%q hash=%s hits=%d ttl=%v", query, qhash, len(hits), s.queryCacheTTL)
+			}
+		}
+	}
+
+	return hits, nil
+}
+
+// searchImpl contains the actual BM25 scoring pipeline, separated from the
+// cache-aware Search wrapper so the cache doesn't interfere with internal calls.
+func (s *Store) searchImpl(query string, limit int, filter SearchFilter) ([]SearchHit, error) {
 	start := time.Now()
 	log := s.logger.WithModule("search")
-	log.Debugf("Search: query=%q limit=%d kb=%q", query, limit, s.kbName)
+	log.Debugf("searchImpl: query=%q limit=%d kb=%q", query, limit, s.kbName)
 	defer func() {
-		log.Debugf("Search done in %v", time.Since(start))
+		log.Debugf("searchImpl done in %v", time.Since(start))
 	}()
 
 	if limit <= 0 {
 		limit = 8
 	}
 
-	// Query rewriting: if a QueryRewriter is configured, expand the query
-	// with synonyms and merge all variants into a single set of unique terms.
+	// Query rewriting
 	rewritten := s.rewrittenQueries(query)
-
 	queryTerms, err := retrieval.QueryTerms(rewritten)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
-	}
-
-	// Resolve filter.
-	var filter SearchFilter
-	if len(filters) > 0 {
-		filter = filters[0]
 	}
 
 	entries, err := s.collectEntries(filter, queryTerms)
@@ -292,12 +329,11 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		return nil, nil
 	}
 
-	// G14: coarse-to-fine filter — reduce entries to those in top-3 sections.
+	// G14: coarse-to-fine
 	if filter.Coarse {
 		log.Debugf("coarseToFineFilter: entries before=%d", len(entries))
 		entries, err = s.coarseToFineFilter(query, entries)
 		if err != nil {
-			// Non-fatal: fall back to unfiltered entries.
 			log.Warnf("coarseToFineFilter failed: %v, falling back to unfiltered", err)
 		}
 		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
@@ -306,7 +342,7 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		}
 	}
 
-	// Phase 2: build document-frequency map and compute average length.
+	// Phase 2: BM25 scoring
 	docs := make([]map[string]int, len(entries))
 	lengths := make([]int, len(entries))
 	var totalLen int
@@ -318,7 +354,6 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 	df := retrieval.DocumentFrequency(docs)
 	avgLen := float64(totalLen) / float64(len(entries))
 
-	// Phase 3: score each entry with BM25.
 	var results []rankedEntry
 	for i, e := range entries {
 		score := retrieval.BM25Score(docs[i], lengths[i], queryTerms, df, len(entries), avgLen)
@@ -327,106 +362,71 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		}
 	}
 
-	// Phase 3.5: abstract score boost. Chunks from the "abstract" section of
-	// paper-like documents receive a modest boost (×AbstractBoost) because
-	// abstracts condense the core contribution of a paper (G13).
+	// Abstract boost
 	for i := range results {
 		if results[i].entry.isPaper && results[i].entry.sectionRole == "abstract" {
 			results[i].score *= s.AbstractBoost
 		}
 	}
 
-	// Phase 4: partial sort — use a heap to extract top N candidates
-	// (up to limit × 5) when the result set is large, then fully sort
-	// those for the downstream pipeline.
+	// Partial sort + noise trim
 	topN := limit * 5
 	if topN < 200 {
 		topN = 200
 	}
 	results = partialSortTopK(results, topN)
+	results = retrieval.KeepTopRelativeScore(results, 0.15, func(r rankedEntry) float64 { return r.score })
 
-	// Phase 5: trim low-scoring noise.
-	results = retrieval.KeepTopRelativeScore(results, 0.15, func(r rankedEntry) float64 {
-		return r.score
-	})
-
-	// Phase 6: load chunk text for index-path results (needed for reranker and snippet).
+	// Load chunk text
 	for i := range results {
 		if results[i].entry.text == "" {
 			text, readErr := s.ReadChunk(results[i].entry.docSlug, results[i].entry.chunkID)
 			if readErr != nil {
-				text = "" // snippet will reflect the failure
+				text = ""
 			}
 			results[i].entry.text = text
 		}
 	}
 
-	// Phase 7: reranker (optional). If a Reranker is configured, re-score the
-	// top results using a cross-encoder for improved precision.
+	// Reranker
 	if s.reranker != nil && len(results) > 0 {
-		// Coordinate GPU: switch to reranker mode (sleep embedding, wake reranker).
 		if s.gpuScheduler != nil {
-			s.gpuScheduler.PrepareForReranking()
+			restore := s.gpuScheduler.PrepareForReranking()
+			defer restore()
 		}
-		entries := make([]searchEntry, len(results))
+		entries2 := make([]searchEntry, len(results))
 		scores := make([]float64, len(results))
 		for i, r := range results {
-			entries[i] = r.entry
+			entries2[i] = r.entry
 			scores[i] = r.score
 		}
-		newEntries, newScores := s.rerankTop(query, entries, scores, limit)
+		newEntries, newScores := s.rerankTop(query, entries2, scores, limit)
 		results = make([]rankedEntry, len(newEntries))
 		for i := range newEntries {
 			results[i] = rankedEntry{entry: newEntries[i], score: newScores[i]}
 		}
 	}
 
-	// Phase 8: cap to limit.
+	// Cap
 	if len(results) > limit {
 		results = results[:limit]
 	}
 
-	// Phase 9: convert to SearchHit slice with section/offset metadata.
+	// Convert to SearchHit
 	hits := make([]SearchHit, len(results))
 	for i, r := range results {
 		cid := fmt.Sprintf("%s_%s", r.entry.docSlug, r.entry.chunkID)
 		hits[i] = SearchHit{
-			Score: r.score,
-			Document: DocumentInfo{
-				ID:           r.entry.docSlug,
-				Title:        r.entry.title,
-				OriginalName: r.entry.originalName,
-				Type:         r.entry.sourceType,
-			},
-			Location: LocationInfo{
-				ChunkID: r.entry.chunkID,
-				Section: r.entry.section,
-				Offset:  r.entry.offset,
-				PageStart: r.entry.pageStart,
-				PageEnd:   r.entry.pageEnd,
-			},
-			Content: HitContent{
-				Snippet:     retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200),
-				SectionRole: r.entry.sectionRole,
-			},
+			Score:      r.score,
+			Document:   DocumentInfo{ID: r.entry.docSlug, Title: r.entry.title, OriginalName: r.entry.originalName, Type: r.entry.sourceType},
+			Location:   LocationInfo{ChunkID: r.entry.chunkID, Section: r.entry.section, Offset: r.entry.offset, PageStart: r.entry.pageStart, PageEnd: r.entry.pageEnd},
+			Content:    HitContent{Snippet: retrieval.MakeSnippet(r.entry.text, query, queryTerms, 200), SectionRole: r.entry.sectionRole},
 			CitationID: cid,
 		}
 	}
-	// Phase 9a: deduplicate overlapping snippets (G9).
-	before := len(hits)
-	hits = deduplicateSnippets(hits)
-	dupCount := 0
-	for _, h := range hits {
-		if h.DuplicateOf != "" {
-			dupCount++
-		}
-	}
-	if dupCount > 0 {
-		log.Debugf("deduplicateSnippets: total=%d duplicates=%d", before, dupCount)
-	}
 
-	// Phase 9b: section hint — when multiple chunks from the same section appear
-	// in the results, annotate them so the caller knows to read the full section.
+	// Deduplicate + section hint
+	hits = deduplicateSnippets(hits)
 	type sectionKey struct{ doc, heading string }
 	secCount := make(map[sectionKey]int)
 	for _, h := range hits {
@@ -440,15 +440,15 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		}
 	}
 
-	// G11: log search if a logger is configured.
+	// Search log
 	if s.searchLogger != nil {
-		topN := 3
-		if len(hits) < topN {
-			topN = len(hits)
+		topN2 := 3
+		if len(hits) < topN2 {
+			topN2 = len(hits)
 		}
-		topScores := make([]float64, topN)
-		hitIDs := make([]string, topN)
-		for i := 0; i < topN; i++ {
+		topScores := make([]float64, topN2)
+		hitIDs := make([]string, topN2)
+		for i := 0; i < topN2; i++ {
 			topScores[i] = hits[i].Score
 			hitIDs[i] = hits[i].Location.ChunkID
 		}
@@ -461,6 +461,7 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 			Timestamp: time.Now(),
 		})
 	}
+
 	return hits, nil
 }
 
@@ -557,9 +558,9 @@ func (s *Store) SearchBM25(query string, limit int) ([]SearchHit, error) {
 				Type:         r.entry.sourceType,
 			},
 			Location: LocationInfo{
-				ChunkID: r.entry.chunkID,
-				Section: r.entry.section,
-				Offset:  r.entry.offset,
+				ChunkID:   r.entry.chunkID,
+				Section:   r.entry.section,
+				Offset:    r.entry.offset,
 				PageStart: r.entry.pageStart,
 				PageEnd:   r.entry.pageEnd,
 			},
@@ -659,6 +660,17 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		limit = 8
 	}
 
+	// v4: Dynamic retrieval budget based on query complexity (pure rules, 0 LLM cost).
+	qf := analyzeQuery(query)
+	bm25N, vecBeam, rerankN, budgetReturn := retrievalBudget(qf)
+	if limit > budgetReturn {
+		// User asked for more than the budget recommends — respect the user's
+		// limit, but use budget for internal stages (beam, rerank pool).
+	}
+	_ = bm25N // reserved for future per-stage BM25 cap
+	log.Debugf("HybridSearch: budget=%s bm25N=%d vecBeam=%d rerankN=%d return=%d",
+		retrievalBudgetLabel(qf), bm25N, vecBeam, rerankN, budgetReturn)
+
 	// Query rewriting.
 	rewritten := s.rewrittenQueries(query)
 
@@ -670,6 +682,20 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	var filter SearchFilter
 	if len(filters) > 0 {
 		filter = filters[0]
+	}
+
+	// Check query cache.
+	if s.cacheEnabled() && limit > 0 {
+		qhash := cache.QueryHash(query, "hybrid", limit, filter.SourceType, filter.Section)
+		ckey := cache.QueryKey(s.kbName, qhash)
+		if raw, cerr := s.cacheClient.Get(context.Background(), ckey); cerr == nil && raw != nil {
+			var cachedHits []SearchHit
+			if json.Unmarshal(raw, &cachedHits) == nil {
+				log.Debugf("HybridSearch CACHE HIT: mode=hybrid query=%q hash=%s hits=%d", query, qhash, len(cachedHits))
+				return cachedHits, nil
+			}
+		}
+		log.Debugf("HybridSearch CACHE MISS: mode=hybrid query=%q hash=%s", query, qhash)
 	}
 
 	entries, err := s.collectEntries(filter, queryTerms)
@@ -714,8 +740,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 
 	if needDense {
 		// Coordinate GPU: load embedding model, sleep reranker.
+		var restoreEmb func()
 		if s.gpuScheduler != nil {
-			s.gpuScheduler.PrepareForEmbedding()
+			restoreEmb = s.gpuScheduler.PrepareForEmbedding()
 		}
 
 		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
@@ -725,12 +752,8 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 				qVec64[j] = float64(v)
 			}
 
-			// Wide beam for good recall — the union with BM25 candidates
-			// means we can afford to be generous.
-			vecK := limit * 20
-			if vecK < 300 {
-				vecK = 300
-			}
+			// v4: Budget-based beam width from query complexity.
+			vecK := vecBeam
 			if vecK > s.vectorIndex.Len() {
 				vecK = s.vectorIndex.Len()
 			}
@@ -766,6 +789,12 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		} else {
 			log.Infof("[search] hybrid: embedding failed, dense recall skipped")
 			needDense = false
+		}
+
+		// Release GPU scheduler lock — embedding work is done.
+		// Must release before Phase 8 (reranking) can acquire the lock.
+		if restoreEmb != nil {
+			restoreEmb()
 		}
 	}
 
@@ -837,8 +866,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		s.logger.Infof("[search] hybrid: dense scoring done (cosByKey=%d fallback=%v)", len(cosByKey), needFallback)
 	} else if hasVectors && s.embedder != nil {
 		// No vector index available; brute-force every entry that has a vector.
+		var restoreEmb2 func()
 		if s.gpuScheduler != nil {
-			s.gpuScheduler.PrepareForEmbedding()
+			restoreEmb2 = s.gpuScheduler.PrepareForEmbedding()
 		}
 		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
 		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
@@ -851,6 +881,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 					scored[i].cosScore = cosineSimilarity(scored[i].entry.vector, qVec64)
 				}
 			}
+		}
+		if restoreEmb2 != nil {
+			restoreEmb2()
 		}
 		s.logger.Infof("[search] hybrid: brute-force cos_scores for %d candidates (no index)", len(scored))
 	} else {
@@ -924,7 +957,8 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	if s.reranker != nil && len(results) > 0 {
 		// Coordinate GPU: switch from embedding to reranker mode.
 		if s.gpuScheduler != nil {
-			s.gpuScheduler.PrepareForReranking()
+			restoreRerank := s.gpuScheduler.PrepareForReranking()
+			defer restoreRerank()
 		}
 		entries := make([]searchEntry, len(results))
 		scores := make([]float64, len(results))
@@ -975,9 +1009,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 				Type:         r.entry.sourceType,
 			},
 			Location: LocationInfo{
-				ChunkID: r.entry.chunkID,
-				Section: r.entry.section,
-				Offset:  r.entry.offset,
+				ChunkID:   r.entry.chunkID,
+				Section:   r.entry.section,
+				Offset:    r.entry.offset,
 				PageStart: r.entry.pageStart,
 				PageEnd:   r.entry.pageEnd,
 			},
@@ -1037,6 +1071,18 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 			Timestamp: time.Now(),
 		})
 	}
+	// Store in query cache.
+	if s.cacheEnabled() && limit > 0 && len(hits) > 0 {
+		qhash := cache.QueryHash(query, "hybrid", limit, filter.SourceType, filter.Section)
+		ckey := cache.QueryKey(s.kbName, qhash)
+		if raw, jerr := json.Marshal(hits); jerr == nil {
+			if setErr := s.cacheClient.Set(context.Background(), ckey, raw, s.queryCacheTTL); setErr != nil {
+				log.Warnf("HybridSearch CACHE SET failed: mode=hybrid query=%q err=%v", query, setErr)
+			} else {
+				log.Debugf("HybridSearch CACHE SET: mode=hybrid query=%q hash=%s hits=%d ttl=%v", query, qhash, len(hits), s.queryCacheTTL)
+			}
+		}
+	}
 	return hits, nil
 }
 
@@ -1062,7 +1108,8 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 
 	// Coordinate GPU: prepare for embedding.
 	if s.gpuScheduler != nil {
-		s.gpuScheduler.PrepareForEmbedding()
+		restoreVec := s.gpuScheduler.PrepareForEmbedding()
+		defer restoreVec()
 	}
 
 	queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
@@ -1104,6 +1151,11 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 			continue
 		}
 		slug, chunkID := parts[0], parts[1]
+
+		// Skip tombstoned documents (soft-deleted).
+		if s.IsTombstoned(slug) {
+			continue
+		}
 
 		text, readErr := s.ReadChunk(slug, chunkID)
 		if readErr != nil {
@@ -1456,60 +1508,23 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 // rewrittenQueries applies the configured QueryRewriter and merges all
 // rewritten query variants into a single query string for tokenisation.
 // When no rewriter is configured, the original query is returned as-is.
+//
+// v4: Also appends dictionary related_terms as extra keywords for vector recall.
 func (s *Store) rewrittenQueries(query string) string {
-	if s.rewriter == nil {
-		return query
-	}
-	variants := s.rewriter.Rewrite(query)
-	if len(variants) == 0 {
-		return query
-	}
-	// Merge all variants into a single query string. Duplicate terms are
-	// removed during tokenisation by retrieval.QueryTerms → retrieval.Unique.
-	return strings.Join(variants, " ")
-}
-
-// listDocDirs returns the names of all document subdirectories under the
-// knowledge directory.
-func listDocDirs(kd string) ([]string, error) {
-	entries, err := os.ReadDir(kd)
-	if err != nil {
-		return nil, err
-	}
-	var dirs []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	base := query
+	if s.rewriter != nil {
+		variants := s.rewriter.Rewrite(query)
+		if len(variants) > 0 {
+			// Merge all variants into a single query string for BM25 tokenisation.
+			base = strings.Join(variants, " ")
 		}
-		name := e.Name()
-		if name == "INDEX.md" {
-			continue
-		}
-		dirs = append(dirs, name)
 	}
-	return dirs, nil
-}
-
-// readDirNames is a thin wrapper around os.ReadDir that returns entry names.
-func readDirNames(dir string) ([]string, error) {
-	des, err := readDirSafe(dir)
-	if err != nil {
-		return nil, err
+	// Append related terms from loaded dictionaries for extra semantic signal.
+	related := s.GetDictionaryRelatedTerms()
+	if len(related) > 0 {
+		base = base + " " + strings.Join(related, " ")
 	}
-	names := make([]string, len(des))
-	for i, d := range des {
-		names[i] = d.Name()
-	}
-	return names, nil
-}
-
-// readDirSafe is os.ReadDir but returns nil slice for non-existent dirs.
-func readDirSafe(dir string) ([]os.DirEntry, error) {
-	des, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	return des, err
+	return base
 }
 
 // -------------------- G5: Adaptive RRF weighting --------------------
@@ -1528,6 +1543,68 @@ func adaptiveRRFWeight(query string) float64 {
 		return 0.6 // boost BM25 side: α=0.6 → BM25 gets 0.6
 	default:
 		return 0.5 // balanced: equal weights
+	}
+}
+
+// -------------------- v4: Pure-rule complexity & retrieval budget --------------------
+
+// QueryFeatures captures lightweight structural characteristics of a query
+// for complexity classification without any LLM call.
+type QueryFeatures struct {
+	TermCount       int
+	HasComparison   bool
+	HasMethod       bool
+	HasMultiConcept bool
+}
+
+// analyzeQuery extracts structural features from a query string using pure
+// text rules — zero extra allocations beyond string ops.
+func analyzeQuery(query string) QueryFeatures {
+	lower := strings.ToLower(query)
+	terms := strings.Fields(query)
+
+	return QueryFeatures{
+		TermCount: len(terms),
+		HasComparison: strings.Contains(lower, "比较") || strings.Contains(lower, "对比") ||
+			strings.Contains(lower, "差异") || strings.Contains(lower, "vs") ||
+			strings.Contains(lower, "compare") || strings.Contains(lower, "versus") ||
+			strings.Contains(lower, "区别"),
+		HasMethod: strings.Contains(lower, "方法") || strings.Contains(lower, "method") ||
+			strings.Contains(lower, "模型") || strings.Contains(lower, "模型") ||
+			strings.Contains(lower, "计算") || strings.Contains(lower, "compute") ||
+			strings.Contains(lower, "算法") || strings.Contains(lower, "algorithm"),
+		HasMultiConcept: strings.Contains(lower, "和") || strings.Contains(lower, "与") ||
+			strings.Contains(lower, "and") || strings.Contains(lower, "+") ||
+			strings.Contains(lower, "以及") || strings.Contains(lower, "同时"),
+	}
+}
+
+// retrievalBudget maps query complexity to search-stage capacities.
+//
+//	           BM25 top-N  Vector beam  Rerank N  返回
+//	simple         40           80         40       8
+//	medium         60          120         60       8
+//	complex        80          200        100      10
+func retrievalBudget(qf QueryFeatures) (bm25N, vecBeam, rerankN, returnN int) {
+	switch {
+	case qf.TermCount > 12 || (qf.TermCount > 6 && qf.HasComparison):
+		return 80, 200, 100, 10
+	case qf.TermCount > 6 || qf.HasMethod || qf.HasMultiConcept:
+		return 60, 120, 60, 8
+	default:
+		return 40, 80, 40, 8
+	}
+}
+
+// retrievalBudgetLabel returns a human-readable complexity label for logging.
+func retrievalBudgetLabel(qf QueryFeatures) string {
+	switch {
+	case qf.TermCount > 12 || (qf.TermCount > 6 && qf.HasComparison):
+		return "complex"
+	case qf.TermCount > 6 || qf.HasMethod || qf.HasMultiConcept:
+		return "medium"
+	default:
+		return "simple"
 	}
 }
 
@@ -1687,9 +1764,9 @@ type topKHeap struct {
 }
 
 func (h topKHeap) Len() int           { return len(h.items) }
-func (h topKHeap) Less(i, j int) bool  { return h.items[i].score < h.items[j].score }
-func (h topKHeap) Swap(i, j int)       { h.items[i], h.items[j] = h.items[j], h.items[i] }
-func (h *topKHeap) Push(x any)         { h.items = append(h.items, x.(rankedEntry)) }
+func (h topKHeap) Less(i, j int) bool { return h.items[i].score < h.items[j].score }
+func (h topKHeap) Swap(i, j int)      { h.items[i], h.items[j] = h.items[j], h.items[i] }
+func (h *topKHeap) Push(x any)        { h.items = append(h.items, x.(rankedEntry)) }
 func (h *topKHeap) Pop() any {
 	old := h.items
 	n := len(old)

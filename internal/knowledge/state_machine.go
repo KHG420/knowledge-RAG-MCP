@@ -35,22 +35,22 @@ type TaskState string
 
 const (
 	// upload / rebuild states
-	TaskPending    TaskState = "pending"    // task created, not yet started
-	TaskParsing    TaskState = "parsing"    // parsing source file to text
-	TaskChunking   TaskState = "chunking"   // splitting text into chunks
-	TaskEmbedding  TaskState = "embedding"  // generating embedding vectors
-	TaskWriting    TaskState = "writing"    // writing chunks + index to storage
-	TaskVerifying  TaskState = "verifying"  // verifying chunk checksums
-	TaskActive     TaskState = "active"     // index is live and searchable
+	TaskPending   TaskState = "pending"   // task created, not yet started
+	TaskParsing   TaskState = "parsing"   // parsing source file to text
+	TaskChunking  TaskState = "chunking"  // splitting text into chunks
+	TaskEmbedding TaskState = "embedding" // generating embedding vectors
+	TaskWriting   TaskState = "writing"   // writing chunks + index to storage
+	TaskVerifying TaskState = "verifying" // verifying chunk checksums
+	TaskActive    TaskState = "active"    // index is live and searchable
 
 	// delete states
-	TaskTombstoning  TaskState = "tombstoning"  // adding tombstone record
-	TaskTombstoned   TaskState = "tombstoned"   // tombstone active, search hidden
-	TaskCleaning     TaskState = "cleaning"     // physically removing files
-	TaskCleaned      TaskState = "cleaned"       // fully removed
+	TaskTombstoning TaskState = "tombstoning" // adding tombstone record
+	TaskTombstoned  TaskState = "tombstoned"  // tombstone active, search hidden
+	TaskCleaning    TaskState = "cleaning"    // physically removing files
+	TaskCleaned     TaskState = "cleaned"     // fully removed
 
 	// terminal error states
-	TaskFailed         TaskState = "failed"          // retryable failure
+	TaskFailed          TaskState = "failed"           // retryable failure
 	TaskFailedPermanent TaskState = "failed_permanent" // non-retryable (e.g. parse error)
 )
 
@@ -76,13 +76,13 @@ func (s TaskState) CanTransitionTo(target TaskState) bool {
 	}
 
 	transitions := map[TaskState][]TaskState{
-		TaskPending:     {TaskParsing, TaskFailed, TaskFailedPermanent},
-		TaskParsing:     {TaskChunking, TaskFailed, TaskFailedPermanent},
-		TaskChunking:    {TaskEmbedding, TaskWriting, TaskFailed, TaskFailedPermanent}, // Writing can be skipped if no embedder
-		TaskEmbedding:   {TaskWriting, TaskFailed, TaskFailedPermanent},
-		TaskWriting:     {TaskVerifying, TaskFailed, TaskFailedPermanent},
-		TaskVerifying:   {TaskActive, TaskFailed, TaskFailedPermanent},
-		TaskActive:      {TaskTombstoning}, // only delete can move away from active
+		TaskPending:   {TaskParsing, TaskFailed, TaskFailedPermanent},
+		TaskParsing:   {TaskChunking, TaskFailed, TaskFailedPermanent},
+		TaskChunking:  {TaskEmbedding, TaskWriting, TaskFailed, TaskFailedPermanent}, // Writing can be skipped if no embedder
+		TaskEmbedding: {TaskWriting, TaskFailed, TaskFailedPermanent},
+		TaskWriting:   {TaskVerifying, TaskFailed, TaskFailedPermanent},
+		TaskVerifying: {TaskActive, TaskFailed, TaskFailedPermanent},
+		TaskActive:    {TaskTombstoning}, // only delete can move away from active
 
 		TaskTombstoning: {TaskTombstoned, TaskFailed, TaskFailedPermanent},
 		TaskTombstoned:  {TaskCleaning},
@@ -113,12 +113,12 @@ type TaskRecord struct {
 
 	// Checkpoint data: each step records its output so retries can skip
 	// already-completed work.
-	ParsedText    string `json:"parsed_text,omitempty"`    // result of parsing step
-	SourceHash    string `json:"source_hash,omitempty"`    // hash of source file
-	TextHash      string `json:"text_hash,omitempty"`      // hash of parsed text
-	ManifestJSON  string `json:"manifest_json,omitempty"`  // serialized ChunkManifest
-	NewVersion    int    `json:"new_version,omitempty"`    // index version being built
-	TombstoneTTL  int64  `json:"tombstone_ttl,omitempty"`  // TTL for tombstone (0 = default)
+	ParsedText   string `json:"parsed_text,omitempty"`   // result of parsing step
+	SourceHash   string `json:"source_hash,omitempty"`   // hash of source file
+	TextHash     string `json:"text_hash,omitempty"`     // hash of parsed text
+	ManifestJSON string `json:"manifest_json,omitempty"` // serialized ChunkManifest
+	NewVersion   int    `json:"new_version,omitempty"`   // index version being built
+	TombstoneTTL int64  `json:"tombstone_ttl,omitempty"` // TTL for tombstone (0 = default)
 }
 
 // DefaultMaxAttempts is the default retry limit for index tasks.

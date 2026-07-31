@@ -46,12 +46,12 @@ type SearchFilter struct {
 
 // queryMetrics holds per-query evaluation results.
 type queryMetrics struct {
-	Query     string
-	Hits      int      // total hits returned
-	Relevant  int      // total judged relevant for this query
+	Query          string
+	Hits           int     // total hits returned
+	Relevant       int     // total judged relevant for this query
 	ReciprocalRank float64 // 1 / rank of first relevant hit (0 if none)
-	NDCG5     float64
-	Recall10  float64
+	NDCG5          float64
+	Recall10       float64
 }
 
 func main() {
@@ -255,4 +255,3 @@ func makeSet(items []string) map[string]bool {
 	}
 	return s
 }
-

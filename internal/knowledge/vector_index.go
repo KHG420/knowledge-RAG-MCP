@@ -45,16 +45,16 @@ type HNSWIndex struct {
 	mL             float64 // level normalisation factor: 1 / ln(M)
 
 	// Graph state.
-	nodes     map[string]*hnswNode
-	entryID   string // top-layer entry point
-	maxLevel  int    // highest layer present
-	dim       int    // vector dimensionality
+	nodes    map[string]*hnswNode
+	entryID  string // top-layer entry point
+	maxLevel int    // highest layer present
+	dim      int    // vector dimensionality
 }
 
 // hnswNode is one vertex in the HNSW graph.
 type hnswNode struct {
 	id     string
-	vec    []float64 // normalised for cosine → dot-product
+	vec    []float64  // normalised for cosine → dot-product
 	layers [][]string // neighbours per layer; layers[0] is the bottom layer
 }
 
@@ -231,15 +231,16 @@ func (idx *HNSWIndex) Add(id string, vec []float64) {
 	}
 }
 
-func (idx *HNSWIndex) Remove(id string) {
+func (idx *HNSWIndex) Remove(id string) bool {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	node, ok := idx.nodes[id]
 	if !ok {
-		return
+		return false
 	}
 	idx.removeNode(node)
+	return true
 }
 
 func (idx *HNSWIndex) Len() int {
@@ -255,6 +256,66 @@ func (idx *HNSWIndex) allIDs() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// HNSWIndexStats holds read-only metadata and statistics about the HNSW index.
+type HNSWIndexStats struct {
+	NodeCount       int     `json:"nodeCount"`       // total vectors in the index
+	Dim             int     `json:"dim"`             // vector dimensionality
+	M               int     `json:"m"`               // max connections per node per layer
+	EfConstruction  int     `json:"efConstruction"`  // build-time search width
+	EfSearch        int     `json:"efSearch"`        // query-time search width
+	MaxLevel        int     `json:"maxLevel"`        // highest layer present (0-indexed)
+	EntryID         string  `json:"entryId"`         // top-layer entry-point node
+	LayerNodeCounts []int   `json:"layerNodeCounts"` // nodes per layer (index = layer)
+	TotalEdges      int     `json:"totalEdges"`      // total neighbour links across all layers
+	AvgDegree       float64 `json:"avgDegree"`       // average connections per node at layer 0
+}
+
+// Stats returns a snapshot of the index metadata and statistics.
+func (idx *HNSWIndex) Stats() *HNSWIndexStats {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	s := &HNSWIndexStats{
+		NodeCount:      len(idx.nodes),
+		Dim:            idx.dim,
+		M:              idx.M,
+		EfConstruction: idx.efConstruction,
+		EfSearch:       idx.efSearch,
+		MaxLevel:       idx.maxLevel,
+		EntryID:        idx.entryID,
+	}
+
+	// Count nodes per layer.
+	if idx.maxLevel >= 0 {
+		s.LayerNodeCounts = make([]int, idx.maxLevel+1)
+		for _, node := range idx.nodes {
+			for lc := range node.layers {
+				if lc < len(s.LayerNodeCounts) {
+					s.LayerNodeCounts[lc]++
+				}
+			}
+		}
+	}
+
+	// Count total edges and compute average degree at layer 0.
+	layer0DegreeSum := 0
+	layer0NodeCount := 0
+	for _, node := range idx.nodes {
+		for lc, neighs := range node.layers {
+			s.TotalEdges += len(neighs)
+			if lc == 0 {
+				layer0DegreeSum += len(neighs)
+				layer0NodeCount++
+			}
+		}
+	}
+	if layer0NodeCount > 0 {
+		s.AvgDegree = float64(layer0DegreeSum) / float64(layer0NodeCount)
+	}
+
+	return s
 }
 
 // ---- internal helpers ----

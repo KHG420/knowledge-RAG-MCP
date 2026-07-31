@@ -3,17 +3,18 @@ package knowledge
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"knowledge-mcp/internal/logging"
 )
 
@@ -40,12 +41,12 @@ func (s *Store) handleGPUSchedulerStatus(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"enabled":        s.gpuScheduler.Enabled(),
-		"summary":        s.gpuScheduler.Summary(),
+		"enabled":           s.gpuScheduler.Enabled(),
+		"summary":           s.gpuScheduler.Summary(),
 		"embeddingSleepURL": s.gpuScheduler.embeddingSleepURL,
 		"rerankerSleepURL":  s.gpuScheduler.rerankerSleepURL,
 		"docParserSleepURL": s.gpuScheduler.docParserSleepURL,
-		"timeout":        s.gpuScheduler.timeout.String(),
+		"timeout":           s.gpuScheduler.timeout.String(),
 	})
 }
 
@@ -71,10 +72,10 @@ func (s *Store) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"lines":  lines,
-		"tail":   tail,
-		"level":  levelFilter,
-		"count":  len(lines),
+		"lines": lines,
+		"tail":  tail,
+		"level": levelFilter,
+		"count": len(lines),
 	})
 }
 
@@ -173,15 +174,15 @@ func (s *Store) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"uptimeSeconds":    int64(time.Since(metricsStartTime).Seconds()),
-		"totalRequests":    metricsRequests.Load(),
-		"totalSearches":    metricsSearches.Load(),
-		"totalUploads":     metricsUploads.Load(),
-		"totalDeletes":     metricsDeletes.Load(),
-		"memoryAllocMB":    float64(m.Alloc) / 1024 / 1024,
+		"uptimeSeconds":      int64(time.Since(metricsStartTime).Seconds()),
+		"totalRequests":      metricsRequests.Load(),
+		"totalSearches":      metricsSearches.Load(),
+		"totalUploads":       metricsUploads.Load(),
+		"totalDeletes":       metricsDeletes.Load(),
+		"memoryAllocMB":      float64(m.Alloc) / 1024 / 1024,
 		"memoryTotalAllocMB": float64(m.TotalAlloc) / 1024 / 1024,
-		"goroutines":       runtime.NumGoroutine(),
-		"numCPU":           runtime.NumCPU(),
+		"goroutines":         runtime.NumGoroutine(),
+		"numCPU":             runtime.NumCPU(),
 	})
 }
 
@@ -348,9 +349,9 @@ func (s *Store) handleDocChunks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"slug":        slug,
-		"chunkCount":  len(chunks),
-		"chunks":      chunks,
+		"slug":       slug,
+		"chunkCount": len(chunks),
+		"chunks":     chunks,
 	})
 }
 
@@ -379,19 +380,12 @@ func (s *Store) handleDocDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to read the original file
-	docDir := s.DocDir(slug)
-	originalPath := filepath.Join(docDir, "original")
-	if fb, ok := s.backend.(*FileBackend); ok {
-		// For file backend, try to read the raw text or find original
-		rawPath := filepath.Join(fb.kbDir(s.kbName), slug, "raw.txt")
-		data, err := os.ReadFile(rawPath)
-		if err == nil {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, meta.OriginalName))
-			w.Write(data)
-			return
-		}
+	// Try to read the raw text via backend.
+	if rawText, err := s.backend.ReadRawText(s.kbName, slug); err == nil && rawText != "" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, meta.OriginalName))
+		w.Write([]byte(rawText))
+		return
 	}
 
 	// Fallback: return chunk content as text
@@ -414,7 +408,6 @@ func (s *Store) handleDocDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, meta.OriginalName))
 	w.Write(buf.Bytes())
-	_ = originalPath // used for file backend check above
 }
 
 // ── Search console ──────────────────────────────────────────────────────────
@@ -424,7 +417,7 @@ func (s *Store) handleSearchConsole(w http.ResponseWriter, r *http.Request) {
 	log := s.logger.WithModule("manage")
 	var body struct {
 		Query  string `json:"query"`
-		Mode   string `json:"mode"`   // bm25, vector, hybrid (overrides runtime setting)
+		Mode   string `json:"mode"` // bm25, vector, hybrid (overrides runtime setting)
 		KBName string `json:"kbName"`
 		Limit  int    `json:"limit"`
 		Rerank bool   `json:"rerank"`
@@ -593,48 +586,138 @@ func (s *Store) handleKBExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For file backend, zip the KB directory.
-	fb, ok := s.backend.(*FileBackend)
-	if !ok {
-		writeManageError(w, http.StatusBadRequest, "export only supported with file backend")
-		return
-	}
-
-	kbPath := fb.kbDir(name)
-	if _, err := os.Stat(kbPath); os.IsNotExist(err) {
-		writeManageError(w, http.StatusNotFound, "knowledge base not found: "+name)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, name))
+
+	mb, ok := s.backend.(*MySQLBackend)
+	if !ok {
+		writeManageError(w, http.StatusInternalServerError, "export requires MySQL backend")
+		return
+	}
+	s.exportMySQLKB(mb, name, w, log)
+}
+
+// exportMySQLKB exports a MySQL-backed KB by building a zip from database records.
+func (s *Store) exportMySQLKB(mb *MySQLBackend, name string, w http.ResponseWriter, log *logging.Logger) {
+	// Verify KB exists.
+	slugs, err := mb.ListDocSlugs(name)
+	if err != nil {
+		log.Errorf("KBExport MySQL: list docs for %q: %v", name, err)
+		writeManageError(w, http.StatusInternalServerError, "failed to list documents")
+		return
+	}
 
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 
-	err := filepath.Walk(kbPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(kbPath, path)
-		f, err := zw.Create(rel)
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		_, err = f.Write(data)
-		return err
-	})
-
-	if err != nil {
-		log.Errorf("KBExport: %q failed: %v", name, err)
+	// ── kb.json ──
+	desc, _ := mb.ReadKBDescription(name)
+	kbMeta := map[string]string{"name": name, "description": desc}
+	if data, err := json.MarshalIndent(kbMeta, "", "  "); err == nil {
+		writeZipEntry(zw, "kb.json", data)
 	}
+
+	// ── INDEX.md ──
+	if indexContent, err := mb.ReadIndex(name); err == nil && indexContent != "" {
+		writeZipEntry(zw, "INDEX.md", []byte(indexContent))
+	}
+
+	// ── INVERTED.gob ──
+	if invIdx, err := mb.ReadInvertedIndex(name); err == nil && invIdx != nil {
+		var buf bytes.Buffer
+		if gob.NewEncoder(&buf).Encode(invIdx) == nil {
+			writeZipEntry(zw, "INVERTED.gob", buf.Bytes())
+		}
+	}
+
+	// ── LIST_SNAPSHOT.json ──
+	if cs, docs, err := mb.ReadSnapshot(name); err == nil && len(docs) > 0 {
+		snapshot := map[string]any{
+			"checksum":  cs,
+			"documents": docs,
+		}
+		if data, err := json.MarshalIndent(snapshot, "", "  "); err == nil {
+			writeZipEntry(zw, "LIST_SNAPSHOT.json", data)
+		}
+	}
+
+	// ── Per-document entries ──
+	for _, slug := range slugs {
+		s.exportMySQLDoc(mb, name, slug, zw, log)
+	}
+}
+
+// exportMySQLDoc writes all files for a single document into the zip.
+func (s *Store) exportMySQLDoc(mb *MySQLBackend, kbName, slug string, zw *zip.Writer, log *logging.Logger) {
+	// meta.json
+	if meta, err := mb.ReadMeta(kbName, slug); err == nil {
+		if data, err := json.MarshalIndent(meta, "", "  "); err == nil {
+			writeZipEntry(zw, slug+"/meta.json", data)
+		}
+	}
+
+	// chunks/{id}.md
+	if chunkIDs, err := mb.ListChunkIDs(kbName, slug); err == nil {
+		for _, cid := range chunkIDs {
+			if content, err := mb.ReadChunk(kbName, slug, cid); err == nil {
+				writeZipEntry(zw, slug+"/chunks/"+cid+".md", []byte(content))
+			}
+		}
+	}
+
+	// chunks/sections/{id}.md
+	if sectionIDs, err := mb.ListSectionChunkIDs(kbName, slug); err == nil {
+		for _, sid := range sectionIDs {
+			if content, err := mb.ReadSectionChunk(kbName, slug, sid); err == nil {
+				writeZipEntry(zw, slug+"/chunks/sections/"+sid+".md", []byte(content))
+			}
+		}
+	}
+
+	// CHUNKS.toml
+	if index, err := mb.ReadChunksIndex(kbName, slug); err == nil && index != nil {
+		var buf bytes.Buffer
+		if toml.NewEncoder(&buf).Encode(index) == nil {
+			writeZipEntry(zw, slug+"/CHUNKS.toml", buf.Bytes())
+		}
+	}
+
+	// MANIFEST.json
+	if manifest, err := mb.ReadManifest(kbName, slug); err == nil && manifest != nil {
+		if data, err := json.MarshalIndent(manifest, "", "  "); err == nil {
+			writeZipEntry(zw, slug+"/MANIFEST.json", data)
+		}
+	}
+
+	// TASK.json
+	if task, err := mb.ReadTaskRecord(kbName, slug); err == nil && task != nil {
+		if data, err := json.MarshalIndent(task, "", "  "); err == nil {
+			writeZipEntry(zw, slug+"/TASK.json", data)
+		}
+	}
+
+	// document.md (raw text)
+	if rawText, err := mb.ReadRawText(kbName, slug); err == nil && rawText != "" {
+		writeZipEntry(zw, slug+"/document.md", []byte(rawText))
+	}
+
+	// source{ext}
+	if srcData, ext, err := mb.ReadSource(kbName, slug); err == nil && len(srcData) > 0 {
+		srcName := "source" + ext
+		if ext == "" {
+			srcName = "source"
+		}
+		writeZipEntry(zw, slug+"/"+srcName, srcData)
+	}
+}
+
+// writeZipEntry is a helper that adds a single file entry to a zip writer.
+func writeZipEntry(zw *zip.Writer, name string, data []byte) {
+	f, err := zw.Create(name)
+	if err != nil {
+		return
+	}
+	f.Write(data)
 }
 
 // ── Knowledge base import ───────────────────────────────────────────────────
@@ -653,12 +736,6 @@ func (s *Store) handleKBImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fb, ok := s.backend.(*FileBackend)
-	if !ok {
-		writeManageError(w, http.StatusBadRequest, "import only supported with file backend")
-		return
-	}
-
 	maxSize := int64(s.GetUploadMaxSizeMB()) << 20
 	r.Body = http.MaxBytesReader(w, r.Body, maxSize)
 
@@ -674,48 +751,208 @@ func (s *Store) handleKBImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kbPath := fb.kbDir(name)
-	if err := os.MkdirAll(kbPath, 0o755); err != nil {
-		writeManageError(w, http.StatusInternalServerError, err.Error())
+	mb, ok := s.backend.(*MySQLBackend)
+	if !ok {
+		writeManageError(w, http.StatusInternalServerError, "import requires MySQL backend")
 		return
 	}
+	s.importMySQLKB(mb, name, zr, w, log)
+}
 
-	count := 0
+// importMySQLKB imports a zip into a MySQL-backed KB.
+func (s *Store) importMySQLKB(mb *MySQLBackend, name string, zr *zip.Reader, w http.ResponseWriter, log *logging.Logger) {
+	// Collect files by path.
+	files := make(map[string]*zip.File)
+	slugs := make(map[string]bool)
 	for _, f := range zr.File {
-		rc, err := f.Open()
-		if err != nil {
-			continue
-		}
-		targetPath := filepath.Join(kbPath, f.Name)
-		// Path-traversal guard
-		if !strings.HasPrefix(targetPath, kbPath) {
-			rc.Close()
-			continue
-		}
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(targetPath, 0o755)
-			rc.Close()
 			continue
 		}
-		os.MkdirAll(filepath.Dir(targetPath), 0o755)
-		dst, err := os.Create(targetPath)
-		if err != nil {
-			rc.Close()
-			continue
+		files[f.Name] = f
+
+		// Detect document slugs (top-level directories containing a meta.json).
+		parts := strings.SplitN(f.Name, "/", 2)
+		if len(parts) == 2 {
+			slug := parts[0]
+			if strings.HasSuffix(f.Name, "/meta.json") {
+				slugs[slug] = true
+			}
 		}
-		io.Copy(dst, rc)
-		dst.Close()
-		rc.Close()
-		count++
 	}
 
-	log.Infof("KBImport: name=%q files=%d", name, count)
+	// ── Create KB ──
+	desc := ""
+	if f, ok := files["kb.json"]; ok {
+		if data := readZipFile(f); data != nil {
+			var kbMeta struct {
+				Description string `json:"description"`
+			}
+			if json.Unmarshal(data, &kbMeta) == nil {
+				desc = kbMeta.Description
+			}
+		}
+	}
+	if err := mb.CreateKB(name, desc); err != nil {
+		log.Errorf("KBImport MySQL: create KB %q: %v", name, err)
+	}
+
+	// ── INDEX.md ──
+	if f, ok := files["INDEX.md"]; ok {
+		if data := readZipFile(f); data != nil {
+			mb.WriteIndex(name, string(data))
+		}
+	}
+
+	// ── INVERTED.gob ──
+	if f, ok := files["INVERTED.gob"]; ok {
+		if data := readZipFile(f); data != nil {
+			var idx InvertedIndex
+			if gob.NewDecoder(bytes.NewReader(data)).Decode(&idx) == nil {
+				mb.WriteInvertedIndex(name, &idx)
+			}
+		}
+	}
+
+	// ── LIST_SNAPSHOT.json ──
+	if f, ok := files["LIST_SNAPSHOT.json"]; ok {
+		if data := readZipFile(f); data != nil {
+			var snapshot struct {
+				Documents []DocumentMeta `json:"documents"`
+			}
+			if json.Unmarshal(data, &snapshot) == nil && len(snapshot.Documents) > 0 {
+				mb.WriteSnapshot(name, snapshot.Documents)
+			}
+		}
+	}
+
+	// ── Per-document imports ──
+	count := 0
+	for slug := range slugs {
+		count += s.importMySQLDoc(mb, name, slug, files, log)
+	}
+
+	log.Infof("KBImport MySQL: name=%q docs=%d", name, count)
 
 	writeManageJSON(w, http.StatusOK, map[string]any{
-		"message": "knowledge base imported",
-		"name":    name,
-		"files":   count,
+		"message":   "knowledge base imported",
+		"name":      name,
+		"documents": count,
 	})
+}
+
+// importMySQLDoc imports all files for a single document from the zip into MySQL.
+func (s *Store) importMySQLDoc(mb *MySQLBackend, kbName, slug string, files map[string]*zip.File, log *logging.Logger) int {
+	prefix := slug + "/"
+
+	// meta.json — required, use as signal the doc is complete.
+	metaData := readZipFile(files[prefix+"meta.json"])
+	if metaData == nil {
+		return 0
+	}
+	var meta DocumentMeta
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		log.Warnf("KBImport: skip doc %q: bad meta.json: %v", slug, err)
+		return 0
+	}
+	meta.Slug = slug
+	if err := mb.WriteMeta(kbName, slug, &meta); err != nil {
+		log.Warnf("KBImport: write meta %q: %v", slug, err)
+	}
+
+	// chunks/{id}.md
+	for path, f := range files {
+		if !strings.HasPrefix(path, prefix+"chunks/") || strings.Contains(path, "/sections/") {
+			continue
+		}
+		name := strings.TrimPrefix(path, prefix+"chunks/")
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		chunkID := strings.TrimSuffix(name, ".md")
+		if data := readZipFile(f); data != nil {
+			mb.WriteChunk(kbName, slug, chunkID, string(data))
+		}
+	}
+
+	// chunks/sections/{id}.md
+	for path, f := range files {
+		if !strings.HasPrefix(path, prefix+"chunks/sections/") {
+			continue
+		}
+		name := strings.TrimPrefix(path, prefix+"chunks/sections/")
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		sectionID := strings.TrimSuffix(name, ".md")
+		if data := readZipFile(f); data != nil {
+			mb.WriteSectionChunk(kbName, slug, sectionID, string(data))
+		}
+	}
+
+	// CHUNKS.toml
+	if data := readZipFile(files[prefix+"CHUNKS.toml"]); data != nil {
+		var index ChunksIndex
+		if _, err := toml.Decode(string(data), &index); err == nil {
+			mb.WriteChunksIndex(kbName, slug, &index)
+		}
+	}
+
+	// MANIFEST.json
+	if data := readZipFile(files[prefix+"MANIFEST.json"]); data != nil {
+		if manifest, err := UnmarshalChunkManifest(data); err == nil {
+			mb.WriteManifest(kbName, slug, manifest)
+		}
+	}
+
+	// TASK.json
+	if data := readZipFile(files[prefix+"TASK.json"]); data != nil {
+		if task, err := UnmarshalTaskRecord(data); err == nil {
+			mb.WriteTaskRecord(kbName, slug, task)
+		}
+	}
+
+	// document.md
+	if data := readZipFile(files[prefix+"document.md"]); data != nil {
+		mb.WriteRawText(kbName, slug, string(data))
+	}
+
+	// source{ext}
+	for path, f := range files {
+		if !strings.HasPrefix(path, prefix+"source") {
+			continue
+		}
+		name := strings.TrimPrefix(path, prefix)
+		if strings.HasPrefix(name, "source") && name != "source" {
+			ext := strings.TrimPrefix(name, "source")
+			if data := readZipFile(f); data != nil {
+				mb.WriteSource(kbName, slug, data, ext)
+			}
+			break
+		}
+	}
+	// source (no extension)
+	if data := readZipFile(files[prefix+"source"]); data != nil {
+		mb.WriteSource(kbName, slug, data, "")
+	}
+
+	return 1
+}
+
+// readZipFile reads the full content of a zip file entry, or returns nil.
+func readZipFile(f *zip.File) []byte {
+	if f == nil {
+		return nil
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // ── System info ─────────────────────────────────────────────────────────────
@@ -730,11 +967,11 @@ func (s *Store) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 		"numCPU":       runtime.NumCPU(),
 		"numGoroutine": runtime.NumGoroutine(),
 		"memory": map[string]any{
-			"allocMB":       float64(m.Alloc) / 1024 / 1024,
-			"totalAllocMB":  float64(m.TotalAlloc) / 1024 / 1024,
-			"sysMB":         float64(m.Sys) / 1024 / 1024,
-			"numGC":         m.NumGC,
-			"heapObjects":   m.HeapObjects,
+			"allocMB":      float64(m.Alloc) / 1024 / 1024,
+			"totalAllocMB": float64(m.TotalAlloc) / 1024 / 1024,
+			"sysMB":        float64(m.Sys) / 1024 / 1024,
+			"numGC":        m.NumGC,
+			"heapObjects":  m.HeapObjects,
 		},
 		"uptimeSeconds": int64(time.Since(metricsStartTime).Seconds()),
 	})
