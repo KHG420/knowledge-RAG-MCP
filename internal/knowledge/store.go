@@ -44,6 +44,10 @@ type Store struct {
 	mu                   *sync.Mutex
 	taskManager          *UploadTaskManager
 	vectorIndex          *HNSWIndex        // per-KB vector index for fast ANN search
+	vectorIndexCache     map[string]*HNSWIndex // in-memory cache of loaded vector indexes by kbName
+	vectorIndexCacheMu   sync.RWMutex          // guards vectorIndexCache reads/writes
+	rerankCache          map[string][]float64  // in-memory cache of rerankTop scores (key: query+texts hash)
+	rerankCacheMu        sync.RWMutex          // guards rerankCache reads/writes
 	tombstoneManager     *TombstoneManager // cached tombstone manager (lazy init)
 
 	// Runtime configuration
@@ -127,6 +131,18 @@ func (s *Store) WithKB(name string) *Store {
 	}
 	cp := *s
 	cp.kbName = name
+
+	// Check in-memory cache first to avoid repeated disk I/O.
+	if s.vectorIndexCache != nil {
+		s.vectorIndexCacheMu.RLock()
+		if idx, ok := s.vectorIndexCache[name]; ok {
+			s.vectorIndexCacheMu.RUnlock()
+			cp.vectorIndex = idx
+			return &cp
+		}
+		s.vectorIndexCacheMu.RUnlock()
+	}
+
 	// Try loading the persisted HNSW index for this KB.
 	// Each KB has its own VECTOR.gob; if present, use it.
 	if idx, err := cp.loadVectorIndex(); err == nil && idx != nil {
@@ -134,6 +150,17 @@ func (s *Store) WithKB(name string) *Store {
 	} else {
 		cp.vectorIndex = nil
 	}
+
+	// Store in cache for future WithKB calls.
+	if cp.vectorIndex != nil {
+		s.vectorIndexCacheMu.Lock()
+		if s.vectorIndexCache == nil {
+			s.vectorIndexCache = make(map[string]*HNSWIndex)
+		}
+		s.vectorIndexCache[name] = cp.vectorIndex
+		s.vectorIndexCacheMu.Unlock()
+	}
+
 	return &cp
 }
 
@@ -144,7 +171,7 @@ func (s *Store) SetLogger(l *logging.Logger) {
 }
 
 // SetKBRouter configures the KB router for multi-KB joint retrieval (v4).
-// When set, knowledge_search without an explicit kbName will use the router
+// When set, knowledge_research without an explicit kbName will use the router
 // to select the best 1–3 KBs instead of searching all KBs blindly.
 func (s *Store) SetKBRouter(r *KBRouter) {
 	s.kbRouter = r
@@ -383,11 +410,11 @@ func (s *Store) ReadMeta(slug string) (DocumentMeta, error) {
 		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
 			var meta DocumentMeta
 			if json.Unmarshal(raw, &meta) == nil {
-				s.logger.WithModule("cache").Debugf("meta HIT: slug=%q kb=%q", slug, s.kbName)
+				s.logger.WithModule("cache").Infof("meta HIT  key=%s slug=%q kb=%q", key, slug, s.kbName)
 				return meta, nil
 			}
 		}
-		s.logger.WithModule("cache").Debugf("meta MISS: slug=%q kb=%q", slug, s.kbName)
+		s.logger.WithModule("cache").Infof("meta MISS key=%s slug=%q kb=%q", key, slug, s.kbName)
 	}
 
 	meta, err := s.backend.ReadMeta(s.kbName, slug)
@@ -400,9 +427,9 @@ func (s *Store) ReadMeta(slug string) (DocumentMeta, error) {
 		key := cache.MetaKey(s.kbName, slug)
 		if raw, jerr := json.Marshal(meta); jerr == nil {
 			if setErr := s.cacheClient.Set(context.Background(), key, raw, s.metaCacheTTL); setErr != nil {
-				s.logger.WithModule("cache").Warnf("meta SET failed: slug=%q err=%v", slug, setErr)
+				s.logger.WithModule("cache").Warnf("meta SET failed: key=%s slug=%q err=%v", key, slug, setErr)
 			} else {
-				s.logger.WithModule("cache").Debugf("meta SET: slug=%q kb=%q ttl=%v", slug, s.kbName, s.metaCacheTTL)
+				s.logger.WithModule("cache").Infof("meta SET  key=%s slug=%q kb=%q ttl=%v size=%d", key, slug, s.kbName, s.metaCacheTTL, len(raw))
 			}
 		}
 	}
@@ -720,9 +747,10 @@ func (s *Store) ReadChunk(slug, chunkID string) (string, error) {
 	if s.cacheEnabled() {
 		key := cache.ChunkKey(s.kbName, slug, chunkID)
 		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
-			s.logger.WithModule("cache").Debugf("chunk HIT: slug=%q chunk=%s kb=%q", slug, chunkID, s.kbName)
+			s.logger.WithModule("cache").Infof("chunk HIT  key=%s slug=%q chunk=%s kb=%q size=%d", key, slug, chunkID, s.kbName, len(raw))
 			return string(raw), nil
 		}
+		s.logger.WithModule("cache").Infof("chunk MISS key=%s slug=%q chunk=%s kb=%q", key, slug, chunkID, s.kbName)
 	}
 
 	text, err := s.backend.ReadChunk(s.kbName, slug, chunkID)
@@ -734,9 +762,9 @@ func (s *Store) ReadChunk(slug, chunkID string) (string, error) {
 	if s.cacheEnabled() && text != "" {
 		key := cache.ChunkKey(s.kbName, slug, chunkID)
 		if setErr := s.cacheClient.Set(context.Background(), key, []byte(text), s.chunkCacheTTL); setErr != nil {
-			s.logger.WithModule("cache").Warnf("chunk SET failed: slug=%q chunk=%s err=%v", slug, chunkID, setErr)
+			s.logger.WithModule("cache").Warnf("chunk SET failed: key=%s slug=%q chunk=%s err=%v", key, slug, chunkID, setErr)
 		} else {
-			s.logger.WithModule("cache").Debugf("chunk SET: slug=%q chunk=%s kb=%q size=%d", slug, chunkID, s.kbName, len(text))
+			s.logger.WithModule("cache").Infof("chunk SET  key=%s slug=%q chunk=%s kb=%q ttl=%v size=%d", key, slug, chunkID, s.kbName, s.chunkCacheTTL, len(text))
 		}
 	}
 
@@ -916,11 +944,11 @@ func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
 		if raw, err := s.cacheClient.Get(context.Background(), key); err == nil && raw != nil {
 			var idx ChunksIndex
 			if json.Unmarshal(raw, &idx) == nil {
-				s.logger.WithModule("cache").Debugf("index HIT: slug=%q kb=%q chunks=%d", slug, s.kbName, len(idx.Chunks))
+				s.logger.WithModule("cache").Infof("index HIT  key=%s slug=%q kb=%q chunks=%d size=%d", key, slug, s.kbName, len(idx.Chunks), len(raw))
 				return &idx, nil
 			}
 		}
-		s.logger.WithModule("cache").Debugf("index MISS: slug=%q kb=%q", slug, s.kbName)
+		s.logger.WithModule("cache").Infof("index MISS key=%s slug=%q kb=%q", key, slug, s.kbName)
 	}
 
 	idx, err := s.backend.ReadChunksIndex(s.kbName, slug)
@@ -933,9 +961,9 @@ func (s *Store) ReadChunksIndex(slug string) (*ChunksIndex, error) {
 		key := cache.IndexKey(s.kbName, slug)
 		if raw, jerr := json.Marshal(idx); jerr == nil {
 			if setErr := s.cacheClient.Set(context.Background(), key, raw, s.indexCacheTTL); setErr != nil {
-				s.logger.WithModule("cache").Warnf("index SET failed: slug=%q err=%v", slug, setErr)
+				s.logger.WithModule("cache").Warnf("index SET failed: key=%s slug=%q err=%v", key, slug, setErr)
 			} else {
-				s.logger.WithModule("cache").Debugf("index SET: slug=%q kb=%q chunks=%d ttl=%v", slug, s.kbName, len(idx.Chunks), s.indexCacheTTL)
+				s.logger.WithModule("cache").Infof("index SET  key=%s slug=%q kb=%q chunks=%d ttl=%v size=%d", key, slug, s.kbName, len(idx.Chunks), s.indexCacheTTL, len(raw))
 			}
 		}
 	}
@@ -1293,6 +1321,13 @@ func (s *Store) buildVectorIndexLocked() {
 	if saveErr := s.saveVectorIndex(idx); saveErr != nil {
 		log.Warnf("save vector index after build: %v", saveErr)
 	}
+
+	// Update the in-memory vector index cache so future WithKB calls get the rebuilt index.
+	if s.vectorIndexCache != nil && s.kbName != "" {
+		s.vectorIndexCacheMu.Lock()
+		s.vectorIndexCache[s.kbName] = idx
+		s.vectorIndexCacheMu.Unlock()
+	}
 }
 
 // BuildVectorIndex forces a full rebuild of the HNSW vector index and persists
@@ -1326,13 +1361,10 @@ func (s *Store) updateVectorIndex(slug string, entries []ChunkIndexEntry) {
 
 	log := s.logger.WithModule("vector")
 
-	// Count vectors before removing old entries.
-	removed := 0
-	for _, e := range entries {
-		if s.vectorIndex.Remove(slug + "/" + e.ID) {
-			removed++
-		}
-	}
+	// Remove all old entries for this document before adding new ones.
+	// This correctly handles ID format changes (sequential → content-addressed)
+	// that happen when a document is re-uploaded via a different code path.
+	s.removeDocFromVectorIndex(slug)
 
 	// Add new entries.
 	added := 0
@@ -1343,9 +1375,9 @@ func (s *Store) updateVectorIndex(slug string, entries []ChunkIndexEntry) {
 		}
 	}
 
-	if added > 0 || removed > 0 {
-		log.Debugf("updateVectorIndex: doc=%s added=%d removed=%d total=%d",
-			slug, added, removed, s.vectorIndex.Len())
+	if added > 0 {
+		log.Debugf("updateVectorIndex: doc=%s added=%d total=%d",
+			slug, added, s.vectorIndex.Len())
 	}
 }
 

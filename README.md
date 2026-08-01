@@ -181,7 +181,19 @@ MANAGE_PORT=8080 knowledge-mcp serve
 ```
 
 The UI shares the same data directory as the MCP server, so documents uploaded via the
-web UI are immediately searchable through `knowledge_search`.
+web UI are immediately searchable through `knowledge_research`.
+
+### UI Features
+
+| Feature | Path | Description |
+|---------|------|-------------|
+| KB management | `/` | Create/delete KBs, view KB list and descriptions |
+| Document upload | `/kb/{name}` | Drag-and-drop or file selection, batch upload with optional tags |
+| Document list | `/kb/{name}` | Browse, search, filter by tags/type/time |
+| Document detail | `/kb/{name}/{slug}` | View metadata, chunk list, raw text |
+| Search console | `/kb/{name}/search` | Test retrieval, switch BM25/hybrid modes, view scores |
+| System config | `/config` | View and modify chunking params, search params, tool descriptions at runtime |
+| Batch delete | `/kb/{name}` | Select multiple documents for batch deletion (supports tombstone soft-delete)
 
 ## Running as a Daemon / Service
 
@@ -354,14 +366,16 @@ When the MySQL backend is enabled, all knowledge base data is stored in database
 
 ## MCP Tools
 
-### `knowledge_search`
+### `knowledge_research`
 
-Semantic & keyword search across all documents. The system auto-handles:
+Semantic research search across all documents. The system auto-handles:
 KB routing, query analysis, keyword/semantic expansion, retrieval strategy
 selection (BM25 / vector / hybrid), reranking, and evidence confidence scoring.
 
-**Just pass the user's original question — do NOT rewrite into keywords, do NOT
-pre-select a mode or KB.** The internal query analyzer handles everything.
+**For simple factual questions, pass the user's original question directly.**
+**For complex research tasks, you may decompose into multiple focused queries.**
+The agent focuses on research planning and answer synthesis; the retrieval
+system handles finding reliable evidence.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
@@ -428,7 +442,7 @@ Remove a document from a knowledge base by its slug.
 
 ## KB Routing
 
-When `knowledge_search` is called without a specific `kbName`, the KB Router scores every knowledge base against the query using four weighted dimensions:
+When `knowledge_research` is called without a specific `kbName`, the KB Router scores every knowledge base against the query using four weighted dimensions:
 
 | Dimension | Weight | Description |
 |-----------|--------|-------------|
@@ -547,6 +561,147 @@ docs/
   roadmap.md             — RAG optimization roadmap
   roadmap_zh.md
 ```
+
+## Caching
+
+knowledge-mcp has two caching layers:
+
+### Built-in cache (always on, no Redis needed)
+
+In-memory map-based cache at the Store layer, with per-type TTL:
+
+| Type | Content | Default TTL | Key format |
+|------|---------|-------------|------------|
+| chunk | Chunk text | 0 (no expiry) | `kmcp:kb:{kb}:chunk:{slug}:{id}` |
+| meta | Document metadata | 0 (no expiry) | `kmcp:kb:{kb}:meta:{slug}` |
+| index | CHUNKS.toml index | 0 (no expiry) | `kmcp:kb:{kb}:idx:{slug}` |
+| kblist | KB list | 60s | `kmcp:kblist` |
+
+At `info` log level you can see HIT/MISS/SET for each cache type:
+```
+[INFO] [cache] chunk HIT  key=kmcp:kb:ship:chunk:doc:033 slug="doc" chunk=033 size=1847
+[INFO] [cache] chunk MISS key=kmcp:kb:ship:chunk:doc:081 slug="doc" chunk=081
+[INFO] [cache] chunk SET  key=kmcp:kb:ship:chunk:doc:081 slug="doc" chunk=081 ttl=0s size=2103
+```
+
+Cache entries are automatically invalidated on document re-upload or deletion.
+
+### Redis cache (optional)
+
+Install Redis and set `redis_enabled = true`. Redis only caches **query-level search results** (HybridSearch output), keyed by normalized query hash + KB + filter hash.
+
+## Logging & Debugging
+
+Set `log_level = "debug"` for detailed output including tokenization, per-term IDF, per-candidate BM25 scores, RRF fusion details, and HNSW search steps. At `info` level you still get: search request summaries, cache HIT/MISS, KB routing decisions, upload progress, and all warnings/errors.
+
+```bash
+# Follow logs
+tail -f ~/.knowledge-mcp/knowledge-mcp.log
+
+# Filter by module
+tail -f ~/.knowledge-mcp/knowledge-mcp.log | grep "\[search\]"
+tail -f ~/.knowledge-mcp/knowledge-mcp.log | grep "HIT\|MISS"
+```
+
+## Domain Dictionaries
+
+Place YAML files in `dictionaries/` for query expansion with domain-specific synonyms. Example `dictionaries/ship_motion.yaml`:
+
+```yaml
+resistance:
+  - drag
+  - 阻力
+  - friction resistance
+
+CFD:
+  - computational fluid dynamics
+  - 计算流体力学
+  - numerical simulation
+```
+
+Dictionaries are loaded at startup. A query like "ship resistance CFD" automatically expands to include "drag", "computational fluid dynamics", etc. in both BM25 and vector recall.
+
+## Database Schema (MySQL backend)
+
+The MySQL backend auto-creates the following tables in the configured database:
+
+| Table | Primary Key | Purpose |
+|-------|-------------|---------|
+| `knowledge_bases` | `name` | KB metadata (name, description) |
+| `documents` | `(kb_name, slug)` | Document metadata (filename, type, tags, title, authors, abstract, raw text) |
+| `chunks` | `(kb_name, doc_slug, chunk_id)` | Fine-grained chunk text |
+| `section_chunks` | `(kb_name, doc_slug, section_id)` | Coarse section-level chunk text |
+| `chunks_index` | `(kb_name, doc_slug)` | Per-document search index (JSON) |
+| `inverted_index` | `(kb_name, term, doc_slug, chunk_id)` | Global inverted index (term → doc+chunk → TF) |
+| `manifests` | `(kb_name, slug)` | Versioned chunk manifests |
+| `task_records` | `(kb_name, slug)` | Upload task state |
+| `list_snapshots` | `kb_name` | Document list snapshot cache |
+
+All tables use InnoDB + utf8mb4. No foreign keys — deletion is handled at the application layer for compatibility.
+
+## Maintenance
+
+### Cleaning orphaned vector index entries
+
+When chunks are re-uploaded or deleted, stale entries may remain in the HNSW vector index. Use the cleanup tool:
+
+```bash
+# Dry-run first
+go run ./cmd/cleanup-vector/ --dry-run
+
+# Clean a specific KB
+go run ./cmd/cleanup-vector/ --kb ship-hydrodynamics --dry-run
+
+# Apply
+go run ./cmd/cleanup-vector/
+```
+
+### Rebuilding the vector index
+
+Delete `VECTOR.gob` under the KB directory. The index will be rebuilt from `chunks_index` data on the next hybrid search request.
+
+```bash
+rm ~/knowledge_base/<kb-name>/VECTOR.gob
+# Restart — index rebuilds on next hybrid query
+```
+
+## FAQ
+
+**Q: "chunk xxx not found in document xxx" error?**
+
+The search index references chunks that don't exist in the `chunks` table. This happens when the vector index retains old sequential-format IDs after a re-upload. Fix: run `go run ./cmd/cleanup-vector/` or delete `VECTOR.gob`.
+
+**Q: Uploaded a PDF but search returns nothing?**
+
+1. Check the upload succeeded in logs: `[upload]`
+2. Verify `total_chars > 0` in the document's `meta.json` or `documents` table
+3. Make sure `kbName` matches in your search call
+4. Check search logs: `[search] hybrid: vector recall returned X hits`
+
+**Q: Vector search returns zero results?**
+
+1. Verify the embedding endpoint is reachable: `curl http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'`
+2. Check `embed_dim` matches your model
+3. Check if the vector index is empty in search logs
+
+**Q: How to switch from file backend to MySQL?**
+
+The backends use different storage formats. You need to re-import all documents:
+1. Back up source files from `data_dir`
+2. Configure MySQL connection and restart
+3. Re-import documents via the web UI or `knowledge_upload`
+
+**Q: Can I restore a soft-deleted document?**
+
+Tombstoned documents can be restored before their TTL expires by removing the entry from `.tombstones.gob`. After TTL expiry the physical data is permanently deleted.
+
+**Q: How do I back up MySQL storage?**
+
+```bash
+mysqldump -u knowledge -p knowledge_rag > backup.sql
+```
+
+Also back up `data_dir/<kb-name>/VECTOR.gob` files. Restore both the SQL dump and the gob files.
 
 ## License
 

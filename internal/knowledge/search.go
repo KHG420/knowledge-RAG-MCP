@@ -3,6 +3,8 @@ package knowledge
 import (
 	"container/heap"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -691,11 +693,11 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		if raw, cerr := s.cacheClient.Get(context.Background(), ckey); cerr == nil && raw != nil {
 			var cachedHits []SearchHit
 			if json.Unmarshal(raw, &cachedHits) == nil {
-				log.Debugf("HybridSearch CACHE HIT: mode=hybrid query=%q hash=%s hits=%d", query, qhash, len(cachedHits))
+				log.Infof("query HIT  key=%s query=%q hash=%s hits=%d", ckey, query, qhash, len(cachedHits))
 				return cachedHits, nil
 			}
 		}
-		log.Debugf("HybridSearch CACHE MISS: mode=hybrid query=%q hash=%s", query, qhash)
+		log.Infof("query MISS key=%s query=%q hash=%s", ckey, query, qhash)
 	}
 
 	entries, err := s.collectEntries(filter, queryTerms)
@@ -1077,9 +1079,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		ckey := cache.QueryKey(s.kbName, qhash)
 		if raw, jerr := json.Marshal(hits); jerr == nil {
 			if setErr := s.cacheClient.Set(context.Background(), ckey, raw, s.queryCacheTTL); setErr != nil {
-				log.Warnf("HybridSearch CACHE SET failed: mode=hybrid query=%q err=%v", query, setErr)
+				log.Warnf("query SET failed: key=%s query=%q err=%v", ckey, query, setErr)
 			} else {
-				log.Debugf("HybridSearch CACHE SET: mode=hybrid query=%q hash=%s hits=%d ttl=%v", query, qhash, len(hits), s.queryCacheTTL)
+				log.Infof("query SET  key=%s query=%q hash=%s hits=%d ttl=%v size=%d", ckey, query, qhash, len(hits), s.queryCacheTTL, len(raw))
 			}
 		}
 	}
@@ -1415,6 +1417,18 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 		texts[i] = entries[i].text
 	}
 
+	// Check rerank memory cache to avoid repeated HTTP calls.
+	rerankKey := rerankCacheKey(query, texts[:n])
+	if s.rerankCache != nil {
+		s.rerankCacheMu.RLock()
+		if cachedScores, ok := s.rerankCache[rerankKey]; ok {
+			s.rerankCacheMu.RUnlock()
+			s.logger.Debugf("[rerank] cache hit: query=%q candidates=%d", query, n)
+			return sortByRerankScores(entries[:n], cachedScores)
+		}
+		s.rerankCacheMu.RUnlock()
+	}
+
 	s.logger.Debugf("[rerank] rerankTop query=%q candidates=%d candLimit=%d", query, len(entries), candLimit)
 
 	// Determine timeout from the reranker's HTTP client timeout, with 5s buffer
@@ -1483,19 +1497,27 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 
 	s.logger.Debugf("[rerank] rerankTop done candidates=%d batchSize=%d batches=%d", n, batchSize, (n+batchSize-1)/batchSize)
 
+	// Store in memory cache for future identical queries.
+	s.cacheRerankResult(rerankKey, rerankScores)
+
 	// Sort candidates by reranker score descending.
+	return sortByRerankScores(entries[:n], rerankScores)
+}
+
+// sortByRerankScores reorders entries by reranker scores descending.
+func sortByRerankScores(entries []searchEntry, scores []float64) ([]searchEntry, []float64) {
+	n := len(entries)
 	type reranked struct {
 		entry searchEntry
 		score float64
 	}
 	combined := make([]reranked, n)
 	for i := 0; i < n; i++ {
-		combined[i] = reranked{entry: entries[i], score: rerankScores[i]}
+		combined[i] = reranked{entry: entries[i], score: scores[i]}
 	}
 	sort.Slice(combined, func(i, j int) bool {
 		return combined[i].score > combined[j].score
 	})
-
 	outEntries := make([]searchEntry, n)
 	outScores := make([]float64, n)
 	for i := 0; i < n; i++ {
@@ -1503,6 +1525,41 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 		outScores[i] = combined[i].score
 	}
 	return outEntries, outScores
+}
+
+// rerankCacheKey computes a stable hash key from the query and candidate texts.
+func rerankCacheKey(query string, texts []string) string {
+	h := sha256.New()
+	h.Write([]byte(query))
+	h.Write([]byte{0})
+	for _, t := range texts {
+		h.Write([]byte(t))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// cacheRerankResult stores rerank scores in the memory cache with size bounding.
+func (s *Store) cacheRerankResult(key string, scores []float64) {
+	s.rerankCacheMu.Lock()
+	defer s.rerankCacheMu.Unlock()
+	if s.rerankCache == nil {
+		s.rerankCache = make(map[string][]float64)
+	}
+	// Bound cache to prevent unbounded memory growth — evict oldest half when
+	// exceeding 256 entries.
+	const maxEntries = 256
+	if len(s.rerankCache) >= maxEntries {
+		n := 0
+		for k := range s.rerankCache {
+			delete(s.rerankCache, k)
+			n++
+			if n >= maxEntries/2 {
+				break
+			}
+		}
+	}
+	s.rerankCache[key] = scores
 }
 
 // rewrittenQueries applies the configured QueryRewriter and merges all

@@ -24,6 +24,9 @@ type VectorIndex interface {
 
 	// Len returns the number of vectors in the index.
 	Len() int
+
+	// AllIDs returns a snapshot of all vector IDs in the index.
+	AllIDs() []string
 }
 
 // VectorHit is one result from a vector search.
@@ -249,7 +252,14 @@ func (idx *HNSWIndex) Len() int {
 	return len(idx.nodes)
 }
 
-// allIDs returns a snapshot of all node IDs. Safe under the caller's lock.
+// AllIDs returns a snapshot of all node IDs. Safe under concurrent use.
+func (idx *HNSWIndex) AllIDs() []string {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.allIDs()
+}
+
+// allIDs returns a snapshot of all node IDs. Caller must hold the lock.
 func (idx *HNSWIndex) allIDs() []string {
 	ids := make([]string, 0, len(idx.nodes))
 	for id := range idx.nodes {

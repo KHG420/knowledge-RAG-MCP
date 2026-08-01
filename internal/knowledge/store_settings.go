@@ -281,8 +281,8 @@ func (st *storeSettings) applyFromConfig(cfg *config.Config) {
 // Each field maps to a specific description slot on an MCP tool.
 // An empty string means "use the hardcoded default".
 type ToolDescriptions struct {
-	SearchDesc       string `json:"SearchDesc"`        // knowledge_search top-level description
-	SearchKbNameDesc string `json:"SearchKbNameDesc"`  // knowledge_search kbName parameter description
+	SearchDesc       string `json:"SearchDesc"`        // knowledge_research top-level description
+	SearchKbNameDesc string `json:"SearchKbNameDesc"`  // knowledge_research kbName parameter description
 	ReadDesc         string `json:"ReadDesc"`          // knowledge_read top-level description
 	ReadKbNameDesc   string `json:"ReadKbNameDesc"`    // knowledge_read kbName parameter description
 	ListDesc         string `json:"ListDesc"`          // knowledge_list top-level description

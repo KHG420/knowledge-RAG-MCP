@@ -496,11 +496,11 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 // --- Tool registration ---
 
 func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
-	tool := mcp.NewTool("knowledge_search",
+	tool := mcp.NewTool("knowledge_research",
 		mcp.WithDescription(store.ToolSearchDesc()),
 		mcp.WithString("question",
 			mcp.Required(),
-			mcp.Description("The user's original natural language question. Pass it verbatim — do NOT rewrite into keywords, do NOT add synonyms or translations. The internal query analyzer handles all expansion automatically."),
+			mcp.Description("The research question or search query. For simple factual questions, pass the user's original question directly. For complex research tasks, you may decompose into focused queries targeting different aspects. Use natural language or keyword strings as appropriate."),
 		),
 		mcp.WithString("search_keywords",
 			mcp.Description("DEPRECATED: use 'question' instead. Space-separated keyword string. Only for backward compatibility with older Agent versions."),
@@ -545,7 +545,7 @@ func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging
 			searchKW = getString(req, "query") // truly ancient fallback
 		}
 		if searchKW == "" {
-			return mcp.NewToolResultError("question is required — pass the user's original question verbatim"), nil
+			return mcp.NewToolResultError("question is required — pass the research question or search query"), nil
 		}
 
 		limit := 8
@@ -608,7 +608,7 @@ func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
 		}
 		tlog := logger.WithModule("tool")
-		tlog.Debugf("knowledge_search: query=%q limit=%d kb=%q routed=%v mode=%q hybrid=%v hits=%d", searchKW, limit, kbName, routedKBs, useMode, isHybrid, len(hits))
+		tlog.Debugf("knowledge_research: query=%q limit=%d kb=%q routed=%v mode=%q hybrid=%v hits=%d", searchKW, limit, kbName, routedKBs, useMode, isHybrid, len(hits))
 		if len(hits) == 0 {
 			return mcp.NewToolResultText("No matching chunks found."), nil
 		}

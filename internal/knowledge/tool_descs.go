@@ -4,58 +4,93 @@ package knowledge
 // descriptions shown to LLM agents. Custom descriptions can be set via the
 // Web UI (PUT /api/tool-descriptions) and take effect after a service restart.
 
-const DefaultSearchDesc = `Semantic search across all documents in the knowledge base.
+const DefaultSearchDesc = `Semantic research search across all documents in the knowledge base.
 
-Use this tool by passing the user's original question. The system automatically handles:
-- knowledge base routing
-- query understanding
-- keyword and semantic expansion
-- retrieval strategy selection
-- hybrid search
-- reranking
-- evidence confidence analysis
+This tool is designed for AI agents performing autonomous research.
+The agent may decompose complex research questions into multiple targeted searches when needed.
 
-Do NOT manually select search mode, knowledge base, or rewrite the query.
+Use this tool to retrieve technical evidence, primary source materials, methodologies, equations, experimental results, and definitions from the knowledge base.
 
-Input:
-- question: The user's original natural language question. Keep the original meaning and context.
-- limit: Optional number of results (default 8, maximum 20).
+SEARCH STRATEGY:
 
-The query should NOT be converted into keywords before calling this tool.
-Do NOT add synonyms, translations, or technical terms manually.
-The internal query analyzer handles Chinese/English expansion and domain terminology.
+For simple factual questions:
+- Pass the user's original question directly.
+- Avoid unnecessary keyword extraction or query expansion.
+
+For complex research tasks:
+- You may decompose the problem into multiple focused research questions.
+- You may generate specialized queries targeting different aspects of the topic.
+- Multiple tool calls are allowed when they improve research coverage.
 
 Examples:
 
 User: "什么是同步横摇？"
-→ knowledge_search(question="什么是同步横摇？")
+
+Preferred:
+{
+  "question": "什么是同步横摇？",
+  "limit": 8
+}
 
 User: "Ikeda方法包含哪些阻尼成分？"
-→ knowledge_search(question="Ikeda方法包含哪些阻尼成分？")
 
-User: "舭龙骨为什么降低横摇但增加阻力？"
-→ knowledge_search(question="舭龙骨为什么降低横摇但增加阻力？")
+Preferred:
+{
+  "question": "Ikeda方法包含哪些阻尼成分？",
+  "limit": 10
+}
 
-The system automatically determines:
-- which knowledge bases are relevant
-- whether BM25, vector search, or hybrid retrieval is appropriate
-- how many candidates are needed
-- how to rank and filter evidence
+User: "分析船舶初步设计阶段耐波性评估技术路线"
 
-Only provide the user's question. Let the retrieval system decide.
+Reasonable research decomposition:
 
-SEARCH BEHAVIOR:
-The tool is designed for research and technical knowledge retrieval.
-Prefer returning:
-- primary source sections
-- equations
+Query 1: "船舶初步设计阶段 耐波性 航行性能评估方法"
+Query 2: "RAO 垂向运动 升沉 纵摇 船舶耐波性计算"
+Query 3: "Lewis保角映射 Tasai方法 Salvesen切片理论 水动力系数"
+Query 4: "Cummins方程 时域运动模拟 流体记忆效应"
+
+The system automatically handles:
+- knowledge base routing
+- semantic understanding
+- terminology expansion
+- BM25 and vector hybrid retrieval
+- candidate generation
+- reranking
+- evidence confidence analysis
+
+The agent should focus on research planning and answer synthesis.
+The retrieval system focuses on finding reliable evidence.
+
+INPUT:
+
+question:
+The research question or search query.
+
+For best results:
+- Use natural language questions or focused research queries.
+- Include sufficient context for domain-specific searches.
+- Do not manually force retrieval mode selection.
+
+limit:
+Optional number of results. Default: 8. Maximum: 20.
+
+OUTPUT:
+
+Returns ranked evidence from relevant documents, including:
+- document metadata
+- matched passages
+- relevance score
+- confidence information
+- source context
+
+Prioritize:
+- original research papers
+- technical reports
 - methodology descriptions
-- experimental results
-- definitions
-Avoid:
-- broad summaries without evidence
-- unrelated documents
-- speculative matches`
+- equations and models
+- experimental validation results
+
+Avoid relying only on broad summaries when primary evidence is available.`
 
 const DefaultSearchKbNameDesc = `Optional. Leave empty — the system auto-routes to the correct knowledge base(s). Only pass a kbName if you have a specific reason to force a particular KB.`
 

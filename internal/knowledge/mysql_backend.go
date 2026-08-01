@@ -371,6 +371,14 @@ func (mb *MySQLBackend) ListDocSlugs(kbName string) ([]string, error) {
 }
 
 func (mb *MySQLBackend) RemoveDocument(kbName, slug string) error {
+	// Clean up all related rows. There are no foreign-key constraints
+	// (the tables may be used without InnoDB), so we delete explicitly.
+	_, _ = mb.db.Exec("DELETE FROM task_records WHERE kb_name = ? AND slug = ?", kbName, slug)
+	_, _ = mb.db.Exec("DELETE FROM manifests WHERE kb_name = ? AND slug = ?", kbName, slug)
+	_, _ = mb.db.Exec("DELETE FROM inverted_index WHERE kb_name = ? AND doc_slug = ?", kbName, slug)
+	_, _ = mb.db.Exec("DELETE FROM chunks_index WHERE kb_name = ? AND doc_slug = ?", kbName, slug)
+	_, _ = mb.db.Exec("DELETE FROM section_chunks WHERE kb_name = ? AND doc_slug = ?", kbName, slug)
+	_, _ = mb.db.Exec("DELETE FROM chunks WHERE kb_name = ? AND doc_slug = ?", kbName, slug)
 	_, err := mb.db.Exec("DELETE FROM documents WHERE kb_name = ? AND slug = ?", kbName, slug)
 	if err != nil {
 		return fmt.Errorf("remove document %q: %w", slug, err)
