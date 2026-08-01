@@ -26,6 +26,31 @@ import (
 )
 
 func main() {
+	// Subcommand: dict — domain dictionary management tools.
+	if len(os.Args) > 1 && os.Args[1] == "dict" {
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "Usage: knowledge-mcp dict <mine|gen>\n\n")
+			fmt.Fprintf(os.Stderr, "Subcommands:\n")
+			fmt.Fprintf(os.Stderr, "  dict mine      Mine synonym candidates from search logs\n")
+			fmt.Fprintf(os.Stderr, "  dict gen       Generate domain dictionary from KB chunks (needs DEEPSEEK_API_KEY)\n")
+			os.Exit(1)
+		}
+		cfg := config.LoadWithEnvFallback(findConfigPath())
+		store, logger := initStoreAndLogger(cfg)
+		defer logger.Close()
+
+		switch os.Args[2] {
+		case "mine":
+			runDictMine(store)
+		case "gen":
+			runDictGen(cfg, store)
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown dict subcommand: %s\n", os.Args[2])
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Subcommand: setup — interactive configuration.
 	if len(os.Args) > 1 && os.Args[1] == "setup" {
 		setup.Run()
@@ -74,6 +99,8 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  server          (alias for serve)\n")
 	fmt.Fprintf(os.Stderr, "  stdio           Start stdio MCP server (for Reasonix/Claude Desktop)\n")
 	fmt.Fprintf(os.Stderr, "  manage          Start web management UI only (run alongside stdio)\n")
+	fmt.Fprintf(os.Stderr, "  dict mine       Mine synonym candidates from search logs\n")
+	fmt.Fprintf(os.Stderr, "  dict gen        Generate domain dictionary from KB chunks (LLM)\n")
 	fmt.Fprintf(os.Stderr, "  setup           Interactive configuration\n")
 	os.Exit(1)
 }
@@ -149,7 +176,7 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	}
 
 	// --- v4: Load domain dictionaries for query expansion ---
-	rewriter := knowledge.NewSynonymRewriter()
+	synonymRewriter := knowledge.NewSynonymRewriter()
 	dictDir := filepath.Join(filepath.Dir(findConfigPath()), "dictionaries")
 	if _, err := os.Stat(dictDir); err == nil {
 		entries, loadErr := knowledge.LoadDictionaries(dictDir)
@@ -159,7 +186,7 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 			syns := knowledge.DictToSynonyms(entries)
 			for term, synonyms := range syns {
 				for _, syn := range synonyms {
-					rewriter.AddSynonym(term, syn)
+					synonymRewriter.AddSynonym(term, syn)
 				}
 			}
 			store.SetDictionaryRelatedTerms(knowledge.DictToRelatedTerms(entries))
@@ -167,9 +194,12 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		}
 	}
 
-	// When a DeepSeek API key is configured, wrap the SynonymRewriter inside
-	// an LLMQueryRewriter for semantic query expansion. The SynonymRewriter
-	// serves as the fallback when the LLM call fails.
+	// Always register the synonym rewriter for fast, deterministic expansion.
+	store.SetSynonymRewriter(synonymRewriter)
+
+	// When a DeepSeek API key is configured, also register an LLM rewriter
+	// reserved for complex queries only (triage=TriageComplex). Simple and
+	// medium queries always use the synonym rewriter regardless of API key.
 	if cfg.DeepSeekAPIKey != "" {
 		llmCompleter := knowledge.NewDeepSeekCompleter(
 			cfg.DeepSeekEndpoint,
@@ -178,13 +208,14 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 			knowledge.WithDeepSeekLogger(logger.WithModule("deepseek")),
 		)
 		llmRewriter := knowledge.NewLLMQueryRewriter(llmCompleter).
-			WithFallback(rewriter)
-		store.SetRewriter(llmRewriter)
-		log.Infof("query rewriter: LLM (deepseek model=%s) + synonym fallback (%d terms)",
-			cfg.DeepSeekModel, rewriter.SynonymCount())
+			WithFallback(synonymRewriter)
+		store.SetLLMRewriter(llmRewriter)
+		log.Infof("query rewriter: LLM (deepseek model=%s) reserved for complex queries; "+
+			"simple/medium use synonym rewriter (%d terms)",
+			cfg.DeepSeekModel, synonymRewriter.SynonymCount())
 	} else {
-		store.SetRewriter(rewriter)
-		log.Debugf("query rewriter: synonym-only (DEEPSEEK_API_KEY not set)")
+		log.Infof("query rewriter: synonym-only (%d terms, DEEPSEEK_API_KEY not set)",
+			synonymRewriter.SynonymCount())
 	}
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
@@ -326,6 +357,11 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	} else {
 		log.Infof("Redis cache: not configured (redis_enabled=false)")
 	}
+
+	// --- Search log: record queries for synonym mining ---
+	searchLogger := knowledge.NewFileSearchLoggerFromStore(store)
+	store.SetSearchLogger(searchLogger)
+	log.Infof("search log: enabled (%s)", filepath.Join(store.DataDir(), ".searchlog.jsonl"))
 
 	return store, logger
 }
@@ -1170,4 +1206,107 @@ func parseTime(raw string) time.Time {
 		return t
 	}
 	return time.Time{}
+}
+
+// ── dict subcommand implementations ──
+
+// runDictMine reads the search log JSONL file and prints discovered synonym
+// candidates for human review before adding them to the domain dictionary.
+func runDictMine(store *knowledge.Store) {
+	logPath := filepath.Join(store.DataDir(), ".searchlog.jsonl")
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Search log not found: %s\n", logPath)
+		fmt.Fprintf(os.Stderr, "The log is created automatically after the server runs and handles queries.\n")
+		fmt.Fprintf(os.Stderr, "Start the server with: knowledge-mcp serve\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Mining synonyms from: %s\n\n", logPath)
+	candidates, err := knowledge.MineSynonymsFromLog(logPath, 0.01, 50)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Mine failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Print(knowledge.FormatSynonymCandidates(candidates))
+	if len(candidates) > 0 {
+		fmt.Println("\n👉 Review the candidates above and manually add verified pairs to dictionaries/*.yaml.")
+		fmt.Println("   Then restart the server to pick up the updated dictionary.")
+	}
+}
+
+// runDictGen uses the LLM to batch-extract domain terminology from knowledge
+// base chunks and writes a candidate YAML dictionary file for human review.
+func runDictGen(cfg *config.Config, store *knowledge.Store) {
+	if cfg.DeepSeekAPIKey == "" {
+		fmt.Fprintf(os.Stderr, "Error: DEEPSEEK_API_KEY not configured.\n")
+		fmt.Fprintf(os.Stderr, "Set it in knowledge-mcp.toml or via the DEEPSEEK_API_KEY environment variable.\n")
+		os.Exit(1)
+	}
+
+	// Collect chunk texts from the knowledge base.
+	kbName := store.KBName()
+	if kbName == "" {
+		fmt.Fprintf(os.Stderr, "No knowledge base selected. Set default_kb in knowledge-mcp.toml.\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Collecting chunks from KB: %s ...\n", kbName)
+
+	// Use the existing SearchAll to get representative chunks across the KB.
+	hits, err := store.SearchAll("", 200) // empty query = get recent/representative chunks
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to collect chunks: %v\n", err)
+		os.Exit(1)
+	}
+
+	var chunkTexts []string
+	for _, h := range hits {
+		text := h.Content.Snippet
+		if len(text) > 50 {
+			chunkTexts = append(chunkTexts, text)
+		}
+	}
+
+	if len(chunkTexts) == 0 {
+		fmt.Fprintf(os.Stderr, "No chunks found in KB %q. Upload documents first.\n", kbName)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Found %d chunks. Calling LLM to extract domain terms...\n", len(chunkTexts))
+
+	completer := knowledge.NewDeepSeekCompleter(
+		cfg.DeepSeekEndpoint,
+		cfg.DeepSeekAPIKey,
+		cfg.DeepSeekModel,
+	)
+	results, err := knowledge.GenerateDictionaryFromChunks(completer, chunkTexts, 20, 50)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Dictionary generation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No domain terms extracted. Try with more or different chunks.")
+		return
+	}
+
+	yaml := knowledge.FormatDictAsYAML(results)
+
+	// Write to dictionaries/ directory next to the config.
+	dictDir := filepath.Join(filepath.Dir(findConfigPath()), "dictionaries")
+	if err := os.MkdirAll(dictDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create dictionaries dir: %v\n", err)
+		os.Exit(1)
+	}
+
+	outPath := filepath.Join(dictDir, kbName+"_generated.yaml")
+	if err := os.WriteFile(outPath, []byte(yaml), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to write dictionary: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n✅ Generated %d domain terms → %s\n", len(results), outPath)
+	fmt.Println("👉 Review the file, edit/remove entries, then restart the server to apply.")
+	fmt.Printf("   cat %s\n", outPath)
 }

@@ -38,8 +38,10 @@
 ## 特性
 
 - **文档导入** — 支持 PDF、DOCX、ODT、EPUB、HTML、XLSX、PPTX、MD、TXT
+- **查询智能分流** — 零成本纯规则分流器：70% 简单查询走词典扩展、25% 中等查询走同义词多变体、5% 复杂查询才调 LLM
 - **BM25 搜索** — Unicode 感知、CJK 双字分词，支持查询重写、同义词扩展、LLM 查询改写
-- **LLM 查询改写** — 可选 DeepSeek LLM 驱动，自动生成 2-4 个改写变体提升召回率；LLM 不可用时优雅降级到同义词重写
+- **LLM 查询改写** — 可选 DeepSeek LLM 驱动，自动生成 2-4 个改写变体提升召回率；**仅对复杂查询触发**（非全量），简单/中等查询走领域词典，LLM 不可用时优雅降级
+- **BM25/向量解耦** — 精确同义词仅送 BM25，关联术语仅送向量侧，互不污染
 - **混合搜索** — BM25 + 稠密向量融合，采用 RRF 算法（k=60），自适应查询类型权重
 - **两阶段重排序** — 可选的交叉编码器（兼容 Infinity/Cohere API）对 top-K 候选精排
 - **段落级分块** — 语义边界切分（默认 200-2000 字符）、~200 字符重叠、层级化 fine+coarse 分块、章节角色分类（摘要/引言/方法/实验/结论）
@@ -587,7 +589,14 @@ knowledge_upload directory="/data/papers/2025/" recursive=true kbName="ship-hydr
 ```
 用户查询 (question)
   │
-  ├─ 查询分析：中英文检测、领域词典同义词扩展、LLM 查询改写（可选）
+  ├─ 查询分流（纯规则，零成本）
+  │   ├─ 70% Simple  → 领域词典 exact_synonyms → BM25权重增强
+  │   ├─ 25% Medium  → SynonymRewriter 多同义词变体
+  │   └─  5% Complex → LLMQueryRewriter 语义重写（DeepSeek，可选）
+  │
+  ├─ BM25 / 向量两路解耦
+  │   ├─ BM25 路径：exact_synonyms 扩展（不含 related_terms）
+  │   └─ 向量路径：原始查询 + related_terms（语义增强）
   │
   ├─ KB 路由：四维度加权评分，选出 Top-1~3 知识库
   │
@@ -806,19 +815,30 @@ maneuvering:
 
 ## LLM 查询改写
 
-> 🆕 v4：利用 DeepSeek 大模型进行语义级查询改写，提升召回率。
+> 🆕 v4.1：查询智能分流 — LLM 仅对 ~5% 复杂查询触发，简单/中等查询走词典，大幅降低延迟和成本。
 
-LLM 查询改写在**领域词典同义词扩展**的基础上进一步利用大语言模型的语义理解能力，将用户的原始查询改写为 2-4 个语义相同但用词不同的变体，帮助 BM25 检索匹配更多相关文档。
+LLM 查询改写利用了查询分流器：只有**复杂查询**（长查询、多概念比较、跨领域表达）才会调用 LLM 做语义级重写，生成 2-4 个替代表述。普通查询直接使用领域词典扩展，毫秒级响应。
+
+### 分流策略
+
+| 等级 | 比例 | 条件 | 重写策略 |
+|------|------|------|----------|
+| Simple | ~70% | 短查询、单概念 | 领域词典 exact_synonyms |
+| Medium | ~25% | 含方法/多概念词 | SynonymRewriter 多变体 |
+| Complex | ~5% | 长查询/比较类 | LLM 语义重写 + 词典回退 |
+
+分流完全基于纯规则（词数/特征词检测），零 LLM 成本。
 
 ### 工作流程
 
 ```
-用户查询 → LLMQueryRewriter
-             ├── DeepSeek LLM（生成改写变体）
-             │      成功：原始查询 + 2~4 个改写变体 → 合并送入检索引擎
-             │      失败：自动降级到 SynonymRewriter（同义词 + 词典扩展）
-             └── 即使 LLM 服务不可用，系统仍正常运行
-```
+用户查询 → 查询分流 (零成本)
+             ├── Simple/Medium → SynonymRewriter（词典 + 同义词）
+             └── Complex → LLMQueryRewriter
+                              ├── DeepSeek LLM（生成改写变体）
+                              │      成功：原始查询 + 2~4 个改写变体
+                              │      失败：自动降级到 SynonymRewriter
+                              └── 即使 LLM 不可用，系统仍正常运行
 
 ### 配置方法
 
@@ -1050,12 +1070,34 @@ rm ~/knowledge_base/<kb-name>/VECTOR.gob
 
 重建过程在第一次混合搜索请求时触发，对大量文档可能需要几分钟。
 
+### 领域词典管理
+
+> 🆕 v4.1：自动从搜索日志发现同义词 + LLM 离线批量生成词典。
+
+**从搜索日志挖掘同义词候选：**
+
+```bash
+# 运行一段时间积累日志后，挖掘同义词候选
+knowledge-mcp dict mine
+```
+
+该工具读取 `~/knowledge_base/.searchlog.jsonl`，通过查询词-文档共现分析自动发现候选同义词对，输出表格供人工审核。审核后手动加入 `dictionaries/*.yaml` 重启生效。
+
+**用 LLM 离线批量生成词典：**
+
+```bash
+# 前提：已配置 DEEPSEEK_API_KEY
+knowledge-mcp dict gen
+```
+
+扫描当前知识库，调用 LLM 批量提取领域术语+同义词+关联词，输出 `dictionaries/<kb>_generated.yaml`。人工审核后合并到现有词典文件即可。
+
 ---
 
 ## 架构总览
 
 ```
-main.go                  — CLI 入口点、子命令 (stdio / serve / setup / manage)、工具注册
+main.go                  — CLI 入口点、子命令 (stdio / serve / setup / manage / dict)、工具注册
 internal/
   config/
     config.go            — TOML 配置加载、环境变量回退、默认值
@@ -1081,8 +1123,11 @@ internal/
     gpu_scheduler.go     — GPU 调度器，嵌入/重排序模型休眠唤醒
     kb_router.go         — 多知识库智能路由（关键词+嵌入+描述+约束四维评分）
     rewrite.go           — QueryRewriter 接口、SynonymRewriter（内置+YAML词典）
-    rewrite_llm.go       — LLMQueryRewriter（可选 LLM 查询扩展）
+    rewrite_llm.go       — LLMQueryRewriter（仅复杂查询触发）
+    query_triage.go      — 查询智能分流器（纯规则，Simple/Medium/Complex 三档）
     dict_loader.go       — YAML 格式领域词典加载器
+    dict_generator.go    — LLM 离线词典批量生成器
+    synonym_miner.go     — 搜索日志同义词自动挖掘
     manage.go            — Web 管理页面服务、KB CRUD、上传/删除/搜索处理器
     manage_enhanced.go   — 增强管理功能（搜索控制台、配置、工具描述）
     upload.go            — UploadDocument、UploadDirectory

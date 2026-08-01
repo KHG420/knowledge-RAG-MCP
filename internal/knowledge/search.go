@@ -316,9 +316,9 @@ func (s *Store) searchImpl(query string, limit int, filter SearchFilter) ([]Sear
 		limit = 8
 	}
 
-	// Query rewriting
-	rewritten := s.rewrittenQueries(query)
-	queryTerms, err := retrieval.QueryTerms(rewritten)
+	// Query rewriting — triage-aware, BM25-only path.
+	bm25QueryStr := s.bm25Query(query)
+	queryTerms, err := retrieval.QueryTerms(bm25QueryStr)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
 	}
@@ -482,8 +482,8 @@ func (s *Store) SearchBM25(query string, limit int) ([]SearchHit, error) {
 		limit = 8
 	}
 
-	rewritten := s.rewrittenQueries(query)
-	queryTerms, err := retrieval.QueryTerms(rewritten)
+	bm25QueryStr := s.bm25Query(query)
+	queryTerms, err := retrieval.QueryTerms(bm25QueryStr)
 	if err != nil {
 		return nil, fmt.Errorf("search bm25: %w", err)
 	}
@@ -673,10 +673,11 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	log.Debugf("HybridSearch: budget=%s bm25N=%d vecBeam=%d rerankN=%d return=%d",
 		retrievalBudgetLabel(qf), bm25N, vecBeam, rerankN, budgetReturn)
 
-	// Query rewriting.
-	rewritten := s.rewrittenQueries(query)
+	// Query rewriting — triage-aware, BM25 and vector paths separated.
+	bm25QueryStr := s.bm25Query(query)
+	vectorQueryStr := s.vectorQuery(query)
 
-	queryTerms, err := retrieval.QueryTerms(rewritten)
+	queryTerms, err := retrieval.QueryTerms(bm25QueryStr)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search: %w", err)
 	}
@@ -747,7 +748,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 			restoreEmb = s.gpuScheduler.PrepareForEmbedding()
 		}
 
-		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{vectorQueryStr})
 		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
 			qVec64 := make([]float64, len(queryVec[0]))
 			for j, v := range queryVec[0] {
@@ -852,7 +853,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		if needFallback {
 			// Rare path: a few entries have vectors but fell outside the
 			// ANN beam.  Do a targeted brute-force for just those entries.
-			queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+			queryVec, embedErr := s.embedder.Embed(context.Background(), []string{vectorQueryStr})
 			if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
 				qVec64 := make([]float64, len(queryVec[0]))
 				for j, v := range queryVec[0] {
@@ -872,7 +873,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		if s.gpuScheduler != nil {
 			restoreEmb2 = s.gpuScheduler.PrepareForEmbedding()
 		}
-		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+		queryVec, embedErr := s.embedder.Embed(context.Background(), []string{vectorQueryStr})
 		if embedErr == nil && len(queryVec) > 0 && len(queryVec[0]) > 0 {
 			qVec64 := make([]float64, len(queryVec[0]))
 			for j, v := range queryVec[0] {
@@ -1114,7 +1115,7 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 		defer restoreVec()
 	}
 
-	queryVec, embedErr := s.embedder.Embed(context.Background(), []string{query})
+	queryVec, embedErr := s.embedder.Embed(context.Background(), []string{s.vectorQuery(query)})
 	if embedErr != nil || len(queryVec) == 0 || len(queryVec[0]) == 0 {
 		return nil, fmt.Errorf("search vector: embed failed: %w", embedErr)
 	}
@@ -1562,26 +1563,54 @@ func (s *Store) cacheRerankResult(key string, scores []float64) {
 	s.rerankCache[key] = scores
 }
 
-// rewrittenQueries applies the configured QueryRewriter and merges all
-// rewritten query variants into a single query string for tokenisation.
-// When no rewriter is configured, the original query is returned as-is.
+// bm25Query returns the query string used for BM25 tokenisation. It applies
+// triage-aware rewrite: simple/medium queries use dictionary-only expansion,
+// complex queries use LLM semantic expansion (falling back to dictionary when
+// no LLM is configured).
 //
-// v4: Also appends dictionary related_terms as extra keywords for vector recall.
-func (s *Store) rewrittenQueries(query string) string {
-	base := query
-	if s.rewriter != nil {
-		variants := s.rewriter.Rewrite(query)
-		if len(variants) > 0 {
-			// Merge all variants into a single query string for BM25 tokenisation.
-			base = strings.Join(variants, " ")
+// IMPORTANT: related_terms from dictionaries are NOT appended here — they are
+// added only to the vector query (see vectorQuery) to avoid polluting BM25's
+// exact keyword matching with loosely-related terms.
+func (s *Store) bm25Query(query string) string {
+	qf := analyzeQuery(query)
+	triage := TriageQuery(qf)
+
+	var variants []string
+
+	switch triage {
+	case TriageComplex:
+		// Complex queries: use LLM rewriter if available, fall back to synonym.
+		if s.llmRewriter != nil {
+			variants = s.llmRewriter.Rewrite(query)
+		} else if s.synonymRewriter != nil {
+			variants = s.synonymRewriter.Rewrite(query)
+		}
+	default: // TriageSimple, TriageMedium
+		// Simple/medium queries: dictionary-only expansion (fast, stable).
+		if s.synonymRewriter != nil {
+			variants = s.synonymRewriter.Rewrite(query)
 		}
 	}
-	// Append related terms from loaded dictionaries for extra semantic signal.
-	related := s.GetDictionaryRelatedTerms()
-	if len(related) > 0 {
-		base = base + " " + strings.Join(related, " ")
+
+	if len(variants) == 0 {
+		return query
 	}
-	return base
+	return strings.Join(variants, " ")
+}
+
+// vectorQuery returns the query string used for vector embedding. It includes
+// the original query plus dictionary related_terms for extra semantic signal,
+// helping the dense retriever find conceptually relevant documents even when
+// they use different terminology.
+//
+// Unlike bm25Query, related_terms are safe here because embedding models handle
+// semantic similarity natively — loosely-related terms help rather than hurt.
+func (s *Store) vectorQuery(query string) string {
+	related := s.GetDictionaryRelatedTerms()
+	if len(related) == 0 {
+		return query
+	}
+	return query + " " + strings.Join(related, " ")
 }
 
 // -------------------- G5: Adaptive RRF weighting --------------------

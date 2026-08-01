@@ -30,7 +30,9 @@ type Store struct {
 	backend              StorageBackend // pluggable storage (MySQLBackend)
 	kbName               string         // knowledge base name; empty means flat legacy mode (no subdirectory)
 	dataDir              string         // root directory for file-based artifacts (VECTOR.gob, tasks, etc.)
-	rewriter             QueryRewriter
+	rewriter             QueryRewriter         // active rewriter (kept for backward compat)
+	synonymRewriter      *SynonymRewriter      // always-on dictionary-based expansion
+	llmRewriter          *LLMQueryRewriter     // optional LLM rewriter for complex queries only
 	embedder             Embedder
 	reranker             Reranker
 	kbRouter             *KBRouter // v4: KB router for multi-KB retrieval
@@ -221,6 +223,23 @@ func (s *Store) GetDictionaryRelatedTerms() []string {
 	return s.dictRelatedTerms
 }
 
+// SetSynonymRewriter configures the always-on dictionary-based query expander.
+// This is used for all query tiers (simple/medium/complex). Unlike llmRewriter,
+// the synonym rewriter is cheap and deterministic — it only expands terms that
+// exist in the loaded domain dictionaries.
+func (s *Store) SetSynonymRewriter(r *SynonymRewriter) {
+	s.synonymRewriter = r
+	// Also set as the default rewriter for backward compatibility.
+	s.rewriter = r
+}
+
+// SetLLMRewriter configures the optional LLM-based query rewriter, used only
+// for complex queries (triage=TriageComplex). When nil (no DeepSeek API key),
+// complex queries fall back to the SynonymRewriter.
+func (s *Store) SetLLMRewriter(r *LLMQueryRewriter) {
+	s.llmRewriter = r
+}
+
 // TaskManager returns the store's UploadTaskManager, creating it lazily if needed.
 // Tasks are persisted to a tasks/ subdirectory under the knowledge base directory.
 func (s *Store) TaskManager() *UploadTaskManager {
@@ -380,6 +399,17 @@ func (s *Store) DeleteKB(name string) error {
 // knowledgeDir returns the data directory path for file-based artifacts.
 func (s *Store) knowledgeDir() string {
 	return s.dataDir
+}
+
+// DataDir returns the root data directory (e.g. ~/knowledge_base/).
+func (s *Store) DataDir() string {
+	return s.dataDir
+}
+
+// KBName returns the current knowledge base name, or empty string for
+// the legacy flat mode.
+func (s *Store) KBName() string {
+	return s.kbName
 }
 
 // EnsureDir initializes the storage backend.
