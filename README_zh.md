@@ -265,7 +265,7 @@ cache_kblist_ttl = 60
 |--------|---------|--------|------|
 | `deepseek_api_key` | `DEEPSEEK_API_KEY` | — | DeepSeek API 密钥。**不设置则不启用 LLM 改写** |
 | `deepseek_endpoint` | `DEEPSEEK_ENDPOINT` | `https://api.deepseek.com/chat/completions` | DeepSeek API 端点 |
-| `deepseek_model` | `DEEPSEEK_MODEL` | `deepseek-flash` | 模型名称（推荐 `deepseek-flash`） |
+| `deepseek_model` | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 模型名称（推荐 `deepseek-v4-flash`） |
 
 #### 服务端口
 
@@ -828,7 +828,7 @@ LLM 查询改写在**领域词典同义词扩展**的基础上进一步利用大
 # DeepSeek LLM 查询改写（可选）
 deepseek_api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 # deepseek_endpoint = "https://api.deepseek.com/chat/completions"  # 可选，默认值
-# deepseek_model   = "deepseek-flash"                               # 可选，默认值
+# deepseek_model   = "deepseek-v4-flash"                               # 可选，默认值
 ```
 
 **方式二：环境变量**
@@ -836,7 +836,7 @@ deepseek_api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```bash
 export DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 # export DEEPSEEK_ENDPOINT="https://api.deepseek.com/chat/completions"
-# export DEEPSEEK_MODEL="deepseek-flash"
+# export DEEPSEEK_MODEL="deepseek-v4-flash"
 ```
 
 ### 参数说明
@@ -845,7 +845,7 @@ export DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 |------|------|--------|
 | `deepseek_api_key` / `DEEPSEEK_API_KEY` | DeepSeek API 密钥。**不设置则不启用 LLM 改写** | (空) |
 | `deepseek_endpoint` / `DEEPSEEK_ENDPOINT` | DeepSeek API 端点 URL | `https://api.deepseek.com/chat/completions` |
-| `deepseek_model` / `DEEPSEEK_MODEL` | 模型名称 | `deepseek-flash` |
+| `deepseek_model` / `DEEPSEEK_MODEL` | 模型名称 | `deepseek-v4-flash` |
 
 ### 降级策略
 
@@ -864,10 +864,10 @@ LLM 查询改写采用**三层防线**确保服务稳定：
 ### 日志示例
 
 ```
-[2026-01-01 10:00:00] [INFO] [startup] query rewriter: LLM (deepseek model=deepseek-flash) + synonym fallback (17 terms)
-[2026-01-01 10:00:05] [DEBUG] [deepseek] deepseek: request model=deepseek-flash promptLen=42 bodyLen=237
-[2026-01-01 10:00:06] [DEBUG] [deepseek] deepseek: OK model=deepseek-flash elapsed=856ms promptLen=42 responseLen=128
-[2026-01-01 10:01:00] [WARN] [deepseek] deepseek: non-200 model=deepseek-flash status=401 elapsed=123ms body={"error":"Invalid API key: sk-***"}
+[2026-01-01 10:00:00] [INFO] [startup] query rewriter: LLM (deepseek model=deepseek-v4-flash) + synonym fallback (17 terms)
+[2026-01-01 10:00:05] [DEBUG] [deepseek] deepseek: request model=deepseek-v4-flash promptLen=42 bodyLen=237
+[2026-01-01 10:00:06] [DEBUG] [deepseek] deepseek: OK model=deepseek-v4-flash elapsed=856ms promptLen=42 responseLen=128
+[2026-01-01 10:01:00] [WARN] [deepseek] deepseek: non-200 model=deepseek-v4-flash status=401 elapsed=123ms body={"error":"Invalid API key: sk-***"}
 ```
 
 ---

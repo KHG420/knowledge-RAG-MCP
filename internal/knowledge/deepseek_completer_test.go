@@ -27,8 +27,8 @@ func TestDeepSeekCompleter_Complete_OK(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if req.Model != "deepseek-flash" {
-			t.Errorf("expected model=deepseek-flash, got %s", req.Model)
+		if req.Model != "deepseek-v4-flash" {
+			t.Errorf("expected model=deepseek-v4-flash, got %s", req.Model)
 		}
 		if req.Stream {
 			t.Error("expected stream=false")
@@ -48,7 +48,7 @@ func TestDeepSeekCompleter_Complete_OK(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-test-key-123", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-test-key-123", "deepseek-v4-flash")
 	content, err := c.Complete(context.Background(), "original query")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -66,7 +66,7 @@ func TestDeepSeekCompleter_Complete_HTTPError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-test-key", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-test-key", "deepseek-v4-flash")
 	_, err := c.Complete(context.Background(), "query")
 	if err == nil {
 		t.Fatal("expected error for 401")
@@ -93,7 +93,7 @@ func TestDeepSeekCompleter_Complete_EmptyChoices(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-v4-flash")
 	_, err := c.Complete(context.Background(), "query")
 	if err == nil {
 		t.Fatal("expected error for empty choices")
@@ -110,7 +110,7 @@ func TestDeepSeekCompleter_Complete_InvalidJSON(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-v4-flash")
 	_, err := c.Complete(context.Background(), "query")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -126,7 +126,7 @@ func TestDeepSeekCompleter_Complete_Timeout(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-flash",
+	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-v4-flash",
 		WithDeepSeekClient(&http.Client{Timeout: 50 * time.Millisecond}),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -145,7 +145,7 @@ func TestDeepSeekCompleter_Complete_ServerError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-v4-flash")
 	_, err := c.Complete(context.Background(), "query")
 	if err == nil {
 		t.Fatal("expected error for 500")
@@ -160,8 +160,8 @@ func TestDeepSeekCompleter_Defaults(t *testing.T) {
 	if c.endpoint != "https://api.deepseek.com/chat/completions" {
 		t.Errorf("expected default endpoint, got %q", c.endpoint)
 	}
-	if c.model != "deepseek-flash" {
-		t.Errorf("expected default model deepseek-flash, got %q", c.model)
+	if c.model != "deepseek-v4-flash" {
+		t.Errorf("expected default model deepseek-v4-flash, got %q", c.model)
 	}
 	if c.apiKey != "" {
 		t.Error("expected empty apiKey")
@@ -241,7 +241,7 @@ func TestDeepSeekCompleter_Complete_ContextCancelled(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-flash")
+	c := NewDeepSeekCompleter(ts.URL, "sk-key", "deepseek-v4-flash")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 

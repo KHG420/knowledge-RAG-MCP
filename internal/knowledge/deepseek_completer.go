@@ -54,7 +54,7 @@ func NewDeepSeekCompleter(endpoint, apiKey, model string, opts ...DeepSeekComple
 		endpoint = "https://api.deepseek.com/chat/completions"
 	}
 	if model == "" {
-		model = "deepseek-flash"
+		model = "deepseek-v4-flash"
 	}
 	c := &DeepSeekCompleter{
 		endpoint: endpoint,

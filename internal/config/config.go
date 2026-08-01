@@ -44,7 +44,7 @@ type Config struct {
 	// skip LLM query rewriting (SynonymRewriter-only mode).
 	DeepSeekAPIKey string `toml:"deepseek_api_key"`
 	// DeepSeekModel selects the DeepSeek model for query rewriting.
-	// Default: "deepseek-flash".
+	// Default: "deepseek-v4-flash".
 	DeepSeekModel string `toml:"deepseek_model"`
 
 	// DocParserEndpoint is the URL of an external HTTP API for document parsing.
@@ -139,7 +139,7 @@ func DefaultConfig() *Config {
 		DocParserTimeout:              "600s",
 		DeepSeekEndpoint:             "https://api.deepseek.com/chat/completions",
 		DeepSeekAPIKey:               "",
-		DeepSeekModel:                "deepseek-flash",
+		DeepSeekModel:                "deepseek-v4-flash",
 		ManagePort:                    "8085",
 		ServePort:                     "8086",
 		ServeBaseURL:                  "",
