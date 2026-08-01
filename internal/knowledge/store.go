@@ -285,6 +285,21 @@ func (s *Store) SetCache(c cache.Cache, cfg *config.Config) {
 	}
 }
 
+// SetCacheQueryTTL updates the query cache TTL at runtime (hot-reloadable).
+func (s *Store) SetCacheQueryTTL(d time.Duration)  { s.queryCacheTTL = d }
+
+// SetCacheChunkTTL updates the chunk text cache TTL at runtime (hot-reloadable).
+func (s *Store) SetCacheChunkTTL(d time.Duration)  { s.chunkCacheTTL = d }
+
+// SetCacheMetaTTL updates the metadata cache TTL at runtime (hot-reloadable).
+func (s *Store) SetCacheMetaTTL(d time.Duration)   { s.metaCacheTTL = d }
+
+// SetCacheIndexTTL updates the index cache TTL at runtime (hot-reloadable).
+func (s *Store) SetCacheIndexTTL(d time.Duration)  { s.indexCacheTTL = d }
+
+// SetCacheKBListTTL updates the KB list cache TTL at runtime (hot-reloadable).
+func (s *Store) SetCacheKBListTTL(d time.Duration) { s.kbListCacheTTL = d }
+
 // cacheEnabled returns true when the cache backend is active.
 func (s *Store) cacheEnabled() bool { return s.cacheClient != nil && !cache.IsNoop(s.cacheClient) }
 

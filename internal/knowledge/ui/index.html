@@ -2534,6 +2534,13 @@ async function loadConfigObj() {
     h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
     h += cfgField('apiToken', 'API Token（留空=无认证）', data.apiToken, 'password');
     h += '</div></div></div>';
+    // ── DeepSeek LLM ──
+    h += cfgSection('🤖 DeepSeek LLM');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+    h += cfgField('deepseekEndpoint', 'API 端点', data.deepseekEndpoint);
+    h += cfgField('deepseekModel', '模型名称', data.deepseekModel);
+    h += cfgField('deepseekApiKey', 'API Key', data.deepseekApiKey, 'password');
+    h += '</div></div></div>';
     // ── Logging ──
     h += cfgSection('📝 日志');
     h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
@@ -2562,6 +2569,25 @@ async function loadConfigObj() {
     h += cfgField('mysqlDatabase', '数据库', data.mysqlDatabase, 'readonly');
     if (data.mysqlSocketPath) h += cfgField('mysqlSocketPath', 'Socket 路径', data.mysqlSocketPath, 'readonly');
     if (data.mysqlDsn) h += cfgField('mysqlDsn', 'DSN', data.mysqlDsn, 'readonly');
+    h += '</div></div></div>';
+    // ── Redis cache (restart-required for connection params, TTLs hot-reloadable) ──
+    h += cfgSection('🗄️ Redis 缓存 <span style="font-size:11px;color:var(--text-muted);font-weight:400">— 连接参数修改需重启</span>');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+    h += cfgField('redisEnabled', '启用 Redis', data.redisEnabled, 'bool');
+    h += cfgField('redisAddr', '地址', data.redisAddr, 'readonly');
+    h += cfgField('redisDB', 'DB 编号', data.redisDB, 'readonly');
+    h += cfgField('redisPrefix', 'Key 前缀', data.redisPrefix, 'readonly');
+    h += cfgField('redisPoolSize', '连接池大小', data.redisPoolSize, 'readonly');
+    h += cfgField('redisPassword', '密码', data.redisPassword, 'readonly');
+    h += '</div></div></div>';
+    // ── Cache TTLs ──
+    h += cfgSection('⏱️ 缓存 TTL（秒）');
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+    h += cfgField('cacheQueryTTL', '搜索缓存 (0=永不过期)', data.cacheQueryTTL, 'number');
+    h += cfgField('cacheChunkTTL', '分块文本 (0=永不过期)', data.cacheChunkTTL, 'number');
+    h += cfgField('cacheMetaTTL', '元数据 (0=永不过期)', data.cacheMetaTTL, 'number');
+    h += cfgField('cacheIndexTTL', '索引 (0=永不过期)', data.cacheIndexTTL, 'number');
+    h += cfgField('cacheKBListTTL', 'KB 列表', data.cacheKBListTTL, 'number');
     h += '</div></div></div>';
     h += '<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">'
       + '<button class="btn-confirm" onclick="saveConfigObj()" style="padding:10px 24px;font-size:14px">💾 保存配置</button>'
@@ -2595,8 +2621,13 @@ async function saveConfigObj() {
     {id:'uploadMaxSizeMb',coerce:'int'},
     // Auth
     {id:'apiToken'},
+    // DeepSeek
+    {id:'deepseekEndpoint'},{id:'deepseekModel'},{id:'deepseekApiKey'},
     // Logging
     {id:'logLevel'},{id:'logFile'},
+    // Cache TTLs
+    {id:'cacheQueryTTL',coerce:'int'},{id:'cacheChunkTTL',coerce:'int'},{id:'cacheMetaTTL',coerce:'int'},
+    {id:'cacheIndexTTL',coerce:'int'},{id:'cacheKBListTTL',coerce:'int'},
   ];
   var cfg = {};
   for (var i = 0; i < fields.length; i++) {

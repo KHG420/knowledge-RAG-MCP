@@ -66,6 +66,11 @@ type configAPIResponse struct {
 	// Auth
 	APIToken string `json:"apiToken,omitempty"` // masked
 
+	// DeepSeek LLM (query rewriting for complex queries)
+	DeepSeekEndpoint string `json:"deepseekEndpoint"`
+	DeepSeekModel    string `json:"deepseekModel"`
+	DeepSeekAPIKey   string `json:"deepseekApiKey,omitempty"` // masked
+
 	// Search
 	SearchMode    string  `json:"searchMode"` // bm25, vector, hybrid
 	RerankEnabled bool    `json:"rerankEnabled"`
@@ -82,6 +87,21 @@ type configAPIResponse struct {
 
 	// Upload
 	UploadMaxSizeMB int `json:"uploadMaxSizeMb"`
+
+	// Redis cache
+	RedisEnabled  bool   `json:"redisEnabled"`
+	RedisAddr     string `json:"redisAddr"`
+	RedisPassword string `json:"redisPassword,omitempty"` // masked
+	RedisDB       int    `json:"redisDB"`
+	RedisPrefix   string `json:"redisPrefix"`
+	RedisPoolSize int    `json:"redisPoolSize"`
+
+	// Cache TTLs (seconds)
+	CacheQueryTTL  int `json:"cacheQueryTTL"`
+	CacheChunkTTL  int `json:"cacheChunkTTL"`
+	CacheMetaTTL   int `json:"cacheMetaTTL"`
+	CacheIndexTTL  int `json:"cacheIndexTTL"`
+	CacheKBListTTL int `json:"cacheKBListTTL"`
 
 	// Read-only metadata
 	ConfigPath      string `json:"configPath"`
@@ -143,6 +163,10 @@ func (s *Store) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 
 		APIToken: mask(cfg.APIToken),
 
+		DeepSeekEndpoint: cfg.DeepSeekEndpoint,
+		DeepSeekModel:    cfg.DeepSeekModel,
+		DeepSeekAPIKey:   mask(cfg.DeepSeekAPIKey),
+
 		SearchMode:    string(s.GetSearchMode()),
 		RerankEnabled: s.GetRerankEnabled(),
 		RRFK:          s.GetRRFK(),
@@ -156,6 +180,19 @@ func (s *Store) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 		ChunkSemanticThreshold: s.GetChunkSemanticThreshold(),
 
 		UploadMaxSizeMB: s.GetUploadMaxSizeMB(),
+
+		RedisEnabled:  cfg.RedisEnabled,
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: mask(cfg.RedisPassword),
+		RedisDB:       cfg.RedisDB,
+		RedisPrefix:   cfg.RedisPrefix,
+		RedisPoolSize: cfg.RedisPoolSize,
+
+		CacheQueryTTL:  cfg.CacheQueryTTL,
+		CacheChunkTTL:  cfg.CacheChunkTTL,
+		CacheMetaTTL:   cfg.CacheMetaTTL,
+		CacheIndexTTL:  cfg.CacheIndexTTL,
+		CacheKBListTTL: cfg.CacheKBListTTL,
 
 		ConfigPath: s.configPath,
 	}
@@ -197,6 +234,11 @@ type configUpdateRequest struct {
 	// Auth (hot-reloadable)
 	APIToken *string `json:"apiToken,omitempty"`
 
+	// DeepSeek LLM (hot-reloadable — rebuilds completer and rewriter)
+	DeepSeekEndpoint *string `json:"deepseekEndpoint,omitempty"`
+	DeepSeekModel    *string `json:"deepseekModel,omitempty"`
+	DeepSeekAPIKey   *string `json:"deepseekApiKey,omitempty"`
+
 	// Search (hot-reloadable)
 	SearchMode    *string  `json:"searchMode,omitempty"`
 	RerankEnabled *bool    `json:"rerankEnabled,omitempty"`
@@ -213,6 +255,13 @@ type configUpdateRequest struct {
 
 	// Upload (hot-reloadable)
 	UploadMaxSizeMB *int `json:"uploadMaxSizeMb,omitempty"`
+
+	// Cache TTLs (hot-reloadable — updates runtime TTLs without restart)
+	CacheQueryTTL  *int `json:"cacheQueryTTL,omitempty"`
+	CacheChunkTTL  *int `json:"cacheChunkTTL,omitempty"`
+	CacheMetaTTL   *int `json:"cacheMetaTTL,omitempty"`
+	CacheIndexTTL  *int `json:"cacheIndexTTL,omitempty"`
+	CacheKBListTTL *int `json:"cacheKBListTTL,omitempty"`
 }
 
 // handleConfigPut updates runtime configuration.
@@ -400,6 +449,55 @@ func (s *Store) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, "uploadMaxSizeMb")
 	}
 
+	// ── Hot-reloadable: Cache TTLs ──
+	if req.CacheQueryTTL != nil {
+		cfg.CacheQueryTTL = *req.CacheQueryTTL
+		s.SetCacheQueryTTL(time.Duration(*req.CacheQueryTTL) * time.Second)
+		changes = append(changes, "cacheQueryTTL")
+	}
+	if req.CacheChunkTTL != nil {
+		cfg.CacheChunkTTL = *req.CacheChunkTTL
+		s.SetCacheChunkTTL(time.Duration(*req.CacheChunkTTL) * time.Second)
+		changes = append(changes, "cacheChunkTTL")
+	}
+	if req.CacheMetaTTL != nil {
+		cfg.CacheMetaTTL = *req.CacheMetaTTL
+		s.SetCacheMetaTTL(time.Duration(*req.CacheMetaTTL) * time.Second)
+		changes = append(changes, "cacheMetaTTL")
+	}
+	if req.CacheIndexTTL != nil {
+		cfg.CacheIndexTTL = *req.CacheIndexTTL
+		s.SetCacheIndexTTL(time.Duration(*req.CacheIndexTTL) * time.Second)
+		changes = append(changes, "cacheIndexTTL")
+	}
+	if req.CacheKBListTTL != nil {
+		cfg.CacheKBListTTL = *req.CacheKBListTTL
+		s.SetCacheKBListTTL(time.Duration(*req.CacheKBListTTL) * time.Second)
+		changes = append(changes, "cacheKBListTTL")
+	}
+
+	// ── Hot-reloadable: DeepSeek LLM ──
+	if req.DeepSeekEndpoint != nil {
+		cfg.DeepSeekEndpoint = *req.DeepSeekEndpoint
+		changes = append(changes, "deepseekEndpoint")
+		s.reloadDeepSeek(cfg)
+	}
+	if req.DeepSeekModel != nil {
+		cfg.DeepSeekModel = *req.DeepSeekModel
+		s.reloadDeepSeek(cfg)
+	}
+	if req.DeepSeekAPIKey != nil {
+		// Allow empty string to clear the key; skip masked sentinel.
+		if *req.DeepSeekAPIKey == "" {
+			cfg.DeepSeekAPIKey = ""
+			changes = append(changes, "deepseekApiKey")
+		} else if *req.DeepSeekAPIKey != "***" {
+			cfg.DeepSeekAPIKey = *req.DeepSeekAPIKey
+			changes = append(changes, "deepseekApiKey")
+		}
+		s.reloadDeepSeek(cfg)
+	}
+
 	// ── Persist to config file ──
 	configPath := s.configPath
 	if configPath == "" {
@@ -509,6 +607,26 @@ func (s *Store) reloadDocParser(cfg *config.Config) {
 	opts = append(opts, WithParserLogger(s.logger.WithModule("doc-parser")))
 	SetDocParser(NewHTTPDocParser(opts...))
 	s.logger.Infof("doc parser reloaded: %s", cfg.DocParserEndpoint)
+}
+
+func (s *Store) reloadDeepSeek(cfg *config.Config) {
+	// If API key is empty, remove the LLM rewriter (fall back to synonym-only).
+	if cfg.DeepSeekAPIKey == "" {
+		s.SetLLMRewriter(nil)
+		s.logger.Infof("deepseek: LLM rewriter removed (no API key)")
+		return
+	}
+
+	completer := NewDeepSeekCompleter(
+		cfg.DeepSeekEndpoint,
+		cfg.DeepSeekAPIKey,
+		cfg.DeepSeekModel,
+		WithDeepSeekLogger(s.logger.WithModule("deepseek")),
+	)
+	// Default fallback is SynonymRewriter — consistent with main.go behavior.
+	llmRewriter := NewLLMQueryRewriter(completer)
+	s.SetLLMRewriter(llmRewriter)
+	s.logger.Infof("deepseek reloaded: endpoint=%s model=%s", cfg.DeepSeekEndpoint, cfg.DeepSeekModel)
 }
 
 // makeConfigPtr is a helper for int literal pointers.
