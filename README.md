@@ -356,24 +356,26 @@ When the MySQL backend is enabled, all knowledge base data is stored in database
 
 ### `knowledge_search`
 
-Search across all documents. Supports BM25 (default) and hybrid modes.
-When a reranker is configured, results go through two-stage retrieval:
-BM25/RRF recall → Cross-Encoder re-rank → final top-K.
+Semantic & keyword search across all documents. The system auto-handles:
+KB routing, query analysis, keyword/semantic expansion, retrieval strategy
+selection (BM25 / vector / hybrid), reranking, and evidence confidence scoring.
+
+**Just pass the user's original question — do NOT rewrite into keywords, do NOT
+pre-select a mode or KB.** The internal query analyzer handles everything.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `search_keywords` | **yes** | Rewritten keyword string (space-separated). Do NOT pass the user's raw question — fix typos, expand context, add synonyms first |
-| `original_question` | no | User's original question verbatim (for logging) |
-| `query` | no | **Deprecated** — use `search_keywords` |
-| `kbName` | no | KB name. When set, search only that KB; when omitted, search all KBs |
+| `question` | **yes** | User's original natural language question. Pass it verbatim — the internal query analyzer handles Chinese/English expansion and domain terminology automatically |
+| `search_keywords` | no | **Deprecated** — use `question` instead. Accepted for backward compatibility only |
+| `kbName` | no | Optional. Leave empty — the system auto-routes to the correct 1–3 KBs. Only pass a kbName if you have a specific reason to force a particular KB |
 | `limit` | no | Max results (default 8, max 20) |
-| `mode` | no | `bm25` or `hybrid` (auto-picks hybrid if embedder available) |
+| `mode` | no | **Deprecated** — the system auto-selects the best strategy. `bm25` or `hybrid`, accepted for backward compatibility only |
 | `sourceType` | no | Filter by file extension: `pdf`, `md`, `txt`, etc. |
 | `section` | no | Filter chunks whose section heading contains this substring |
 | `tags` | no | Comma-separated tags. Only documents matching at least one tag |
 | `addedAfter` | no | ISO 8601 date. Only docs added at or after this time |
 | `addedBefore` | no | ISO 8601 date. Only docs added at or before this time |
-| `coarse` | no | Enable coarse-to-fine 2-phase search |
+| `coarse` | no | Enable coarse-to-fine 2-phase search: first score sections, then only search within top-3 sections |
 
 ### `knowledge_read`
 
