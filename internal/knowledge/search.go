@@ -1572,30 +1572,40 @@ func (s *Store) cacheRerankResult(key string, scores []float64) {
 // added only to the vector query (see vectorQuery) to avoid polluting BM25's
 // exact keyword matching with loosely-related terms.
 func (s *Store) bm25Query(query string) string {
+	log := s.logger.WithModule("search")
 	qf := analyzeQuery(query)
 	triage := TriageQuery(qf)
 
 	var variants []string
+	var rewriterName string
 
 	switch triage {
 	case TriageComplex:
 		// Complex queries: use LLM rewriter if available, fall back to synonym.
 		if s.llmRewriter != nil {
 			variants = s.llmRewriter.Rewrite(query)
+			rewriterName = "llm"
 		} else if s.synonymRewriter != nil {
 			variants = s.synonymRewriter.Rewrite(query)
+			rewriterName = "synonym"
 		}
 	default: // TriageSimple, TriageMedium
 		// Simple/medium queries: dictionary-only expansion (fast, stable).
 		if s.synonymRewriter != nil {
 			variants = s.synonymRewriter.Rewrite(query)
+			rewriterName = "synonym"
 		}
 	}
 
 	if len(variants) == 0 {
+		log.Debugf("bm25Query: query=%q triage=%v terms=%d rewriter=none → no rewrite", query, triage, qf.TermCount)
 		return query
 	}
-	return strings.Join(variants, " ")
+
+	result := strings.Join(variants, " ")
+	log.Debugf("bm25Query: query=%q triage=%v terms=%d rewriter=%s variants=%d → %q",
+		query, triage, qf.TermCount, rewriterName, len(variants), result)
+	return result
 }
 
 // vectorQuery returns the query string used for vector embedding. It includes
@@ -1606,11 +1616,15 @@ func (s *Store) bm25Query(query string) string {
 // Unlike bm25Query, related_terms are safe here because embedding models handle
 // semantic similarity natively — loosely-related terms help rather than hurt.
 func (s *Store) vectorQuery(query string) string {
+	log := s.logger.WithModule("search")
 	related := s.GetDictionaryRelatedTerms()
 	if len(related) == 0 {
+		log.Debugf("vectorQuery: query=%q → no related terms", query)
 		return query
 	}
-	return query + " " + strings.Join(related, " ")
+	result := query + " " + strings.Join(related, " ")
+	log.Debugf("vectorQuery: query=%q related=%d → %q", query, len(related), result)
+	return result
 }
 
 // -------------------- G5: Adaptive RRF weighting --------------------
