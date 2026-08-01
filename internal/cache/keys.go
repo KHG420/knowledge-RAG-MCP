@@ -113,3 +113,11 @@ func DocInvalidatePattern(kbName, docSlug string) string {
 	// Matches chunk:*, meta:*, index:* for this KB+docSlug.
 	return fmt.Sprintf("*:%s:%s:*", kbName, docSlug)
 }
+
+// DocQueryInvalidatePattern returns a pattern that matches all query-cache
+// entries for a given KB.  When any document in the KB is added, removed,
+// or re-indexed, stale query results must be evicted to prevent the search
+// cache from serving results that reference deleted or rewritten chunks.
+func DocQueryInvalidatePattern(kbName string) string {
+	return fmt.Sprintf("query:%s:*", kbName)
+}

@@ -748,10 +748,23 @@ func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.L
 func readSection(store *knowledge.Store, docSlug, chunkID string) (string, error) {
 	index, err := store.ReadChunksIndex(docSlug)
 	if err != nil {
-		return "", fmt.Errorf("index corrupted for document %q: %w", docSlug, err)
+		// Index corrupt — try plain chunk read as fallback.
+		if text, chunkErr := store.ReadChunk(docSlug, chunkID); chunkErr == nil {
+			return text, nil
+		}
+		return "", fmt.Errorf("index corrupted for document %q and chunk read also failed: %w", docSlug, err)
 	}
 	if index == nil {
-		return "", fmt.Errorf("no CHUNKS index found for document %q (document may not be fully indexed)", docSlug)
+		// ChunksIndex missing — try plain chunk read as fallback.
+		if text, chunkErr := store.ReadChunk(docSlug, chunkID); chunkErr == nil {
+			return text, nil
+		}
+		return "", fmt.Errorf(
+			"chunks-index and chunk both missing for document %q chunk %q — "+
+				"the document may have been deleted or is not fully indexed; "+
+				"try re-searching to get fresh results",
+			docSlug, chunkID,
+		)
 	}
 	for _, entry := range index.Chunks {
 		if entry.ID == chunkID && entry.SectionChunkID != "" {
@@ -771,13 +784,18 @@ func tryReadChunk(store *knowledge.Store, kbName, docSlug, chunkID string, ctxCo
 	if err != nil {
 		return "", err
 	}
+	var lastErr error
 	for _, kb := range kbs {
 		text, err := store.WithKB(kb).ReadChunkContext(docSlug, chunkID, ctxCount)
 		if err == nil {
 			return text, nil
 		}
+		lastErr = err
 	}
-	return "", fmt.Errorf("document %q not found in any KB", docSlug)
+	if lastErr != nil {
+		return "", fmt.Errorf("chunk %q not found in document %q across %d KBs: %w — the document may have been deleted or re-indexed; try re-searching", chunkID, docSlug, len(kbs), lastErr)
+	}
+	return "", fmt.Errorf("document %q not found in any of %d KBs — try re-searching to get current results", docSlug, len(kbs))
 }
 
 // tryReadSection reads a section chunk from a specific KB, or searches across
@@ -790,13 +808,18 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 	if err != nil {
 		return "", err
 	}
+	var lastErr error
 	for _, kb := range kbs {
 		text, err := readSection(store.WithKB(kb), docSlug, chunkID)
 		if err == nil {
 			return text, nil
 		}
+		lastErr = err
 	}
-	return "", fmt.Errorf("document %q not found in any KB", docSlug)
+	if lastErr != nil {
+		return "", fmt.Errorf("section read failed for document %q across %d KBs: %w — try reading at chunk level or re-searching", docSlug, len(kbs), lastErr)
+	}
+	return "", fmt.Errorf("document %q not found in any of %d KBs — try re-searching to get current results", docSlug, len(kbs))
 }
 
 // buildEvidenceJSON constructs an EvidenceChunk JSON string that wraps the

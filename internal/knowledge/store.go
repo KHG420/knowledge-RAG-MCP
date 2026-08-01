@@ -289,21 +289,37 @@ func (s *Store) SetCache(c cache.Cache, cfg *config.Config) {
 func (s *Store) cacheEnabled() bool { return s.cacheClient != nil && !cache.IsNoop(s.cacheClient) }
 
 // InvalidateDoc removes all cached entries for a document (chunks, meta, index).
+// It also invalidates the query cache for the KB so that any stale search
+// results referencing this document are evicted.
 func (s *Store) InvalidateDoc(docSlug string) {
 	if !s.cacheEnabled() {
 		return
 	}
-	pattern := cache.DocInvalidatePattern(s.kbName, docSlug)
 	log := s.logger.WithModule("cache")
+
+	// 1) Document-level caches: chunks, meta, index.
+	pattern := cache.DocInvalidatePattern(s.kbName, docSlug)
 	n, err := s.cacheClient.DeletePattern(context.Background(), pattern)
 	if err != nil {
 		log.Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, pattern, err)
-		return
-	}
-	if n > 0 {
+		// Continue — query cache invalidation is independent.
+	} else if n > 0 {
 		log.Infof("invalidate doc %q: deleted %d keys (pattern=%q)", docSlug, n, pattern)
 	} else {
 		log.Debugf("invalidate doc %q: no keys matched (pattern=%q)", docSlug, pattern)
+	}
+
+	// 2) Query-level caches for the entire KB.
+	//    Any document mutation can invalidate cached search results, so we
+	//    evict all query-cache entries scoped to this KB.
+	qpattern := cache.DocQueryInvalidatePattern(s.kbName)
+	qn, qerr := s.cacheClient.DeletePattern(context.Background(), qpattern)
+	if qerr != nil {
+		log.Warnf("invalidate query cache for KB %q FAILED: pattern=%q err=%v", s.kbName, qpattern, qerr)
+	} else if qn > 0 {
+		log.Infof("invalidate query cache for KB %q: deleted %d keys (pattern=%q)", s.kbName, qn, qpattern)
+	} else {
+		log.Debugf("invalidate query cache for KB %q: no keys matched (pattern=%q)", s.kbName, qpattern)
 	}
 }
 
@@ -392,6 +408,15 @@ func (s *Store) DeleteKB(name string) error {
 		return err
 	}
 	s.InvalidateKBList()
+	// Also invalidate any query cache entries for this KB.
+	if s.cacheEnabled() {
+		qpattern := cache.DocQueryInvalidatePattern(name)
+		if qn, qerr := s.cacheClient.DeletePattern(context.Background(), qpattern); qerr != nil {
+			s.logger.WithModule("cache").Warnf("invalidate query cache for deleted KB %q: %v", name, qerr)
+		} else if qn > 0 {
+			s.logger.WithModule("cache").Infof("invalidate query cache for deleted KB %q: deleted %d keys", name, qn)
+		}
+	}
 	s.logger.Infof("KB %q: deleted", name)
 	return nil
 }

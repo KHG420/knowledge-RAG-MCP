@@ -175,6 +175,10 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	}
 	emit(StageIndexing, "done", "搜索索引已建立")
 
+	// Invalidate caches for this document so that any stale query results
+	// referencing old chunk IDs are evicted before the next search.
+	s.InvalidateDoc(slug)
+
 	log.Infof("UploadDocument %q done: slug=%q chunks=%d chars=%d in %v", path, slug, meta.ChunkCount, meta.TotalChars, time.Since(start))
 	emit(StageComplete, "done", slug)
 	return meta, nil
