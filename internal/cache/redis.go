@@ -65,6 +65,15 @@ func NewRedisCache(cfg RedisConfig) (*RedisCache, error) {
 	if cfg.Prefix == "" {
 		cfg.Prefix = "kmcp:"
 	}
+	if cfg.DialTimeout == 0 {
+		cfg.DialTimeout = 5 * time.Second
+	}
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 3 * time.Second
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = 3 * time.Second
+	}
 
 	client := redis.NewClient(&redis.Options{
 		Addr:         cfg.Addr,
