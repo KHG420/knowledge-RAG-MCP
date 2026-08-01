@@ -73,8 +73,8 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `doc_parser_api_key` | `DOC_PARSER_API_KEY` | — | Bearer token for the document parsing API (optional) |
 | `doc_parser_timeout` | `DOC_PARSER_TIMEOUT` | `600s` | HTTP request timeout for document parsing |
 | `manage_port` | `MANAGE_PORT` | `8085` | Web management UI port |
-| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
-| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy) |
+| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | MCP HTTP server listen port (SSE + Streamable HTTP) |
+| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | MCP server base URL (for reverse proxy) |
 | `log_file` | `KNOWLEDGE_MCP_LOG_FILE` | `<exe-dir>/knowledge-mcp.log` | Log file path |
 | `log_level` | `KNOWLEDGE_MCP_LOG_LEVEL` | `info` | Log level: `debug` or `info` |
 | `mysql_dsn` | `MYSQL_DSN` | — | MySQL DSN, e.g. `user:pass@tcp(host:3306)/db?parseTime=true`. When set, enables MySQL backend |
@@ -102,11 +102,12 @@ knowledge-mcp supports four running modes:
   ```bash
   knowledge-mcp stdio
   ```
-- **HTTP SSE mode (default)** — includes web management UI:
+- **HTTP mode (default)** — MCP server with web management UI. Supports both
+  **Streamable HTTP** (`/mcp`, modern) and **SSE** (`/sse`, legacy) transports on the same port:
   ```bash
   knowledge-mcp serve
   ```
-- **SSE MCP-only** — HTTP SSE without management UI:
+- **HTTP MCP-only** — MCP server without management UI:
   ```bash
   knowledge-mcp serve --mcp
   ```
@@ -251,6 +252,24 @@ project root. The client automatically starts and manages the process lifecycle:
 
 No launchd setup is needed — the MCP client handles everything.
 
+### MCP client integration (HTTP)
+
+For clients that connect over HTTP (or when you need a shared, long-running server),
+use `serve` mode and configure the client to connect to the **Streamable HTTP** endpoint:
+
+```json
+{
+  "mcpServers": {
+    "knowledge-mcp": {
+      "type": "http",
+      "url": "http://localhost:8086/mcp"
+    }
+  }
+}
+```
+
+Legacy SSE clients can use `http://localhost:8086/sse` instead.
+
 ### Other options
 
 - **tmux / screen**: run `knowledge-mcp serve --mcp` inside a persistent session.
@@ -271,12 +290,12 @@ No launchd setup is needed — the MCP client handles everything.
 |----------|---------|-------------|
 | `MANAGE_PORT` | `8085` | Web management UI port |
 
-### SSE Server
+### MCP HTTP Server (SSE + Streamable HTTP)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE server listen port |
-| `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE server base URL (for reverse proxy scenarios) |
+| `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | MCP HTTP server listen port |
+| `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | MCP server base URL (for reverse proxy scenarios) |
 
 ### Embedding (hybrid search)
 

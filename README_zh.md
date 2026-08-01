@@ -118,20 +118,22 @@ knowledge-mcp 支持四种运行模式：
 
 > **注意**：stdio 模式下所有配置只能通过环境变量或 TOML 文件传入。
 
-### HTTP SSE 模式（默认）
+### HTTP 模式（默认）
 
-长期运行的 MCP 服务器 + Web 管理界面同时启动：
+长期运行的 MCP 服务器 + Web 管理界面同时启动。同一端口上同时支持
+**Streamable HTTP**（`/mcp`，新一代）和 **SSE**（`/sse`，遗留）两种传输：
 
 ```bash
 ./knowledge-mcp serve
 ```
 
-- MCP SSE 端点：`http://localhost:8086/sse`
+- MCP Streamable HTTP 端点：`http://localhost:8086/mcp`
+- MCP SSE 端点（遗留）：`http://localhost:8086/sse`
 - Web 管理界面：`http://localhost:8085`
 
-### 仅 MCP SSE
+### 仅 MCP HTTP
 
-HTTP SSE 不含管理界面（适用于已有独立管理后台的场景）：
+HTTP 模式不含管理界面（适用于已有独立管理后台的场景）：
 
 ```bash
 ./knowledge-mcp serve --mcp
@@ -274,8 +276,8 @@ cache_kblist_ttl = 60
 | 配置键 | 环境变量 | 默认值 | 说明 |
 |--------|---------|--------|------|
 | `manage_port` | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
-| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | SSE 服务器监听端口 |
-| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | SSE 服务器基础 URL（反向代理场景，如 `https://example.com/mcp`） |
+| `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | MCP HTTP 服务器监听端口（SSE + Streamable HTTP） |
+| `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | MCP 服务器基础 URL（反向代理场景） |
 
 #### 日志
 
@@ -394,7 +396,7 @@ MCP 客户端会自动启动和管理进程生命周期。如需传递环境变�
 }
 ```
 
-### HTTP SSE 模式
+### HTTP 模式
 
 如果你的 MCP 客户端不支持 stdio（或需要远程访问），使用 `serve` 模式：
 
@@ -402,7 +404,23 @@ MCP 客户端会自动启动和管理进程生命周期。如需传递环境变�
 ./knowledge-mcp serve
 ```
 
-然后在 MCP 客户端配置 HTTP SSE 连接：`http://host:8086/sse`
+然后在 MCP 客户端配置中连接：
+
+- **Streamable HTTP**（推荐）：`http://host:8086/mcp`
+- **SSE**（遗留客户端）：`http://host:8086/sse`
+
+`.mcp.json` 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "knowledge-mcp": {
+      "type": "http",
+      "url": "http://localhost:8086/mcp"
+    }
+  }
+}
+```
 
 ---
 

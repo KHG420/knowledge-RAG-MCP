@@ -1,3 +1,13 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "knowledge-mcp": {
+      "command": "/path/to/knowledge-mcp",
+      "args": ["stdio"],
+      "env": {
+        "KNOWLEDGE_MCP_DATA_DIR": "/home/user/knowledge_base",
+        "EMBED_API_ENDPOINT": "http://localhost:11434/v1/embeddings",
+        "EMBED_MODEL": "bge-m3"
+      }
+    }
+  }
 }
