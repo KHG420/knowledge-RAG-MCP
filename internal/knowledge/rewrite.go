@@ -48,6 +48,11 @@ func (r *SynonymRewriter) AddSynonym(term, synonym string) {
 	r.m[term] = append(r.m[term], synonym)
 }
 
+// SynonymCount returns the number of canonical terms in the synonym map.
+func (r *SynonymRewriter) SynonymCount() int {
+	return len(r.m)
+}
+
 // Rewrite expands the query by adding synonym alternatives. The original query
 // is always included as the first variant. Matching is case-insensitive.
 func (r *SynonymRewriter) Rewrite(query string) []string {

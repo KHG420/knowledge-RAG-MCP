@@ -36,6 +36,17 @@ type Config struct {
 	// When empty, the management API is open (no auth required).
 	APIToken string `toml:"api_token"`
 
+	// DeepSeekEndpoint is the base URL for the DeepSeek LLM API, used for
+	// LLM-based query rewriting (LLMQueryRewriter). Defaults to the public
+	// DeepSeek endpoint when empty.
+	DeepSeekEndpoint string `toml:"deepseek_endpoint"`
+	// DeepSeekAPIKey is the Bearer token for the DeepSeek API. Leave empty to
+	// skip LLM query rewriting (SynonymRewriter-only mode).
+	DeepSeekAPIKey string `toml:"deepseek_api_key"`
+	// DeepSeekModel selects the DeepSeek model for query rewriting.
+	// Default: "deepseek-flash".
+	DeepSeekModel string `toml:"deepseek_model"`
+
 	// DocParserEndpoint is the URL of an external HTTP API for document parsing.
 	// When set, ParseFile will send documents to this API before falling back
 	// to the local tabula parser. Example: "http://localhost:8000/parse"
@@ -126,6 +137,9 @@ func DefaultConfig() *Config {
 		DocParserEndpoint:             "",
 		DocParserAPIKey:               "",
 		DocParserTimeout:              "600s",
+		DeepSeekEndpoint:             "https://api.deepseek.com/chat/completions",
+		DeepSeekAPIKey:               "",
+		DeepSeekModel:                "deepseek-flash",
 		ManagePort:                    "8085",
 		ServePort:                     "8086",
 		ServeBaseURL:                  "",
@@ -217,6 +231,9 @@ func LoadWithEnvFallback(path string) *Config {
 		DocParserEndpoint:             os.Getenv("DOC_PARSER_ENDPOINT"),
 		DocParserAPIKey:               os.Getenv("DOC_PARSER_API_KEY"),
 		DocParserTimeout:              envOr("DOC_PARSER_TIMEOUT", def.DocParserTimeout),
+		DeepSeekEndpoint:              envOr("DEEPSEEK_ENDPOINT", def.DeepSeekEndpoint),
+		DeepSeekAPIKey:                envOr("DEEPSEEK_API_KEY", def.DeepSeekAPIKey),
+		DeepSeekModel:                 envOr("DEEPSEEK_MODEL", def.DeepSeekModel),
 		ManagePort:                    envOr("MANAGE_PORT", def.ManagePort),
 		ServePort:                     envOr("KNOWLEDGE_MCP_SERVE_PORT", def.ServePort),
 		ServeBaseURL:                  envOr("KNOWLEDGE_MCP_SERVE_BASE_URL", def.ServeBaseURL),

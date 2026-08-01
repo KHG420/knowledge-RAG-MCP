@@ -166,7 +166,26 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 			log.Infof("dictionaries: loaded %d terms from %s", len(entries), dictDir)
 		}
 	}
-	store.SetRewriter(rewriter)
+
+	// When a DeepSeek API key is configured, wrap the SynonymRewriter inside
+	// an LLMQueryRewriter for semantic query expansion. The SynonymRewriter
+	// serves as the fallback when the LLM call fails.
+	if cfg.DeepSeekAPIKey != "" {
+		llmCompleter := knowledge.NewDeepSeekCompleter(
+			cfg.DeepSeekEndpoint,
+			cfg.DeepSeekAPIKey,
+			cfg.DeepSeekModel,
+			knowledge.WithDeepSeekLogger(logger.WithModule("deepseek")),
+		)
+		llmRewriter := knowledge.NewLLMQueryRewriter(llmCompleter).
+			WithFallback(rewriter)
+		store.SetRewriter(llmRewriter)
+		log.Infof("query rewriter: LLM (deepseek model=%s) + synonym fallback (%d terms)",
+			cfg.DeepSeekModel, rewriter.SynonymCount())
+	} else {
+		store.SetRewriter(rewriter)
+		log.Debugf("query rewriter: synonym-only (DEEPSEEK_API_KEY not set)")
+	}
 
 	// --- Optional: vector embedder (OpenAI-compatible API, e.g. Ollama) ---
 	if cfg.EmbedEndpoint != "" {

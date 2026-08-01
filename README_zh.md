@@ -25,6 +25,7 @@
 - [缓存机制](#缓存机制)
 - [模型部署](#模型部署)
 - [领域词典](#领域词典)
+- [LLM 查询改写](#llm-查询改写)
 - [日志与调试](#日志与调试)
 - [运维部署](#运维部署)
 - [数据库表结构](#数据库表结构)
@@ -37,7 +38,8 @@
 ## 特性
 
 - **文档导入** — 支持 PDF、DOCX、ODT、EPUB、HTML、XLSX、PPTX、MD、TXT
-- **BM25 搜索** — Unicode 感知、CJK 双字分词，支持查询重写和同义词扩展
+- **BM25 搜索** — Unicode 感知、CJK 双字分词，支持查询重写、同义词扩展、LLM 查询改写
+- **LLM 查询改写** — 可选 DeepSeek LLM 驱动，自动生成 2-4 个改写变体提升召回率；LLM 不可用时优雅降级到同义词重写
 - **混合搜索** — BM25 + 稠密向量融合，采用 RRF 算法（k=60），自适应查询类型权重
 - **两阶段重排序** — 可选的交叉编码器（兼容 Infinity/Cohere API）对 top-K 候选精排
 - **段落级分块** — 语义边界切分（默认 200-2000 字符）、~200 字符重叠、层级化 fine+coarse 分块、章节角色分类（摘要/引言/方法/实验/结论）
@@ -256,6 +258,14 @@ cache_kblist_ttl = 60
 | `rerank_api_key` | `RERANK_API_KEY` | — | API 密钥（自部署无需） |
 | `rerank_timeout` | `RERANK_TIMEOUT` | `30s` | 重排序 HTTP 请求超时 |
 | `rerank_candidate_limit` | `RERANK_CANDIDATE_LIMIT` | `100` | 送入重排序的 BM25/RRF 候选数量 |
+
+#### LLM 查询改写（DeepSeek）
+
+| 配置键 | 环境变量 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `deepseek_api_key` | `DEEPSEEK_API_KEY` | — | DeepSeek API 密钥。**不设置则不启用 LLM 改写** |
+| `deepseek_endpoint` | `DEEPSEEK_ENDPOINT` | `https://api.deepseek.com/chat/completions` | DeepSeek API 端点 |
+| `deepseek_model` | `DEEPSEEK_MODEL` | `deepseek-flash` | 模型名称（推荐 `deepseek-flash`） |
 
 #### 服务端口
 
@@ -791,6 +801,74 @@ maneuvering:
 查询如 `"船舶阻力 CFD 分析"` 会自动扩展出 `resistance`、`drag`、`computational fluid dynamics` 等相关术语参与 BM25 检索和向量召回。
 
 词典加载时机：服务启动时自动扫描 `dictionaries/` 目录。修改后需重启服务生效。
+
+---
+
+## LLM 查询改写
+
+> 🆕 v4：利用 DeepSeek 大模型进行语义级查询改写，提升召回率。
+
+LLM 查询改写在**领域词典同义词扩展**的基础上进一步利用大语言模型的语义理解能力，将用户的原始查询改写为 2-4 个语义相同但用词不同的变体，帮助 BM25 检索匹配更多相关文档。
+
+### 工作流程
+
+```
+用户查询 → LLMQueryRewriter
+             ├── DeepSeek LLM（生成改写变体）
+             │      成功：原始查询 + 2~4 个改写变体 → 合并送入检索引擎
+             │      失败：自动降级到 SynonymRewriter（同义词 + 词典扩展）
+             └── 即使 LLM 服务不可用，系统仍正常运行
+```
+
+### 配置方法
+
+**方式一：TOML 配置文件** (`knowledge-mcp.toml`)
+
+```toml
+# DeepSeek LLM 查询改写（可选）
+deepseek_api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# deepseek_endpoint = "https://api.deepseek.com/chat/completions"  # 可选，默认值
+# deepseek_model   = "deepseek-flash"                               # 可选，默认值
+```
+
+**方式二：环境变量**
+
+```bash
+export DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# export DEEPSEEK_ENDPOINT="https://api.deepseek.com/chat/completions"
+# export DEEPSEEK_MODEL="deepseek-flash"
+```
+
+### 参数说明
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `deepseek_api_key` / `DEEPSEEK_API_KEY` | DeepSeek API 密钥。**不设置则不启用 LLM 改写** | (空) |
+| `deepseek_endpoint` / `DEEPSEEK_ENDPOINT` | DeepSeek API 端点 URL | `https://api.deepseek.com/chat/completions` |
+| `deepseek_model` / `DEEPSEEK_MODEL` | 模型名称 | `deepseek-flash` |
+
+### 降级策略
+
+LLM 查询改写采用**三层防线**确保服务稳定：
+
+1. **LLM 层** — DeepSeek API 调用成功则使用 LLM 生成的改写变体
+2. **Fallback 层** — LLM 调用失败（网络错误/超时/空响应）时自动回退到 `SynonymRewriter`，使用内置同义词表 + 词典文件进行查询扩展
+3. **最底层** — 即使同义词表为空，也会返回原始查询，确保搜索永不中断
+
+### 安全保护
+
+- API Key **仅通过 TOML 配置文件或环境变量注入**，代码中不硬编码
+- 错误日志中的 API 响应会经过 `sanitiseForLog()` 脱敏处理，任何 `sk-*` 格式的 Key 都会被替换为 `sk-***`
+- API Key 不会出现在任何日志、错误消息或管理界面中
+
+### 日志示例
+
+```
+[2026-01-01 10:00:00] [INFO] [startup] query rewriter: LLM (deepseek model=deepseek-flash) + synonym fallback (17 terms)
+[2026-01-01 10:00:05] [DEBUG] [deepseek] deepseek: request model=deepseek-flash promptLen=42 bodyLen=237
+[2026-01-01 10:00:06] [DEBUG] [deepseek] deepseek: OK model=deepseek-flash elapsed=856ms promptLen=42 responseLen=128
+[2026-01-01 10:01:00] [WARN] [deepseek] deepseek: non-200 model=deepseek-flash status=401 elapsed=123ms body={"error":"Invalid API key: sk-***"}
+```
 
 ---
 
