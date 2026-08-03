@@ -22,7 +22,6 @@ import (
 	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/knowledge"
 	"knowledge-mcp/internal/logging"
-	"knowledge-mcp/internal/setup"
 )
 
 func main() {
@@ -49,12 +48,6 @@ func main() {
 			os.Exit(1)
 		}
 		return
-	}
-
-	// Subcommand: setup — interactive configuration.
-	if len(os.Args) > 1 && os.Args[1] == "setup" {
-		setup.Run()
-		os.Exit(0)
 	}
 
 	// Subcommand: serve (or server) — run as a long-lived HTTP SSE server.

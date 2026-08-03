@@ -11,10 +11,14 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 ## Features
 
 - **Document ingestion** — PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT
-- **BM25 search** — Unicode-aware, CJK bigram-aware tokenizer with query rewriting
+- **Query triage** — zero-cost rule-based router: 70% simple queries use dictionary expansion, 25% medium queries use multi-synonym variants, 5% complex queries trigger LLM rewriting
+- **BM25 search** — Unicode-aware, CJK bigram-aware tokenizer with query rewriting, synonym expansion, and optional LLM query expansion
+- **LLM query rewriting** — optional DeepSeek LLM-driven query expansion generating 2–4 rewritten variants; only triggered for complex queries, with graceful fallback
+- **BM25/vector decoupling** — exact synonyms go to BM25 only, related terms go to vector side only, preventing cross-contamination
 - **Hybrid search** — BM25 + dense embedding fusion via Reciprocal Rank Fusion (RRF) with adaptive query-type weighting
 - **Two-stage reranking** — optional Cross-Encoder (Infinity/Cohere-compatible) to re-rank the top-K recalls for improved precision
 - **Paragraph-level chunking** — semantic-boundary splitting, overlap, hierarchical fine + coarse sections, section-role classification
+- **Page-aware chunking** — PDF chunks carry `page_start` / `page_end` metadata, surfaced in search results and chunk reads
 - **Parent-child retrieval** — read a chunk's full parent section for richer context
 - **Paper metadata extraction** — title, authors, abstract, section-role detection for academic papers
 - **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
@@ -41,17 +45,13 @@ knowledge-mcp can be configured via three methods (in priority order):
 2. **Environment variables** — fallback when no TOML file exists
 3. **Hard-coded defaults** — sensible defaults for all fields
 
-### Setup wizard
+### Web configuration
 
-Run the interactive configuration wizard to generate a `knowledge-mcp.toml` file:
+All configuration can be managed at runtime through the Web management UI at `/config`.
+Open [http://localhost:8085/config](http://localhost:8085/config) in your browser to view and modify settings.
+Most changes take effect immediately (hot-reload); a few (ports, data dir, MySQL) require a restart.
 
-```bash
-knowledge-mcp setup
-```
-
-The wizard probes endpoint connectivity and writes a valid config file.
-
-### Config keys
+### Config file
 
 | Key | Env var | Default | Description |
 |-----|---------|---------|-------------|
@@ -88,13 +88,23 @@ The wizard probes endpoint connectivity and writes a valid config file.
 | `redis_addr` | `REDIS_ADDR` | `127.0.0.1:6379` | Redis server address |
 | `redis_password` | `REDIS_PASSWORD` | — | Redis password (optional) |
 | `redis_db` | `REDIS_DB` | `0` | Redis database number |
-| `redis_prefix` | `REDIS_PREFIX` | `kmcp:` | Redis key namespace prefix |
+| `mineru_enabled` | `MINERU_ENABLED` | `true` | Enable external document parser (MinerU) |
+| `deepseek_api_key` | `DEEPSEEK_API_KEY` | — | DeepSeek API key. LLM rewriting is disabled when empty |
+| `deepseek_endpoint` | `DEEPSEEK_ENDPOINT` | `https://api.deepseek.com/chat/completions` | DeepSeek API endpoint |
+| `deepseek_model` | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model name |
+| `redis_pool_size` | `REDIS_POOL_SIZE` | `10` | Redis connection pool size |
+| `cache_query_ttl` | `CACHE_QUERY_TTL` | `300` | Query result cache TTL in seconds (Redis) |
+| `cache_chunk_ttl` | `CACHE_CHUNK_TTL` | `0` | Chunk text cache TTL in seconds (built-in) |
+| `cache_meta_ttl` | `CACHE_META_TTL` | `0` | Document metadata cache TTL in seconds (built-in) |
+| `cache_index_ttl` | `CACHE_INDEX_TTL` | `0` | Chunk index cache TTL in seconds (built-in) |
+| `cache_kblist_ttl` | `CACHE_KBLIST_TTL` | `60` | KB list cache TTL in seconds (built-in) |
+| `upload_max_size_mb` | `UPLOAD_MAX_SIZE_MB` | `100` | Maximum upload file size in MB |
 
 ## Quick Start
 
 ### Running modes
 
-knowledge-mcp supports four running modes:
+knowledge-mcp supports three running modes:
 
 - **stdio mode (recommended for MCP clients)** — communicate via stdin/stdout using the
   MCP protocol. No HTTP server, no web UI. Ideal for Reasonix, Claude Desktop, and
@@ -110,10 +120,6 @@ knowledge-mcp supports four running modes:
 - **HTTP MCP-only** — MCP server without management UI:
   ```bash
   knowledge-mcp serve --mcp
-  ```
-- **Setup wizard** — interactive configuration:
-  ```bash
-  knowledge-mcp setup
   ```
 
 ### Minimal (BM25 only, zero dependencies)
@@ -475,22 +481,49 @@ Top-K selection: if the score gap between #1 and #2 is > 0.25, only the top KB i
 ## Search Pipeline
 
 ```
-query → query rewriting (synonyms) → tokenization
-  → Phase 1: Fast Recall ─────────────────────
-  │   BM25 keyword scoring
-  │   + optional dense embedding cosine similarity
-  │   → RRF fusion (adaptive query-type weights)
-  │   → top-N candidates (default N=100)
-  → Phase 2: Precision Re-rank ────────────────  [if reranker configured]
-  │   Cross-Encoder scores each (query, chunk) pair
-  │   → re-sort by relevance score
-  → cap to limit → snippet generation → deduplicate → return
+user query (question)
+  │
+  ├─ Query triage (rule-based, zero-cost)
+  │   ├─ 70% Simple  → domain dictionary exact_synonyms → BM25 weight boost
+  │   ├─ 25% Medium  → SynonymRewriter multi-variant expansion
+  │   └─  5% Complex → LLMQueryRewriter semantic rewrite (DeepSeek, optional)
+  │
+  ├─ BM25 / vector decoupled recall
+  │   ├─ BM25 path: exact_synonyms expansion (no related_terms)
+  │   └─ Vector path: original query + related_terms (semantic enrichment)
+  │
+  ├─ KB routing: 4-dimension weighted scoring → Top-1~3 KBs
+  │
+  ├─ Tokenization: CJK bigram-aware tokenizer
+  │
+  ├─ Phase 1: Fast Recall ──────────────────────────
+  │   ├─ Inverted index fast path
+  │   │     candidate collection → BM25 scoring
+  │   │
+  │   ├─ Vector ANN recall (HNSW, independent parallel)
+  │   │     query vectorisation → HNSW search → merge with BM25 candidates
+  │   │
+  │   └─ RRF fusion (k=60, adaptive query-type weights)
+  │         paper-type queries: BM25 weight ↑ / conceptual queries: vector weight ↑
+  │        → top-N candidates (default N=100)
+  │
+  ├─ Phase 2: Precision Re-rank ────────────────  [if reranker configured]
+  │     Cross-Encoder scores each (query, chunk) pair
+  │    → re-sort by relevance score
+  │
+  └─ Post-processing
+       → cap to limit → snippet generation → deduplicate
+       → evidence quality scoring → return
 ```
 
-**Graceful degradation**: Without an embedder, hybrid falls back to pure BM25.
-Without a reranker, the pipeline skips Phase 2 and returns RRF/BM25 results directly.
-When the cross-encoder reranker is unavailable or fails, it falls back to vector
-cosine similarity scores from Phase 1.
+**Graceful degradation**:
+
+| Scenario | Behaviour |
+|----------|-----------|
+| No embedding endpoint configured | Falls back to pure BM25 keyword search |
+| No reranker configured | Skips Phase 2, returns RRF/BM25 scores directly |
+| Reranker timeout/failure | Falls back to vector cosine similarity scores from Phase 1 |
+| Neither configured | Pure BM25, zero external dependencies |
 
 ## Storage Layout
 
@@ -520,7 +553,7 @@ cosine similarity scores from Phase 1.
 ## Architecture
 
 ```
-main.go                  — CLI entry point, subcommands (stdio / serve / setup), tool registration
+main.go                  — CLI entry point, subcommands (stdio / serve / manage / dict), tool registration
 internal/
   config/
     config.go            — TOML config loading, env-var fallback, defaults
@@ -546,8 +579,11 @@ internal/
     gpu_scheduler.go     — GPU scheduler, coordinates embedding/reranker model sleep/wake
     kb_router.go         — Multi-KB intelligent router (keyword + embedding + desc + constraint scoring)
     rewrite.go           — QueryRewriter interface, SynonymRewriter (built-in + YAML dictionaries)
-    rewrite_llm.go       — LLMQueryRewriter (optional LLM-based query expansion)
+    rewrite_llm.go       — LLMQueryRewriter (only triggered for complex queries)
+    query_triage.go      — Query triage router (Simple/Medium/Complex, rule-based)
     dict_loader.go       — Domain dictionary loader from YAML files
+    dict_generator.go    — LLM offline dictionary batch generator
+    synonym_miner.go     — Search log synonym auto-mining
     manage.go            — Web management UI server, KB CRUD, upload/delete/search handlers
     manage_enhanced.go   — Extended management features (search console, config, tool descriptions)
     upload.go            — UploadDocument, UploadDirectory
@@ -571,6 +607,9 @@ internal/
     meta_extract.go       — Paper metadata extraction (title, authors, abstract, section roles)
   retrieval/
     bm25.go              — Tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
+cmd/
+  cleanup-vector/        — HNSW vector index orphan entry cleanup tool
+dictionaries/            — Domain dictionary YAML files
 scripts/
   eval.go                — Retrieval evaluation script (NDCG@5, MRR, Recall@10)
 service-manager.sh       — Service management script for Ollama + Infinity dependencies
@@ -640,6 +679,44 @@ CFD:
 
 Dictionaries are loaded at startup. A query like "ship resistance CFD" automatically expands to include "drag", "computational fluid dynamics", etc. in both BM25 and vector recall.
 
+### Dictionary management tools
+
+Two CLI subcommands help manage domain dictionaries:
+
+```bash
+# Mine synonym candidates from accumulated search logs
+knowledge-mcp dict mine
+
+# Generate domain dictionary from KB chunks via LLM (requires DEEPSEEK_API_KEY)
+knowledge-mcp dict gen
+```
+
+The `dict mine` tool reads `.searchlog.jsonl`, discovers candidate synonym pairs via query-document co-occurrence analysis, and outputs a table for manual review. The `dict gen` tool scans the current knowledge base and calls LLM to batch-extract domain terms, synonyms and related terms into `dictionaries/<kb>_generated.yaml`.
+
+## LLM Query Rewriting
+
+When `DEEPSEEK_API_KEY` is configured, complex queries (about 5% of all queries) are automatically rewritten by DeepSeek LLM to generate 2-4 expanded variants for improved recall. Simple and medium queries use the domain dictionary and synonym rewriter instead — avoiding unnecessary LLM costs.
+
+**Three-layer fallback for resilience:**
+
+1. **LLM layer** — DeepSeek API returns rewritten variants on success
+2. **Fallback layer** — LLM failure (network error/timeout/empty response) falls back to `SynonymRewriter` with built-in synonym table + dictionary files
+3. **Bottom layer** — even with an empty synonym table, the original query is returned unchanged; search never breaks
+
+**Security:**
+
+- API key injected **only via TOML config file or environment variable**; never hard-coded
+- API responses in error logs are sanitised via `sanitiseForLog()` — any `sk-*` format key is replaced with `sk-***`
+- API key never appears in logs, error messages, or the management UI
+
+**Log example:**
+```
+[INFO] [startup] query rewriter: LLM (deepseek model=deepseek-v4-flash) + synonym fallback (17 terms)
+[DEBUG] [deepseek] deepseek: request model=deepseek-v4-flash promptLen=42 bodyLen=237
+[DEBUG] [deepseek] deepseek: OK model=deepseek-v4-flash elapsed=856ms promptLen=42 responseLen=128
+[WARN] [deepseek] deepseek: non-200 model=deepseek-v4-flash status=401 elapsed=123ms body={"error":"Invalid API key: sk-***"}
+```
+
 ## Database Schema (MySQL backend)
 
 The MySQL backend auto-creates the following tables in the configured database:
@@ -699,7 +776,7 @@ The search index references chunks that don't exist in the `chunks` table. This 
 
 **Q: Vector search returns zero results?**
 
-1. Verify the embedding endpoint is reachable: `curl http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'`
+1. Verify the embedding endpoint is reachable: `curl http://localhost:11434/v1/embeddings -d '{"model":"bge-m3","input":"test"}'`
 2. Check `embed_dim` matches your model
 3. Check if the vector index is empty in search logs
 

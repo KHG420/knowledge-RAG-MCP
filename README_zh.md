@@ -106,7 +106,7 @@ KNOWLEDGE_MCP_DATA_DIR=./kb-data \
 
 ## 运行模式
 
-knowledge-mcp 支持四种运行模式：
+knowledge-mcp 支持三种运行模式：
 
 ### stdio 模式（推荐 MCP 客户端使用）
 
@@ -139,20 +139,15 @@ HTTP 模式不含管理界面（适用于已有独立管理后台的场景）：
 ./knowledge-mcp serve --mcp
 ```
 
-### 配置向导
-
-交互式配置，探测端点连通性并生成 `knowledge-mcp.toml`：
-
-```bash
-./knowledge-mcp setup
-```
-
 ### 管理命令
 
 ```bash
 ./knowledge-mcp manage    # 仅启动 Web 管理界面（不含 MCP server），端口 8085
 ./knowledge-mcp version   # 打印版本信息
+./knowledge-mcp dict      # 领域词典管理（mine 挖掘同义词 / gen 生成词典）
 ```
+
+> **注意**：所有配置的填写和更改请在 Web 管理界面 `/config` 页面完成，支持热更新。
 
 ---
 
@@ -179,7 +174,7 @@ data_dir = "~/knowledge_base/"
 default_kb = ""
 
 # Embedding（向量检索）
-embed_endpoint = "http://127.0.0.1:11434/api/embed"
+embed_endpoint = "http://127.0.0.1:11434/v1/embeddings"
 embed_model = "qwen3-embedding:q4_k_m"
 embed_dim = 2560
 embed_api_key = ""
@@ -262,6 +257,7 @@ cache_kblist_ttl = 60
 | `rerank_api_key` | `RERANK_API_KEY` | — | API 密钥（自部署无需） |
 | `rerank_timeout` | `RERANK_TIMEOUT` | `30s` | 重排序 HTTP 请求超时 |
 | `rerank_candidate_limit` | `RERANK_CANDIDATE_LIMIT` | `100` | 送入重排序的 BM25/RRF 候选数量 |
+| `rerank_batch_size` | `RERANK_BATCH_SIZE` | `20` | 重排序每批次文档数 |
 
 #### LLM 查询改写（DeepSeek）
 
@@ -323,8 +319,11 @@ GPU 调度器协调嵌入和重排序模型共享单 GPU。启用后，在上传
 |--------|---------|--------|------|
 | `gpu_scheduler_enabled` | `GPU_SCHEDULER_ENABLED` | `false` | 设为 `true` 启用 |
 | `gpu_scheduler_embedding_sleep_url` | `GPU_SCHEDULER_EMBEDDING_SLEEP_URL` | — | 嵌入模型休眠 API 地址 |
+| `gpu_scheduler_embedding_wake_url` | `GPU_SCHEDULER_EMBEDDING_WAKE_URL` | — | 嵌入模型唤醒 API 地址 |
 | `gpu_scheduler_reranker_sleep_url` | `GPU_SCHEDULER_RERANKER_SLEEP_URL` | — | 重排序模型休眠 API 地址 |
+| `gpu_scheduler_reranker_wake_url` | `GPU_SCHEDULER_RERANKER_WAKE_URL` | — | 重排序模型唤醒 API 地址 |
 | `gpu_scheduler_timeout` | `GPU_SCHEDULER_TIMEOUT` | `30s` | sleep/wake HTTP 请求超时 |
+| `gpu_scheduler_wake_delay` | `GPU_SCHEDULER_WAKE_DELAY` | `3s` | 唤醒后等待模型加载到 GPU 的延迟 |
 
 #### MySQL 后端
 
@@ -759,14 +758,10 @@ cache_query_ttl = 300
 | Ollama | `qwen3-embedding:q4_k_m` | 2560 | `ollama pull qwen3-embedding:q4_k_m` |
 | Ollama | `nomic-embed-text` | 768 | `ollama pull nomic-embed-text` |
 
-Ollama 默认监听 `http://localhost:11434`，支持两种 API 格式：
+Ollama 默认监听 `http://localhost:11434`，使用 OpenAI 兼容端点：
 
 ```bash
-# OpenAI 兼容格式
 EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings
-
-# Ollama 原生格式
-EMBED_API_ENDPOINT=http://localhost:11434/api/embed
 ```
 
 ### Reranker 模型
@@ -1115,7 +1110,7 @@ knowledge-mcp dict gen
 ## 架构总览
 
 ```
-main.go                  — CLI 入口点、子命令 (stdio / serve / setup / manage / dict)、工具注册
+main.go                  — CLI 入口点、子命令 (stdio / serve / manage / dict)、工具注册
 internal/
   config/
     config.go            — TOML 配置加载、环境变量回退、默认值
@@ -1207,7 +1202,7 @@ MySQL 后端和文件后端的存储格式不同，需要重新导入所有文�
 
 ### Q: 向量搜索返回空结果？
 
-1. 确认 `embed_endpoint` 配置正确且服务可达：`curl http://localhost:11434/api/embed -d '{"model":"bge-m3","input":"test"}'`
+1. 确认 `embed_endpoint` 配置正确且服务可达：`curl http://localhost:11434/v1/embeddings -d '{"model":"bge-m3","input":"test"}'`
 2. 检查 `embed_dim` 是否匹配（如未设置则自动检测）
 3. 检查向量索引是否为空：搜索日志中 `vector recall returned 0 hits`
 
