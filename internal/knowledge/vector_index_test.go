@@ -210,3 +210,81 @@ func TestHNSWIndex_CorruptFile(t *testing.T) {
 		t.Error("expected error loading corrupt file")
 	}
 }
+
+// ── VectorID / ParseVectorID tests ─────────────────────────────────────────
+
+func TestVectorID(t *testing.T) {
+	tests := []struct {
+		slug, chunkID, want string
+	}{
+		{"doc", "005", "doc/005"},
+		{"横摇论文", "S00", "横摇论文/S00"},
+		{"a/b", "c", "a/b/c"}, // slug with slash is legal (though unusual)
+		{"", "chunk", "/chunk"},
+		{"slug", "", "slug/"},
+	}
+	for _, tt := range tests {
+		got := VectorID(tt.slug, tt.chunkID)
+		if got != tt.want {
+			t.Errorf("VectorID(%q, %q) = %q, want %q", tt.slug, tt.chunkID, got, tt.want)
+		}
+	}
+}
+
+func TestParseVectorID(t *testing.T) {
+	tests := []struct {
+		id           string
+		wantSlug     string
+		wantChunkID  string
+		wantOK       bool
+	}{
+		{"doc/005", "doc", "005", true},
+		{"横摇论文/S00", "横摇论文", "S00", true},
+		{"a/b/c", "a", "b/c", true}, // only first slash splits
+		{"nodash", "", "", false},
+		{"", "", "", false},
+		{"/onlychunk", "", "onlychunk", true},
+		{"slug/", "slug", "", true},
+	}
+	for _, tt := range tests {
+		slug, chunkID, ok := ParseVectorID(tt.id)
+		if ok != tt.wantOK {
+			t.Errorf("ParseVectorID(%q) ok=%v, want %v", tt.id, ok, tt.wantOK)
+		}
+		if slug != tt.wantSlug || chunkID != tt.wantChunkID {
+			t.Errorf("ParseVectorID(%q) = (%q, %q), want (%q, %q)",
+				tt.id, slug, chunkID, tt.wantSlug, tt.wantChunkID)
+		}
+	}
+}
+
+func TestVectorIDRoundTrip(t *testing.T) {
+	pairs := [][2]string{
+		{"doc", "005"},
+		{"横摇", "S02"},
+		{"slug", ""},
+		{"", "onlychunk"},
+	}
+	for _, p := range pairs {
+		id := VectorID(p[0], p[1])
+		s, c, ok := ParseVectorID(id)
+		if !ok {
+			t.Errorf("ParseVectorID(%q) roundtrip failed", id)
+		}
+		if s != p[0] || c != p[1] {
+			t.Errorf("roundtrip mismatch: (%q,%q) → %q → (%q,%q)", p[0], p[1], id, s, c)
+		}
+	}
+
+	// Non-roundtrip case: slug contains "/".
+	// VectorID("a/b", "c") = "a/b/c", ParseVectorID splits on first "/" → ("a", "b/c").
+	// This is expected — slugs should not contain "/".
+	id := VectorID("a/b", "c")
+	s, c, ok := ParseVectorID(id)
+	if !ok {
+		t.Error("ParseVectorID should succeed")
+	}
+	if s != "a" || c != "b/c" {
+		t.Errorf("non-roundtrip: VectorID(a/b,c)=%q, ParseVectorID→(%q,%q)", id, s, c)
+	}
+}

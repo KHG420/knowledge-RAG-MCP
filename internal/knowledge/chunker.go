@@ -5,18 +5,40 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
 
-// Chunk parameter defaults (overridable at runtime via SetChunkParams).
-var (
-	chunkShortChunk        = 200  // chars below this are merged into the preceding chunk
-	chunkLongChunk         = 2000 // chars above this are re-split on sentence boundaries
-	chunkFragmentThreshold = 60   // chars below this are merged into the preceding chunk after splitLong
-	chunkOverlapChars      = 200  // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
-	chunkSemanticThreshold = 0.75 // cosine similarity threshold for semantic chunk merging
-)
+// chunkParams holds the runtime-adjustable chunking parameters.
+// An atomic.Value wraps this struct so concurrent readers see a consistent
+// snapshot without locking. SetChunkParams atomically swaps the whole struct.
+type chunkParams struct {
+	shortChunk        int     // chars below this are merged into the preceding chunk
+	longChunk         int     // chars above this are re-split on sentence boundaries
+	fragmentThreshold int     // chars below this are merged into the preceding chunk after splitLong
+	overlapChars      int     // chars from the previous chunk tail prepended to each chunk (sentence-aligned)
+	semanticThreshold float64 // cosine similarity threshold for semantic chunk merging
+}
+
+// global chunk parameters, safe for concurrent read+write via atomic.Value.
+var atomicChunkParams atomic.Value
+
+func init() {
+	atomicChunkParams.Store(&chunkParams{
+		shortChunk:        200,
+		longChunk:         2000,
+		fragmentThreshold: 60,
+		overlapChars:      200,
+		semanticThreshold: 0.75,
+	})
+}
+
+// loadChunkParams returns a snapshot of the current chunking parameters.
+// The returned *chunkParams must not be mutated — it is shared with callers.
+func loadChunkParams() *chunkParams {
+	return atomicChunkParams.Load().(*chunkParams)
+}
 
 // PageBreak records the character offset where a new PDF page starts.
 // Offset is a 0-based character index in the full document text; Page is 1-based.
@@ -65,24 +87,30 @@ func (po PageOffsets) shiftLeft(n int) PageOffsets {
 
 // SetChunkParams allows runtime adjustment of chunking parameters.
 // Existing documents are not re-chunked; the new params only affect future uploads.
+// This is safe for concurrent use: it atomically swaps the snapshot consumed by
+// ChunkText and its helpers.
 func SetChunkParams(minChars, maxChars, oChars int, semThreshold float64) {
+	old := loadChunkParams()
+	cp := *old // copy
 	if minChars >= 50 {
-		chunkShortChunk = minChars
+		cp.shortChunk = minChars
 	}
 	if maxChars >= 500 {
-		chunkLongChunk = maxChars
+		cp.longChunk = maxChars
 	}
 	if oChars >= 0 {
-		chunkOverlapChars = oChars
+		cp.overlapChars = oChars
 	}
 	if semThreshold >= 0 && semThreshold <= 1 {
-		chunkSemanticThreshold = semThreshold
+		cp.semanticThreshold = semThreshold
 	}
+	atomicChunkParams.Store(&cp)
 }
 
 // GetChunkParams returns the current chunking parameters.
 func GetChunkParams() (minChars, maxChars, chunkOverlapChars int, semanticThreshold float64) {
-	return chunkShortChunk, chunkLongChunk, chunkOverlapChars, chunkSemanticThreshold
+	cp := loadChunkParams()
+	return cp.shortChunk, cp.longChunk, cp.overlapChars, cp.semanticThreshold
 }
 
 // ChunkText splits text into paragraph-level chunks suitable for BM25 retrieval.
@@ -141,7 +169,8 @@ func chunkText(text string, pageOffsets PageOffsets) []ChunkWithMeta {
 		if endOff > 0 {
 			pageEnd = pageOffsets.pageAt(endOff - 1)
 		}
-		if utf8.RuneCountInString(p.content) > chunkLongChunk {
+		cp := loadChunkParams()
+	if utf8.RuneCountInString(p.content) > cp.longChunk {
 			for _, sub := range splitLong(p.content) {
 				out = append(out, ChunkWithMeta{
 					Content:   sub,
@@ -258,7 +287,8 @@ func mergeShortWithOffset(paras []paraWithOffset) []paraWithOffset {
 	}
 	var out []paraWithOffset
 	for _, p := range paras {
-		if len(out) > 0 && utf8.RuneCountInString(p.content) < chunkShortChunk {
+		cp := loadChunkParams()
+		if len(out) > 0 && utf8.RuneCountInString(p.content) < cp.shortChunk {
 			// Merge into the previous chunk; keep the offset of the first chunk.
 			out[len(out)-1].content += "\n\n" + p.content
 		} else {
@@ -278,7 +308,8 @@ func mergeFragments(chunks []ChunkWithMeta) []ChunkWithMeta {
 	}
 	var out []ChunkWithMeta
 	for _, c := range chunks {
-		if len(out) > 0 && utf8.RuneCountInString(c.Content) < chunkFragmentThreshold {
+		cp := loadChunkParams()
+		if len(out) > 0 && utf8.RuneCountInString(c.Content) < cp.fragmentThreshold {
 			// Merge into the previous chunk; keep the offset/section of the first chunk.
 			out[len(out)-1].Content += "\n\n" + c.Content
 			if c.PageEnd > out[len(out)-1].PageEnd {
@@ -309,8 +340,8 @@ func addOverlap(chunks []ChunkWithMeta) []ChunkWithMeta {
 		// then walk forward to find the FIRST sentence boundary so the overlap reads
 		// as complete trailing content from the previous chunk.
 		start := 0
-		if len(runes) > chunkOverlapChars {
-			start = len(runes) - chunkOverlapChars
+		if len(runes) > loadChunkParams().overlapChars {
+			start = len(runes) - loadChunkParams().overlapChars
 			// Walk forward from the start of the tail to find the first sentence end.
 			tail := runes[start:]
 			for j, r := range tail {
@@ -411,7 +442,7 @@ func splitLong(text string) []string {
 		}
 		// If adding this sentence would exceed the limit and we already
 		// have content, flush the buffer.
-		if buf.Len() > 0 && utf8.RuneCountInString(buf.String())+utf8.RuneCountInString(s) > chunkLongChunk {
+		if buf.Len() > 0 && utf8.RuneCountInString(buf.String())+utf8.RuneCountInString(s) > loadChunkParams().longChunk {
 			out = append(out, strings.TrimSpace(buf.String()))
 			buf.Reset()
 		}

@@ -617,7 +617,7 @@ func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]S
 			continue
 		}
 		for _, h := range hits {
-			key := h.Document.ID + "/" + h.Location.ChunkID
+			key := VectorID(h.Document.ID, h.Location.ChunkID)
 			if seen[key] {
 				continue
 			}
@@ -669,7 +669,6 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		// User asked for more than the budget recommends — respect the user's
 		// limit, but use budget for internal stages (beam, rerank pool).
 	}
-	_ = bm25N // reserved for future per-stage BM25 cap
 	log.Debugf("HybridSearch: budget=%s bm25N=%d vecBeam=%d rerankN=%d return=%d",
 		retrievalBudgetLabel(qf), bm25N, vecBeam, rerankN, budgetReturn)
 
@@ -766,18 +765,18 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 			for _, h := range hits {
 				cosByKey[h.ID] = h.Score
 			}
-			log.Infof("[search] hybrid: vector recall returned %d hits (beam=%d)", len(hits), vecK)
+			log.Debugf("[search] hybrid: vector recall returned %d hits (beam=%d)", len(hits), vecK)
 
 			// Merge vector-only candidates into the BM25 candidate set.
 			existingKeys := make(map[string]bool, len(entries))
 			for _, e := range entries {
-				existingKeys[e.docSlug+"/"+e.chunkID] = true
+				existingKeys[VectorID(e.docSlug, e.chunkID)] = true
 			}
 			merged := 0
 			for _, h := range hits {
 				if !existingKeys[h.ID] {
-					parts := strings.SplitN(h.ID, "/", 2)
-					if len(parts) == 2 {
+				parts := strings.SplitN(h.ID, "/", 2)
+				if len(parts) == 2 {
 						entries = append(entries, searchEntry{
 							docSlug: parts[0],
 							chunkID: parts[1],
@@ -787,7 +786,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 				}
 			}
 			if merged > 0 {
-				log.Infof("[search] hybrid: merged %d vector-only candidates (total=%d)", merged, len(entries))
+				log.Debugf("[search] hybrid: merged %d vector-only candidates (total=%d)", merged, len(entries))
 			}
 		} else {
 			log.Infof("[search] hybrid: embedding failed, dense recall skipped")
@@ -843,7 +842,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	if len(cosByKey) > 0 {
 		needFallback := false
 		for i := range scored {
-			key := scored[i].entry.docSlug + "/" + scored[i].entry.chunkID
+			key := VectorID(scored[i].entry.docSlug, scored[i].entry.chunkID)
 			if s, ok := cosByKey[key]; ok {
 				scored[i].cosScore = s
 			} else if len(scored[i].entry.vector) > 0 {
@@ -866,7 +865,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 				}
 			}
 		}
-		s.logger.Infof("[search] hybrid: dense scoring done (cosByKey=%d fallback=%v)", len(cosByKey), needFallback)
+		s.logger.Debugf("[search] hybrid: dense scoring done (cosByKey=%d fallback=%v)", len(cosByKey), needFallback)
 	} else if hasVectors && s.embedder != nil {
 		// No vector index available; brute-force every entry that has a vector.
 		var restoreEmb2 func()
@@ -888,9 +887,9 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		if restoreEmb2 != nil {
 			restoreEmb2()
 		}
-		s.logger.Infof("[search] hybrid: brute-force cos_scores for %d candidates (no index)", len(scored))
+		s.logger.Debugf("[search] hybrid: brute-force cos_scores for %d candidates (no index)", len(scored))
 	} else {
-		s.logger.Infof("[search] hybrid: dense scoring skipped (no vectors or no embedder)")
+		s.logger.Debugf("[search] hybrid: dense scoring skipped (no vectors or no embedder)")
 	}
 
 	// Phase 3.5: abstract score boost. Chunks from the "abstract" section of
@@ -956,7 +955,7 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	// Phase 8: reranker (optional). Applied BEFORE the final cap so the
 	// cross-encoder sees the full candidate pool (up to rerankCandidateLimit).
 	// When no reranker is configured, this is a no-op.
-	s.logger.Infof("[search] hybrid: reranking phase reranker=%v candidates=%d", s.reranker != nil, len(results))
+	s.logger.Debugf("[search] hybrid: reranking phase reranker=%v candidates=%d", s.reranker != nil, len(results))
 	if s.reranker != nil && len(results) > 0 {
 		// Coordinate GPU: switch from embedding to reranker mode.
 		if s.gpuScheduler != nil {
@@ -974,12 +973,12 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 		for i := range newEntries {
 			results[i] = hybridRanked{entry: newEntries[i], rrfScore: newScores[i]}
 		}
-		s.logger.Infof("[search] hybrid: reranking done results=%d", len(newEntries))
+		s.logger.Debugf("[search] hybrid: reranking done results=%d", len(newEntries))
 	} else {
 		if s.reranker == nil {
-			s.logger.Infof("[search] hybrid: reranking skipped (no reranker configured)")
+			s.logger.Debugf("[search] hybrid: reranking skipped (no reranker configured)")
 		} else {
-			s.logger.Infof("[search] hybrid: reranking skipped (no results to rerank)")
+			s.logger.Debugf("[search] hybrid: reranking skipped (no results to rerank)")
 		}
 	}
 
@@ -1134,7 +1133,7 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 	}
 
 	hits := s.vectorIndex.Search(qVec64, vecK)
-	log.Infof("[search] vector: ANN returned %d hits (beam=%d)", len(hits), vecK)
+	log.Debugf("[search] vector: ANN returned %d hits (beam=%d)", len(hits), vecK)
 
 	// Build SearchHit results from vector hits.
 	results := make([]SearchHit, 0, len(hits))
@@ -1149,11 +1148,10 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 		}
 		seen[h.ID] = true
 
-		parts := strings.SplitN(h.ID, "/", 2)
-		if len(parts) != 2 {
+		slug, chunkID, ok := ParseVectorID(h.ID)
+		if !ok {
 			continue
 		}
-		slug, chunkID := parts[0], parts[1]
 
 		// Skip tombstoned documents (soft-deleted).
 		if s.IsTombstoned(slug) {
@@ -1420,14 +1418,14 @@ func (s *Store) rerankTop(query string, entries []searchEntry, scores []float64,
 
 	// Check rerank memory cache to avoid repeated HTTP calls.
 	rerankKey := rerankCacheKey(query, texts[:n])
-	if s.rerankCache != nil {
-		s.rerankCacheMu.RLock()
-		if cachedScores, ok := s.rerankCache[rerankKey]; ok {
-			s.rerankCacheMu.RUnlock()
+	if s.rerankState.cache != nil {
+		s.rerankState.mu.RLock()
+		if cachedScores, ok := s.rerankState.cache[rerankKey]; ok {
+			s.rerankState.mu.RUnlock()
 			s.logger.Debugf("[rerank] cache hit: query=%q candidates=%d", query, n)
 			return sortByRerankScores(entries[:n], cachedScores)
 		}
-		s.rerankCacheMu.RUnlock()
+		s.rerankState.mu.RUnlock()
 	}
 
 	s.logger.Debugf("[rerank] rerankTop query=%q candidates=%d candLimit=%d", query, len(entries), candLimit)
@@ -1542,25 +1540,25 @@ func rerankCacheKey(query string, texts []string) string {
 
 // cacheRerankResult stores rerank scores in the memory cache with size bounding.
 func (s *Store) cacheRerankResult(key string, scores []float64) {
-	s.rerankCacheMu.Lock()
-	defer s.rerankCacheMu.Unlock()
-	if s.rerankCache == nil {
-		s.rerankCache = make(map[string][]float64)
+	s.rerankState.mu.Lock()
+	defer s.rerankState.mu.Unlock()
+	if s.rerankState.cache == nil {
+		s.rerankState.cache = make(map[string][]float64)
 	}
 	// Bound cache to prevent unbounded memory growth — evict oldest half when
 	// exceeding 256 entries.
 	const maxEntries = 256
-	if len(s.rerankCache) >= maxEntries {
+	if len(s.rerankState.cache) >= maxEntries {
 		n := 0
-		for k := range s.rerankCache {
-			delete(s.rerankCache, k)
+		for k := range s.rerankState.cache {
+			delete(s.rerankState.cache, k)
 			n++
 			if n >= maxEntries/2 {
 				break
 			}
 		}
 	}
-	s.rerankCache[key] = scores
+	s.rerankState.cache[key] = scores
 }
 
 // bm25Query returns the query string used for BM25 tokenisation. It applies

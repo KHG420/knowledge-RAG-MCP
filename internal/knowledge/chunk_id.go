@@ -104,6 +104,7 @@ func SourceHash(data []byte) string {
 func ChunkingStrategyVersion() string {
 	// Embed the key parameters that affect chunk boundaries.
 	// When these constants change in source, the strategy version changes.
+	cp := loadChunkParams()
 	return fmt.Sprintf("v2-short%d-long%d-frag%d-overlap%d-sem%.2f",
-		chunkShortChunk, chunkLongChunk, chunkFragmentThreshold, chunkOverlapChars, chunkSemanticThreshold)
+		cp.shortChunk, cp.longChunk, cp.fragmentThreshold, cp.overlapChars, cp.semanticThreshold)
 }

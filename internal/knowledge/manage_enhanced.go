@@ -3,6 +3,7 @@ package knowledge
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -22,10 +23,24 @@ import (
 
 // handleHealth returns a simple health check response with uptime and version info.
 func (s *Store) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeManageJSON(w, http.StatusOK, map[string]any{
+	result := map[string]any{
 		"status":  "ok",
 		"version": "1.0.0",
-	})
+	}
+
+	// Report MySQL backend connectivity if available.
+	if mb, ok := s.backend.(*MySQLBackend); ok {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := mb.Health(ctx); err != nil {
+			result["mysql"] = map[string]any{"status": "unhealthy", "error": err.Error()}
+			result["status"] = "degraded"
+		} else {
+			result["mysql"] = map[string]any{"status": "healthy"}
+		}
+	}
+
+	writeManageJSON(w, http.StatusOK, result)
 }
 
 // ── GPU Scheduler status ────────────────────────────────────────────────────

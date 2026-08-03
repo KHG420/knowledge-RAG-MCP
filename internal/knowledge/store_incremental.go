@@ -93,7 +93,7 @@ func (s *Store) UploadDocumentAtomicWithProgress(path string, progress ProgressF
 		if s.gpuScheduler != nil {
 			restoreEmbed = s.gpuScheduler.PrepareForEmbedding()
 		}
-		if merged, mergeErr := MergeSemanticNeighbors(context.Background(), fineChunks, s.embedder, chunkSemanticThreshold); mergeErr == nil && len(merged) > 0 {
+		if merged, mergeErr := MergeSemanticNeighbors(context.Background(), fineChunks, s.embedder, loadChunkParams().semanticThreshold); mergeErr == nil && len(merged) > 0 {
 			fineChunks = merged
 			_, coarseChunks = ChunkTextHierarchical(text)
 		}

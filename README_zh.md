@@ -51,11 +51,13 @@
 - **智能知识库路由** — 使用四维度加权评分（关键词 0.35 + 嵌入 0.35 + 描述 0.15 + 领域约束 0.15）自动路由查询到最相关的 1-3 个知识库
 - **领域词典支持** — 加载 YAML 格式的领域同义词词典进行查询扩展
 - **MySQL/MariaDB 后端** — 可选的数据库存储后端，替代默认的文件系统存储；所有文档/分块/索引/清单数据存储在关系表中
-- **Redis 缓存** — 可选的查询结果缓存 + 内置分块/元数据/索引增量缓存
+- **Redis 缓存** — 可选的精确查询结果缓存；**内置 MemCache** — 不依赖 Redis 也可使用 LRU 内存缓存（chunk/meta/index），容量可配（默认 20000 条）
 - **软删除（Tombstone）** — 文档删除采用 TTL 墓碑模式（默认 7 天），删除后立即从搜索中隐藏，物理清理在过期后执行
 - **增量索引与版本管理** — 重新上传文档时仅对变更的分块重新建索引；基于内容寻址的分块 ID 实现幂等更新
 - **证据质量信号** — 每个结果附带 source_confidence、answer_relevance 和 completeness 元数据
 - **页码感知** — PDF 分块标记页码，搜索结果和 chunk 读取中透传 `page_start` / `page_end`
+- **健康检查** — `/health` 端点返回服务状态 + MySQL 连接健康（healthy / degraded）
+- **并发安全** — 分块参数支持运行时热更新（atomic.Value），零锁开销；向量索引缓存线程安全
 
 ---
 
@@ -713,14 +715,16 @@ knowledge-mcp 有两层缓存：
 
 ### 内置缓存（默认开启，无需 Redis）
 
-内置于 Store 层，通过内存 map 缓存：
+基于 LRU 内存缓存（`MemCache`），容量默认 20000 条，支持 TTL 过期：
 
 | 缓存类型 | 缓存内容 | 默认 TTL | 缓存键前缀 |
 |----------|---------|---------|-----------|
-| chunk | 分块文本内容 | 0（永不过期） | `kmcp:kb:{kb}:chunk:{slug}:{id}` |
-| meta | 文档元数据 | 0（永不过期） | `kmcp:kb:{kb}:meta:{slug}` |
-| index | CHUNKS.toml 索引 | 0（永不过期） | `kmcp:kb:{kb}:idx:{slug}` |
-| kblist | KB 列表 | 60s | `kmcp:kblist` |
+| chunk | 分块文本内容 | 0（永不过期） | `chunk:{kb}:{slug}:{id}:v2` |
+| meta | 文档元数据 | 0（永不过期） | `meta:{kb}:{slug}:v2` |
+| index | CHUNKS.toml 索引 | 0（永不过期） | `index:{kb}:{slug}:v2` |
+| kblist | KB 列表 | 60s | `kblist:v2` |
+
+> **说明**：当 Redis 未配置时，系统自动启用 MemCache。若 Redis 已配置则优先使用 Redis 作为缓存后端。 |
 
 缓存日志位于 `[cache]` 模块，`info` 级别即可看到 HIT/MISS/SET：
 ```

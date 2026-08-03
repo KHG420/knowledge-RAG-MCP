@@ -24,6 +24,21 @@ const maxTermsPerChunk = 50 // top-N frequent terms retained in CHUNKS.toml
 const boundaryMergeN = 5 // G12: number of old tail chunks for incremental boundary merge
 const boundaryMergeM = 5 // G12: number of new head chunks for incremental boundary merge
 
+// vectorIndexState holds the per-KB HNSW vector index cache, guarded by its
+// own mutex. It is stored as a pointer in Store so value-copies of Store
+// (like WithKB) share the same lock and cache.
+type vectorIndexState struct {
+	mu    sync.RWMutex
+	cache map[string]*HNSWIndex
+}
+
+// rerankCacheState holds the in-memory rerank result cache. Stored as a pointer
+// in Store for the same reason as vectorIndexState.
+type rerankCacheState struct {
+	mu    sync.RWMutex
+	cache map[string][]float64
+}
+
 // Store manages the knowledge base with a MySQL-backed StorageBackend.
 // Use NewStoreWithBackend to create a Store with a MySQL backend.
 type Store struct {
@@ -46,10 +61,8 @@ type Store struct {
 	mu                   *sync.Mutex
 	taskManager          *UploadTaskManager
 	vectorIndex          *HNSWIndex        // per-KB vector index for fast ANN search
-	vectorIndexCache     map[string]*HNSWIndex // in-memory cache of loaded vector indexes by kbName
-	vectorIndexCacheMu   sync.RWMutex          // guards vectorIndexCache reads/writes
-	rerankCache          map[string][]float64  // in-memory cache of rerankTop scores (key: query+texts hash)
-	rerankCacheMu        sync.RWMutex          // guards rerankCache reads/writes
+	vecState             *vectorIndexState // shared vector index cache (pointer — safe to copy)
+	rerankState          *rerankCacheState // shared rerank result cache (pointer — safe to copy)
 	tombstoneManager     *TombstoneManager // cached tombstone manager (lazy init)
 
 	// Runtime configuration
@@ -81,6 +94,8 @@ func NewStoreWithBackend(backend StorageBackend) *Store {
 		AbstractBoost: 1.1,
 		logger:        logging.NewNopLogger(),
 		mu:            &sync.Mutex{},
+		vecState:      &vectorIndexState{},
+		rerankState:   &rerankCacheState{},
 		settings:      &s,
 		taskManager:   NewUploadTaskManager(tasksDir, logging.NewNopLogger()),
 	}
@@ -135,14 +150,14 @@ func (s *Store) WithKB(name string) *Store {
 	cp.kbName = name
 
 	// Check in-memory cache first to avoid repeated disk I/O.
-	if s.vectorIndexCache != nil {
-		s.vectorIndexCacheMu.RLock()
-		if idx, ok := s.vectorIndexCache[name]; ok {
-			s.vectorIndexCacheMu.RUnlock()
+	if s.vecState.cache != nil {
+		s.vecState.mu.RLock()
+		if idx, ok := s.vecState.cache[name]; ok {
+			s.vecState.mu.RUnlock()
 			cp.vectorIndex = idx
 			return &cp
 		}
-		s.vectorIndexCacheMu.RUnlock()
+		s.vecState.mu.RUnlock()
 	}
 
 	// Try loading the persisted HNSW index for this KB.
@@ -155,12 +170,12 @@ func (s *Store) WithKB(name string) *Store {
 
 	// Store in cache for future WithKB calls.
 	if cp.vectorIndex != nil {
-		s.vectorIndexCacheMu.Lock()
-		if s.vectorIndexCache == nil {
-			s.vectorIndexCache = make(map[string]*HNSWIndex)
+		s.vecState.mu.Lock()
+		if s.vecState.cache == nil {
+			s.vecState.cache = make(map[string]*HNSWIndex)
 		}
-		s.vectorIndexCache[name] = cp.vectorIndex
-		s.vectorIndexCacheMu.Unlock()
+		s.vecState.cache[name] = cp.vectorIndex
+		s.vecState.mu.Unlock()
 	}
 
 	return &cp
@@ -612,7 +627,7 @@ func (s *Store) AppendDocumentText(slug string, newText string) (int, error) {
 			newHead := fineChunks[:m]
 			boundary := append(oldTail, newHead...)
 
-			merged, mergeErr := MergeSemanticNeighbors(context.Background(), boundary, s.embedder, chunkSemanticThreshold)
+			merged, mergeErr := MergeSemanticNeighbors(context.Background(), boundary, s.embedder, loadChunkParams().semanticThreshold)
 			if mergeErr == nil {
 				// Detect changes to old chunks (content modified = absorbed new content).
 				for j := 0; j < len(oldTail) && j < len(merged); j++ {
@@ -1368,7 +1383,7 @@ func (s *Store) buildVectorIndexLocked() {
 		docAdded := 0
 		for _, e := range index.Chunks {
 			if len(e.Vector) == dim {
-				id := slug + "/" + e.ID
+				id := VectorID(slug, e.ID)
 				idx.Add(id, e.Vector)
 				added++
 				docAdded++
@@ -1393,10 +1408,10 @@ func (s *Store) buildVectorIndexLocked() {
 	}
 
 	// Update the in-memory vector index cache so future WithKB calls get the rebuilt index.
-	if s.vectorIndexCache != nil && s.kbName != "" {
-		s.vectorIndexCacheMu.Lock()
-		s.vectorIndexCache[s.kbName] = idx
-		s.vectorIndexCacheMu.Unlock()
+	if s.vecState.cache != nil && s.kbName != "" {
+		s.vecState.mu.Lock()
+		s.vecState.cache[s.kbName] = idx
+		s.vecState.mu.Unlock()
 	}
 }
 

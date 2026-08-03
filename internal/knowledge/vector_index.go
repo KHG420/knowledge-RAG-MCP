@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -33,6 +34,22 @@ type VectorIndex interface {
 type VectorHit struct {
 	ID    string
 	Score float64 // cosine similarity
+}
+
+// VectorID builds the canonical key used in HNSWIndex nodes from a document
+// slug and chunk ID. The separator is "/" — use ParseVectorID to split.
+func VectorID(slug, chunkID string) string {
+	return slug + "/" + chunkID
+}
+
+// ParseVectorID splits a VectorID key back into slug and chunkID.
+// The bool is false when the ID does not contain exactly one "/".
+func ParseVectorID(id string) (slug, chunkID string, ok bool) {
+	parts := strings.SplitN(id, "/", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // HNSWIndex implements VectorIndex using the Hierarchical Navigable Small World

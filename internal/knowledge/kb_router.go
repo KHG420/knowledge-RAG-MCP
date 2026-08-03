@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // KBCandidate represents a single knowledge base with its routing score.
@@ -38,6 +39,12 @@ type KBRouter struct {
 	embedder    Embedder            // optional: enables embedding scoring
 	constraints map[string][]string // KB name → constraint keywords
 	kbDescs     []kbDesc            // cached KB name+description list
+
+	// descVecs caches pre-computed embedding vectors for KB descriptions.
+	// KB descriptions are static between SetKBDescs calls, so caching
+	// avoids redundant API calls on every Route.
+	descVecs   map[string][]float64 // KB name → pre-computed description vector
+	descVecsMu sync.RWMutex
 }
 
 // NewKBRouter creates a KBRouter. If embedder is nil, the embedding dimension
@@ -64,9 +71,13 @@ func defaultConstraints() map[string][]string {
 }
 
 // SetKBDescs updates the cached KB name/description list. Call this after
-// creating or deleting KBs.
+// creating or deleting KBs. Also invalidates the cached description vectors
+// so they will be recomputed on the next Route call.
 func (r *KBRouter) SetKBDescs(descs []kbDesc) {
 	r.kbDescs = descs
+	r.descVecsMu.Lock()
+	r.descVecs = nil
+	r.descVecsMu.Unlock()
 }
 
 // Route scores every candidate KB against the query and returns the routing
@@ -122,14 +133,33 @@ func (r *KBRouter) Route(ctx context.Context, query string, candidates []string)
 		keywordScore := keywordOverlap(queryTerms, lowerName, strings.ToLower(desc))
 
 		// 2. Embedding score (0.35): cosine similarity.
+		// KB description vectors are cached in r.descVecs to avoid repeated
+		// API calls — descriptions only change when SetKBDescs is called.
 		embedScore := 0.0
 		if len(queryVec) > 0 && desc != "" {
-			descVecs, err := r.embedder.Embed(ctx, []string{desc})
-			if err == nil && len(descVecs) == 1 && len(descVecs[0]) > 0 {
-				descVec := make([]float64, len(descVecs[0]))
-				for i, v := range descVecs[0] {
-					descVec[i] = float64(v)
+			// Check cache first.
+			r.descVecsMu.RLock()
+			descVec, cached := r.descVecs[name]
+			r.descVecsMu.RUnlock()
+
+			if !cached {
+				// Compute and cache the description vector.
+				descVecs, err := r.embedder.Embed(ctx, []string{desc})
+				if err == nil && len(descVecs) == 1 && len(descVecs[0]) > 0 {
+					descVec = make([]float64, len(descVecs[0]))
+					for i, v := range descVecs[0] {
+						descVec[i] = float64(v)
+					}
+					r.descVecsMu.Lock()
+					if r.descVecs == nil {
+						r.descVecs = make(map[string][]float64)
+					}
+					r.descVecs[name] = descVec
+					r.descVecsMu.Unlock()
 				}
+			}
+
+			if len(descVec) > 0 {
 				embedScore = cosineSimilarity(queryVec, descVec)
 			}
 		}
@@ -214,19 +244,57 @@ func (r *KBRouter) Route(ctx context.Context, query string, candidates []string)
 }
 
 // tokenizeForRoute splits a query into lowercase tokens for keyword matching.
+// For CJK text, it produces unigrams and bigrams (e.g. "横摇阻尼" → "横","横摇","摇阻","阻尼","尼").
+// For Latin text, it falls back to whitespace + punctuation split.
 func tokenizeForRoute(text string) []string {
-	// Simple whitespace + punctuation split.
 	fields := strings.Fields(text)
-	seen := make(map[string]bool, len(fields))
-	out := make([]string, 0, len(fields))
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+
 	for _, f := range fields {
 		f = strings.Trim(f, ",.;:!?()[]{}<>\"'")
-		if len(f) > 0 && !seen[f] {
-			seen[f] = true
-			out = append(out, f)
+		if f == "" {
+			continue
+		}
+		// If the token contains CJK characters, split into unigrams + bigrams.
+		if containsCJK(f) {
+			runes := []rune(f)
+			for i, r := range runes {
+				u := strings.ToLower(string(r))
+				if !seen[u] {
+					seen[u] = true
+					out = append(out, u)
+				}
+				if i > 0 {
+					b := strings.ToLower(string([]rune{runes[i-1], r}))
+					if !seen[b] {
+						seen[b] = true
+						out = append(out, b)
+					}
+				}
+			}
+		} else {
+			lower := strings.ToLower(f)
+			if !seen[lower] {
+				seen[lower] = true
+				out = append(out, lower)
+			}
 		}
 	}
 	return out
+}
+
+// containsCJK reports whether the string contains any CJK character.
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF || // CJK Unified
+			r >= 0x3040 && r <= 0x309F || // Hiragana
+			r >= 0x30A0 && r <= 0x30FF || // Katakana
+			r >= 0xAC00 && r <= 0xD7AF { // Hangul
+			return true
+		}
+	}
+	return false
 }
 
 // keywordOverlap computes a normalised keyword overlap score [0, 1] between

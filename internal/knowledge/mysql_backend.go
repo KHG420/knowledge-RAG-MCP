@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -83,12 +84,22 @@ func NewMySQLBackend(cfg MySQLBackendConfig) (*MySQLBackend, error) {
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("mysql ping: %w", err)
 	}
 	return &MySQLBackend{db: db, dsn: dsn}, nil
+}
+
+// Health checks whether the database connection is alive. It returns nil when
+// the database is reachable, or an error describing the problem.
+func (mb *MySQLBackend) Health(ctx context.Context) error {
+	if mb.db == nil {
+		return fmt.Errorf("mysql: not connected")
+	}
+	return mb.db.PingContext(ctx)
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
