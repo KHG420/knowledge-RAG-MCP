@@ -1,3 +1,5 @@
+// Deprecated: The search methods in this file are legacy fallbacks used only
+// when searchEngine is nil (tests). Production paths use internal/knowledge/search/Engine.
 package knowledge
 
 import (
@@ -8,7 +10,7 @@ import (
 	"strings"
 	"time"
 	"knowledge-mcp/internal/cache"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
@@ -18,6 +20,12 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 		filter = filters[0]
 	}
 
+	// Delegate to search engine when available (REFACTOR_PLAN Phase 3.2).
+	if s.searchEngine != nil {
+		return s.searchEngine.Search(context.Background(), query, limit, filter)
+	}
+
+	// Legacy path — retained for unit tests that construct Store without engine.
 	// Check query cache.
 	if s.cacheEnabled() && limit > 0 {
 		qhash := cache.QueryHash(query, "bm25", limit, filter.SourceType, filter.Section)
@@ -222,6 +230,12 @@ func (s *Store) searchImpl(query string, limit int, filter SearchFilter) ([]Sear
 // cross-encoder reranking. It is intended for search-debug and scenarios where
 // raw lexical scores are needed.
 func (s *Store) SearchBM25(query string, limit int) ([]SearchHit, error) {
+	// Delegate to search engine when available.
+	if s.searchEngine != nil {
+		return s.searchEngine.SearchBM25(context.Background(), query, limit, SearchFilter{})
+	}
+
+	// Legacy path.
 	start := time.Now()
 	log := s.logger.WithModule("search")
 	log.Debugf("SearchBM25: query=%q limit=%d kb=%q", query, limit, s.kbName)
@@ -406,6 +420,18 @@ func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]S
 // The limit caps the number of results; hits below 15% of the top BM25 score
 // are trimmed before fusion.
 func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) ([]SearchHit, error) {
+	// Resolve filter.
+	var filter SearchFilter
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
+
+	// Delegate to search engine when available.
+	if s.searchEngine != nil {
+		return s.searchEngine.HybridSearch(context.Background(), query, limit, filter)
+	}
+
+	// Legacy path.
 	log := s.logger.WithModule("search")
 	log.Debugf("HybridSearch: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
 
@@ -430,11 +456,6 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 	queryTerms, err := retrieval.QueryTerms(bm25QueryStr)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search: %w", err)
-	}
-
-	var filter SearchFilter
-	if len(filters) > 0 {
-		filter = filters[0]
 	}
 
 	// Check query cache.

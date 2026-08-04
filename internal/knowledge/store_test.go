@@ -111,10 +111,10 @@ func TestChunksIndex_RoundTrip(t *testing.T) {
 	index := &ChunksIndex{
 		Chunks: []ChunkIndexEntry{
 			{ID: "000", Section: "Intro", TermCount: 5,
-				Terms: []termFreq{{"hello", 1}, {"world", 1}},
+				Terms: []TermFreq{{"hello", 1}, {"world", 1}},
 			},
 			{ID: "001", Section: "Body", TermCount: 3,
-				Terms: []termFreq{{"test", 1}},
+				Terms: []TermFreq{{"test", 1}},
 			},
 		},
 	}

@@ -276,7 +276,7 @@ func TestMockBackend_ChunksIndex(t *testing.T) {
 		HasVectors: true,
 		VectorDim:  256,
 		Chunks: []ChunkIndexEntry{
-			{ID: "C001", TermCount: 10, Terms: []termFreq{{Term: "hello", Count: 5}}},
+			{ID: "C001", TermCount: 10, Terms: []TermFreq{{Term: "hello", Count: 5}}},
 			{ID: "C002", TermCount: 8},
 			{ID: "C003", TermCount: 12},
 		},

@@ -27,11 +27,11 @@ func setupSearchStore(t *testing.T) *Store {
 	}
 	doc1Entries := []ChunkIndexEntry{
 		{ID: "000", Section: "Introduction", TermCount: 7,
-			Terms: []termFreq{{"ship", 1}, {"roll", 1}, {"damping", 1}, {"critical", 1}, {"naval", 1}, {"architecture", 1},{ "aspect", 1}}},
+			Terms: []TermFreq{{"ship", 1}, {"roll", 1}, {"damping", 1}, {"critical", 1}, {"naval", 1}, {"architecture", 1},{ "aspect", 1}}},
 		{ID: "001", Section: "Ikeda Method", TermCount: 9,
-			Terms: []termFreq{{"ikeda", 1}, {"method", 1}, {"estimates", 1}, {"roll", 1}, {"damping", 1}, {"friction", 1}, {"eddy", 1}, {"wave", 1},{ "components", 1}}},
+			Terms: []TermFreq{{"ikeda", 1}, {"method", 1}, {"estimates", 1}, {"roll", 1}, {"damping", 1}, {"friction", 1}, {"eddy", 1}, {"wave", 1},{ "components", 1}}},
 		{ID: "002", Section: "Bilge Keels", TermCount: 8,
-			Terms: []termFreq{{"bilge", 1}, {"keels", 1}, {"increase", 1}, {"roll", 1}, {"damping", 1}, {"higher", 1}, {"speeds", 1},{ "significantly", 1}}},
+			Terms: []TermFreq{{"bilge", 1}, {"keels", 1}, {"increase", 1}, {"roll", 1}, {"damping", 1}, {"higher", 1}, {"speeds", 1},{ "significantly", 1}}},
 	}
 	for _, e := range doc1Entries {
 		if err := backend.WriteChunk("test", doc1, e.ID, "content for "+doc1+"/"+e.ID); err != nil {
@@ -50,9 +50,9 @@ func setupSearchStore(t *testing.T) *Store {
 	}
 	doc2Entries := []ChunkIndexEntry{
 		{ID: "000", Section: "Linear Theory", TermCount: 7,
-			Terms: []termFreq{{"linear", 1}, {"wave", 1}, {"theory", 1}, {"foundation", 1}, {"ship", 1}, {"motion", 1}, {"analysis", 1}}},
+			Terms: []TermFreq{{"linear", 1}, {"wave", 1}, {"theory", 1}, {"foundation", 1}, {"ship", 1}, {"motion", 1}, {"analysis", 1}}},
 		{ID: "001", Section: "Frequency Effects", TermCount: 7,
-			Terms: []termFreq{{"wave", 1}, {"damping", 1}, {"effects", 1}, {"frequency", 1}, {"encounter", 1}, {"angle", 1},{ "dependent", 1}}},
+			Terms: []TermFreq{{"wave", 1}, {"damping", 1}, {"effects", 1}, {"frequency", 1}, {"encounter", 1}, {"angle", 1},{ "dependent", 1}}},
 	}
 	for _, e := range doc2Entries {
 		if err := backend.WriteChunk("test", doc2, e.ID, "content for "+doc2+"/"+e.ID); err != nil {
@@ -119,7 +119,7 @@ func TestSearchAll_CrossKB(t *testing.T) {
 	}
 	idx := &ChunksIndex{Chunks: []ChunkIndexEntry{{
 		ID: "000", Section: "Intro", TermCount: 6,
-		Terms: []termFreq{{"additional", 1}, {"damping", 1}, {"analysis", 1}, {"roll", 1}, {"motion", 1}},
+		Terms: []TermFreq{{"additional", 1}, {"damping", 1}, {"analysis", 1}, {"roll", 1}, {"motion", 1}},
 	}}}
 	if err := backend.WriteChunksIndex("secondary", docSlug, idx); err != nil {
 		t.Fatalf("WriteChunksIndex secondary: %v", err)

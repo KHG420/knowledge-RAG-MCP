@@ -18,7 +18,7 @@ func main() {
 			os.Exit(1)
 		}
 		cfg := config.LoadWithEnvFallback(findConfigPath())
-		store, logger := initStoreAndLogger(cfg)
+		store, logger, _ := initStoreAndLogger(cfg)
 		defer logger.Close()
 
 		switch os.Args[2] {
@@ -43,16 +43,16 @@ func main() {
 			}
 		}
 		cfg := config.LoadWithEnvFallback(findConfigPath())
-		store, logger := initStoreAndLogger(cfg)
+		store, logger, mgmtSrv := initStoreAndLogger(cfg)
 		defer logger.Close()
-		runServe(cfg, store, logger, mcpOnly)
+		runServe(cfg, store, logger, mgmtSrv, mcpOnly)
 		return
 	}
 
 	// Subcommand: stdio — run as a stdio MCP server (for Reasonix/Claude Desktop).
 	if len(os.Args) > 1 && os.Args[1] == "stdio" {
 		cfg := config.LoadWithEnvFallback(findConfigPath())
-		store, logger := initStoreAndLogger(cfg)
+		store, logger, _ := initStoreAndLogger(cfg)
 		defer logger.Close()
 		runStdio(store, logger)
 		return
@@ -62,9 +62,9 @@ func main() {
 	// Use this alongside stdio mode to manage documents via browser.
 	if len(os.Args) > 1 && os.Args[1] == "manage" {
 		cfg := config.LoadWithEnvFallback(findConfigPath())
-		store, logger := initStoreAndLogger(cfg)
+		store, logger, mgmtSrv := initStoreAndLogger(cfg)
 		defer logger.Close()
-		runManage(cfg, store, logger)
+		runManage(cfg, store, logger, mgmtSrv)
 		return
 	}
 

@@ -133,8 +133,3 @@ var builtinSynonyms = map[string][]string{
 	"knowledge": {"know"},
 }
 
-// SetRewriter configures the query rewriter on the store. A nil rewriter is
-// treated as NoopRewriter.
-func (s *Store) SetRewriter(r QueryRewriter) {
-	s.rewriter = r
-}

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"knowledge-mcp/internal/logging"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 // Embedder generates dense vector representations for text passages.
@@ -32,6 +32,12 @@ type OpenAIEmbedder struct {
 	client      *http.Client
 	logger      *logging.Logger
 }
+
+// EndpointURL returns the configured embedding API endpoint.
+func (e *OpenAIEmbedder) EndpointURL() string { return e.endpointURL }
+
+// Model returns the configured embedding model name.
+func (e *OpenAIEmbedder) Model() string { return e.model }
 
 // OpenAIEmbedderOption configures an OpenAIEmbedder.
 type OpenAIEmbedderOption func(*OpenAIEmbedder)
@@ -398,6 +404,9 @@ func (MockReranker) Rerank(_ context.Context, query string, documents []string) 
 // HybridSearch applies reranking to its top-K results for improved precision.
 func (s *Store) SetReranker(r Reranker) {
 	s.reranker = r
+	if s.searchEngine != nil {
+		s.searchEngine.SetReranker(r)
+	}
 }
 
 // SetRerankCandidateLimit sets the maximum number of candidates passed to the
@@ -405,6 +414,9 @@ func (s *Store) SetReranker(r Reranker) {
 // for a proper "wide recall → fine rerank" two-stage pipeline.
 func (s *Store) SetRerankCandidateLimit(n int) {
 	s.rerankCandidateLimit = n
+	if s.searchEngine != nil {
+		s.searchEngine.SetRerankCandidateLimit(n)
+	}
 }
 
 // SetRerankBatchSize sets the maximum number of documents per reranker request.
@@ -412,6 +424,9 @@ func (s *Store) SetRerankCandidateLimit(n int) {
 // timeouts on slow reranker models. Default is 20. Set to 0 to disable batching.
 func (s *Store) SetRerankBatchSize(n int) {
 	s.rerankBatchSize = n
+	if s.searchEngine != nil {
+		s.searchEngine.SetRerankBatchSize(n)
+	}
 }
 
 // SetEmbedder configures the vector embedder on the store. When set, uploaded
@@ -419,6 +434,9 @@ func (s *Store) SetRerankBatchSize(n int) {
 // enabling hybrid (BM25 + dense) search.
 func (s *Store) SetEmbedder(e Embedder) {
 	s.embedder = e
+	if s.searchEngine != nil {
+		s.searchEngine.SetEmbedder(e)
+	}
 }
 
 // Embedder returns the configured vector embedder, or nil if none.
@@ -431,6 +449,9 @@ func (s *Store) Embedder() Embedder {
 // logger is silently ignored.
 func (s *Store) SetSearchLogger(l SearchLogger) {
 	s.searchLogger = l
+	if s.searchEngine != nil {
+		s.searchEngine.SetSearchLogger(l)
+	}
 }
 
 // EmbedderInfo returns information about the configured embedder, or nil if none.

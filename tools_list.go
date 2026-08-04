@@ -54,25 +54,30 @@ func registerList(s *server.MCPServer, store *knowledge.Store, logger *logging.L
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kbName := getString(req, "kbName")
-		var display, full []knowledge.DocumentMeta
+		var full []knowledge.DocumentMeta
 		var err error
 		if kbName != "" {
-			display, full, err = store.WithKB(kbName).ListPreview(10)
+			full, err = store.WithKB(kbName).ListDocuments()
 		} else {
-			display, full, err = store.ListPreviewAll(10)
+			full, err = store.ListDocumentsAll()
 		}
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		if len(display) == 0 {
+		if len(full) == 0 {
 			return mcp.NewToolResultText("Knowledge base is empty."), nil
+		}
+
+		// Cap display at 10 documents.
+		display := full
+		if len(display) > 10 {
+			display = display[:10]
 		}
 		logger.WithModule("tool").Debugf("knowledge_list: kb=%q total=%d displayed=%d", kbName, len(full), len(display))
 
-		// Notify the user if there are more docs than shown.
 		var msg string
 		if len(full) > 10 {
-			msg = fmt.Sprintf("Showing %d of %d documents. Full list saved to snapshot file.\n\n", len(display), len(full))
+			msg = fmt.Sprintf("Showing %d of %d documents.\n\n", len(display), len(full))
 		}
 
 		data, _ := json.MarshalIndent(display, "", "  ")

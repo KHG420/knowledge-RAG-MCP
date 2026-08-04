@@ -20,8 +20,8 @@ type KBRouteResult struct {
 	Selected   []string      `json:"selected"`   // 1–3 KBs actually used for retrieval
 }
 
-// kbDesc holds the name and description text for one knowledge base.
-type kbDesc struct {
+// KBDesc holds the name and description text for one knowledge base.
+type KBDesc struct {
 	Name string
 	Desc string
 }
@@ -38,7 +38,7 @@ type kbDesc struct {
 type KBRouter struct {
 	embedder    Embedder            // optional: enables embedding scoring
 	constraints map[string][]string // KB name → constraint keywords
-	kbDescs     []kbDesc            // cached KB name+description list
+	kbDescs     []KBDesc            // cached KB name+description list
 
 	// descVecs caches pre-computed embedding vectors for KB descriptions.
 	// KB descriptions are static between SetKBDescs calls, so caching
@@ -73,7 +73,7 @@ func defaultConstraints() map[string][]string {
 // SetKBDescs updates the cached KB name/description list. Call this after
 // creating or deleting KBs. Also invalidates the cached description vectors
 // so they will be recomputed on the next Route call.
-func (r *KBRouter) SetKBDescs(descs []kbDesc) {
+func (r *KBRouter) SetKBDescs(descs []KBDesc) {
 	r.kbDescs = descs
 	r.descVecsMu.Lock()
 	r.descVecs = nil

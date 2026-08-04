@@ -1,3 +1,5 @@
+// Deprecated: bm25Query/vectorQuery are legacy fallbacks (searchEngine==nil).
+// Production paths use internal/knowledge/search/query.go.
 package knowledge
 
 import (
@@ -50,7 +52,7 @@ func (s *Store) bm25Query(query string) string {
 // semantic similarity natively — loosely-related terms help rather than hurt.
 func (s *Store) vectorQuery(query string) string {
 	log := s.logger.WithModule("search")
-	related := s.GetDictionaryRelatedTerms()
+	related := s.dictRelatedTerms
 	if len(related) == 0 {
 		log.Debugf("vectorQuery: query=%q → no related terms", query)
 		return query

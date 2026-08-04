@@ -30,6 +30,12 @@ type InfinityReranker struct {
 	logger      *logging.Logger
 }
 
+// EndpointURL returns the configured reranker API endpoint.
+func (r *InfinityReranker) EndpointURL() string { return r.endpointURL }
+
+// Model returns the configured reranker model name.
+func (r *InfinityReranker) Model() string { return r.model }
+
 // InfinityRerankerOption configures an InfinityReranker.
 type InfinityRerankerOption func(*InfinityReranker)
 

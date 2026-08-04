@@ -7,10 +7,11 @@ import (
 
 	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/knowledge"
+	"knowledge-mcp/internal/knowledge/manage"
 	"knowledge-mcp/internal/logging"
 )
 
-func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logger) {
+func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logger, mgmtSrv *manage.Server) {
 	log := logger.WithModule("manage")
 
 	managePort := cfg.ManagePort
@@ -29,7 +30,7 @@ func runManage(cfg *config.Config, store *knowledge.Store, logger *logging.Logge
 	}()
 
 	log.Infof("management UI starting on %s", formatManageURL(managePort))
-	if err := store.StartManageServer(managePort); err != nil {
+	if err := manage.Start(mgmtSrv, managePort); err != nil {
 		log.Errorf("management UI error: %v", err)
 		os.Exit(1)
 	}

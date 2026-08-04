@@ -240,14 +240,14 @@ type DocumentHit struct {
 
 // termFreq is a single term-count pair for TOML serialization. Using a struct
 // array instead of map[string]int reduces CHUNKS.toml size by ~60%.
-type termFreq struct {
+type TermFreq struct {
 	Term  string `toml:"term"`
 	Count int    `toml:"count"`
 }
 
-// termFreqsToMap converts a []termFreq slice back to a map[string]int for the
+// TermFreqsToMap converts a []TermFreq slice back to a map[string]int for the
 // search pipeline (which uses maps for O(1) term lookup).
-func termFreqsToMap(freqs []termFreq) map[string]int {
+func TermFreqsToMap(freqs []TermFreq) map[string]int {
 	m := make(map[string]int, len(freqs))
 	for _, tf := range freqs {
 		m[tf.Term] = tf.Count
@@ -274,7 +274,7 @@ type ChunksIndex struct {
 type ChunkIndexEntry struct {
 	ID             string     `toml:"id"`
 	TermCount      int        `toml:"term_count"`
-	Terms          []termFreq `toml:"terms"`
+	Terms          []TermFreq `toml:"terms"`
 	Section        string     `toml:"section"`
 	Offset         int        `toml:"offset"`
 	PageStart      int        `toml:"page_start,omitempty"` // PDF page number (1-based, 0 = unknown)

@@ -1,10 +1,12 @@
+// Deprecated: collectEntries/queryCandidates are legacy fallbacks (searchEngine==nil).
+// Production paths use internal/knowledge/search/collect.go.
 package knowledge
 
 import (
 	"fmt"
 	"strings"
 	"time"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 // collectEntries gathers all search entries from the knowledge base,
@@ -88,7 +90,7 @@ func (s *Store) collectEntries(filter SearchFilter, queryTerms []string) ([]sear
 				entries = append(entries, searchEntry{
 					docSlug:        slug,
 					chunkID:        e.ID,
-					terms:          termFreqsToMap(e.Terms),
+					terms:          TermFreqsToMap(e.Terms),
 					termLen:        e.TermCount,
 					section:        e.Section,
 					offset:         e.Offset,
@@ -177,7 +179,7 @@ func (s *Store) collectEntriesFromCandidates(candidates map[string]map[string]bo
 			entries = append(entries, searchEntry{
 				docSlug:        slug,
 				chunkID:        e.ID,
-				terms:          termFreqsToMap(e.Terms),
+				terms:          TermFreqsToMap(e.Terms),
 				termLen:        e.TermCount,
 				section:        e.Section,
 				offset:         e.Offset,

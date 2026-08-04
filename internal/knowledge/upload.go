@@ -34,6 +34,14 @@ const (
 // UploadDocument ingests a file into the knowledge base.
 // It is a convenience wrapper around UploadDocumentWithProgress with no progress callback.
 func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error) {
+	// Delegate to ingest engine when available (Phase 3.5).
+	if s.ingestSvc != nil {
+		meta, err := s.ingestSvc.UploadDocument(path, tags...)
+		if err != nil {
+			return DocumentMeta{}, err
+		}
+		return *meta, nil
+	}
 	return s.UploadDocumentWithProgress(path, nil, tags...)
 }
 
@@ -206,6 +214,10 @@ func (s *Store) updateIndex(slug string, meta DocumentMeta) error {
 // is true it walks subdirectories; otherwise it scans only the top level.
 // Returns a summary string for the caller.
 func (s *Store) UploadDirectory(dir string, recursive bool, tags ...string) (string, error) {
+	// Delegate to ingest engine when available (Phase 3.5).
+	if s.ingestSvc != nil {
+		return s.ingestSvc.UploadDirectory(dir, recursive)
+	}
 	s.logger.WithModule("upload").Infof("UploadDirectory dir=%q recursive=%v kb=%q", dir, recursive, s.kbName)
 	info, err := os.Stat(dir)
 	if err != nil {

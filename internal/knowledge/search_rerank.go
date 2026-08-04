@@ -1,3 +1,5 @@
+// Deprecated: rerankTop/batchRerank are legacy fallbacks (searchEngine==nil).
+// Production paths use internal/knowledge/search/rerank.go.
 package knowledge
 
 import (
@@ -8,7 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 func (s *Store) coarseToFineFilter(query string, entries []searchEntry) ([]searchEntry, error) {

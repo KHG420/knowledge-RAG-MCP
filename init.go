@@ -10,10 +10,16 @@ import (
 	"knowledge-mcp/internal/cache"
 	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/knowledge"
+	"knowledge-mcp/internal/knowledge/chunkstore"
+	"knowledge-mcp/internal/knowledge/dict"
+	"knowledge-mcp/internal/knowledge/ingest"
+	"knowledge-mcp/internal/knowledge/kb"
+	"knowledge-mcp/internal/knowledge/manage"
+	"knowledge-mcp/internal/knowledge/search"
 	"knowledge-mcp/internal/logging"
 )
 
-func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) {
+func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger, *manage.Server) {
 	defaultKB := cfg.DefaultKB
 
 	logPath := cfg.LogFile
@@ -71,6 +77,37 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	log.Infof("MySQL backend: %s/%s", mysqlCfg.Host, mysqlCfg.Database)
 	store.SetLogger(logger.WithModule("store"))
 	store.SetConfig(cfg, findConfigPath())
+
+	// Wire up SearchEngine (Phase 3: external assembly).
+	eng := search.New(store.Mutex(), logger.WithModule("search"))
+	eng.SetBackend(store.Backend())
+	eng.SetVecState(store.VecState())
+	eng.SetRerankState(store.RerankState())
+	store.SetSearchEngine(eng)
+
+	// Wire up ChunkStoreEngine (Phase 3.3: chunk I/O extraction).
+	chunkEng := chunkstore.New(store.Backend(), "", store.DataDir(), store.Mutex(), logger.WithModule("chunkstore"))
+	store.SetChunkStore(chunkEng)
+
+	// Wire up DictService + IngestService (Phase 3.5).
+	dictEng := dict.New(store.Mutex(), logger.WithModule("dict"))
+	dictEng.SetDataDir(store.DataDir())
+	store.SetDictService(dictEng)
+
+	// Ingest engine starts with minimal deps; heavy deps (backend, embedder,
+	// gpuScheduler, cacheClient, chunkStore) are injected via setters below
+	// after they are configured. The buildChunksIndex callback connects the
+	// ingest pipeline back to Store's HNSW vector index management.
+	ingestEng := ingest.NewSimple(store.TaskManager(), nil, store.Mutex(), logger.WithModule("ingest"))
+	ingestEng.SetBackend(store.Backend())
+	ingestEng.SetChunkStore(store.ChunkStore())
+	ingestEng.SetBuildChunksIndex(store.BuildChunksIndex)
+	store.SetIngestService(ingestEng)
+
+	// Wire up KBAdmin (Phase 3: KB lifecycle + routing).
+	kbEng := kb.New(store.Backend(), store.Mutex(), logger.WithModule("kb"))
+	store.SetKBAdmin(kbEng)
+
 	if defaultKB != "" {
 		store = store.WithKB(defaultKB)
 		log.Infof("default KB: %s", defaultKB)
@@ -141,6 +178,8 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		}
 		opts = append(opts, knowledge.WithEmbedLogger(logger.WithModule("embed")))
 		store.SetEmbedder(knowledge.NewOpenAIEmbedder(opts...))
+		ingestEng.SetEmbedder(store.Embedder())
+		ingestEng.SetKBName(defaultKB)
 		log.Infof("embedder: %s (model=%s)", cfg.EmbedEndpoint, model)
 
 		// v4: KB Router for intelligent multi-KB routing (same embedder instance).
@@ -234,6 +273,7 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 		}
 		scheduler := knowledge.NewGPUScheduler(schedOpts...)
 		store.SetGPUScheduler(scheduler)
+		ingestEng.SetGPUScheduler(scheduler)
 		log.Infof("GPU scheduler enabled: timeout=%s [%s]",
 			cfg.GPUSchedulerTimeout, scheduler.Summary())
 		// Probe endpoint connectivity (non-fatal: warn and continue).
@@ -257,6 +297,7 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 			log.Warnf("Redis cache: %v — caching disabled", rerr)
 		} else {
 			store.SetCache(redisCache, cfg)
+			ingestEng.SetCacheClient(redisCache)
 			log.Infof("Redis cache: connected to %s (db=%d prefix=%s)", cfg.RedisAddr, cfg.RedisDB, cfg.RedisPrefix)
 		}
 	} else {
@@ -268,7 +309,26 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger) 
 	store.SetSearchLogger(searchLogger)
 	log.Infof("search log: enabled (%s)", filepath.Join(store.DataDir(), ".searchlog.jsonl"))
 
-	return store, logger
+	// --- Wire up ManageServer (Phase 3.4: external assembly) ---
+	cfgPath := findConfigPath()
+	mgmtSrv := manage.New(
+		store,                     // ManageService
+		cfg, cfgPath,              // config
+		store.Backend(),           // backend
+		store.Embedder(),          // embedder
+		store.Reranker(),          // reranker
+		store.VectorIndexRaw(),    // vectorIndex
+		store.KBName(),            // kbName
+		store.DataDir(),           // dataDir
+		store.GPUScheduler(),      // gpuScheduler
+		store.KBRouter(),          // kbRouter
+		store.TaskManager(),       // taskManager
+		store.Mutex(),             // mu
+		logger.WithModule("manage"), // logger
+	)
+	log.Infof("manage server: wired (port=%s)", cfg.ManagePort)
+
+	return store, logger, mgmtSrv
 }
 
 // streamableHTTPHandler returns an HTTP handler for the MCP Streamable HTTP

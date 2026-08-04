@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 // ── Store extended fields ─────────────────────────────────────────────────────

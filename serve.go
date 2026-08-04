@@ -14,6 +14,7 @@ import (
 
 	"knowledge-mcp/internal/config"
 	"knowledge-mcp/internal/knowledge"
+	"knowledge-mcp/internal/knowledge/manage"
 	"knowledge-mcp/internal/logging"
 )
 
@@ -72,7 +73,7 @@ func registerAllTools(s *server.MCPServer, store *knowledge.Store, logger *loggi
 // runServe runs the server in long-lived HTTP SSE mode. When mcpOnly is true,
 // only the MCP SSE endpoint is started; otherwise the management UI is also
 // started in a background goroutine.
-func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger, mcpOnly bool) {
+func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger, mgmtSrv *manage.Server, mcpOnly bool) {
 	log := logger.WithModule("serve")
 
 	s := server.NewMCPServer(
@@ -91,7 +92,7 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 		}
 		go func() {
 			log.Infof("management UI starting on %s", formatManageURL(managePort))
-			if err := store.StartManageServer(managePort); err != nil {
+			if err := manage.Start(mgmtSrv, managePort); err != nil {
 				log.Errorf("management UI failed to start on port %s: %v", managePort, err)
 			}
 		}()

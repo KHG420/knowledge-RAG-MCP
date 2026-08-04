@@ -1,3 +1,5 @@
+// Deprecated: SearchVector/SearchDocuments are legacy fallbacks (searchEngine==nil).
+// Production paths use internal/knowledge/search/Engine.
 package knowledge
 
 import (
@@ -5,10 +7,16 @@ import (
 	"fmt"
 	"sort"
 	"time"
-	"knowledge-mcp/internal/retrieval"
+	"knowledge-mcp/internal/knowledge/search/retrieval"
 )
 
 func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
+	// Delegate to search engine when available.
+	if s.searchEngine != nil {
+		return s.searchEngine.SearchVector(context.Background(), query, limit, SearchFilter{})
+	}
+
+	// Legacy path.
 	log := s.logger.WithModule("search")
 	log.Debugf("SearchVector: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
 
@@ -113,6 +121,18 @@ func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 // (pure BM25) otherwise.
 // An optional SearchFilter can be passed to narrow results.
 func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter) ([]DocumentHit, error) {
+	// Resolve filter.
+	var filter SearchFilter
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
+
+	// Delegate to search engine when available.
+	if s.searchEngine != nil {
+		return s.searchEngine.SearchDocuments(context.Background(), query, limit, filter)
+	}
+
+	// Legacy path.
 	log := s.logger.WithModule("search")
 	log.Debugf("SearchDocuments: query=%q limit=%d kb=%q embedder=%v", query, limit, s.kbName, s.embedder != nil)
 	start := time.Now()
