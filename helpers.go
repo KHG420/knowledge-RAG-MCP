@@ -93,7 +93,3 @@ func parseTime(raw string) time.Time {
 	return time.Time{}
 }
 
-// ── dict subcommand implementations ──
-
-// runDictMine reads the search log JSONL file and prints discovered synonym
-// candidates for human review before adding them to the domain dictionary.

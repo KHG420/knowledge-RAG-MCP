@@ -950,11 +950,6 @@ func (s *Store) ListPreviewAll(n int) (display []DocumentMeta, full []DocumentMe
 	return display, full, nil
 }
 
-// SnapshotPath kept for backward compatibility.
-func (s *Store) SnapshotPath() string {
-	return ""
-}
-
 // ListChecksum computes a SHA256 checksum over the full list of DocumentMeta
 // serialized as JSON. This is used to detect if the knowledge base has changed.
 func ListChecksum(docs []DocumentMeta) string {
