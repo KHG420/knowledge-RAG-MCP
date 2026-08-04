@@ -552,71 +552,74 @@ user query (question)
 
 ## Architecture
 
+The project follows a **Facade pattern**: `Store` is the unified entry point, delegating to 6 sub-packages
+(search, chunkstore, kb, dict, ingest, manage) that each implement a well-defined interface from `interfaces.go`.
+
 ```
-main.go                  — CLI entry point, subcommands (stdio / serve / manage / dict), tool registration
+main.go                     — CLI entry point, subcommands (stdio / serve / manage / dict), tool registration
+init.go                     — Dependency injection: assembles all sub-package engines into the Store facade
+tools.go / tools_*.go       — MCP tool registration (knowledge_research/read/list/list_kbs/upload/remove)
+serve.go / stdio.go          — HTTP SSE / Streamable HTTP / stdio MCP transports
+dict.go                     — Dictionary management subcommands (mine / gen)
+manage_run.go               — Web management UI launcher
 internal/
   config/
-    config.go            — TOML config loading, env-var fallback, defaults
+    config.go               — TOML config loading, env-var fallback, defaults
   setup/
-    setup.go             — Interactive configuration wizard ("knowledge-mcp setup")
-    i18n.go              — Internationalization strings for the setup wizard
+    setup.go                — Interactive configuration wizard ("knowledge-mcp setup")
+    i18n.go                 — Internationalization strings for the setup wizard
   logging/
-    logger.go            — Structured file logger (DEBUG/INFO/WARN/ERROR, module-scoped)
+    logger.go               — Structured file logger (DEBUG/INFO/WARN/ERROR, module-scoped)
   cache/
-    cache.go             — Cache interface + NoopCache fallback
-    redis.go             — Redis-backed cache implementation
-    keys.go              — Cache key naming conventions (query, chunk, meta, index, KB list)
+    cache.go                — Cache interface + NoopCache fallback
+    redis.go                — Redis-backed cache implementation
+    keys.go                 — Cache key naming conventions (query, chunk, meta, index, KB list)
   knowledge/
-    store.go             — Store struct, data dir management, CHUNKS.toml I/O, KB CRUD
-    storage.go           — StorageBackend interface (storage backend abstraction)
-    mysql_backend.go     — MySQL/MariaDB storage backend
-    search.go            — Search, HybridSearch, SearchDocuments, SearchAll, coarseToFine, rerankTop
-    chunker.go           — ChunkText, ChunkTextHierarchical, semantic merge, page-aware chunking
-    doc.go               — DocumentMeta, ChunkWithMeta, SearchFilter, SearchHit, EvidenceMeta, ChunksIndex
-    embed.go             — Embedder interface, OpenAIEmbedder (OpenAI & Ollama native format)
-    rerank.go            — InfinityReranker (Cohere/Infinity-compatible), Reranker interface
-    vector_index.go      — HNSW vector index (M=48, efConstruction=400) for ANN search
-    gpu_scheduler.go     — GPU scheduler, coordinates embedding/reranker model sleep/wake
-    kb_router.go         — Multi-KB intelligent router (keyword + embedding + desc + constraint scoring)
-    rewrite.go           — QueryRewriter interface, SynonymRewriter (built-in + YAML dictionaries)
-    rewrite_llm.go       — LLMQueryRewriter (only triggered for complex queries)
-    query_triage.go      — Query triage router (Simple/Medium/Complex, rule-based)
-    dict_loader.go       — Domain dictionary loader from YAML files
-    dict_generator.go    — LLM offline dictionary batch generator
-    synonym_miner.go     — Search log synonym auto-mining
-    manage.go            — Web management UI server, KB CRUD, upload/delete/search handlers
-    manage_enhanced.go   — Extended management features (search console, config, tool descriptions)
-    upload.go            — UploadDocument, UploadDirectory
-    upload_task.go       — Persistent upload task tracking
-    parser.go            — Document parser dispatch — external HTTP API + tabula fallback (PDF, DOCX, ODT, EPUB, HTML, XLSX, PPTX, MD, TXT)
-    inverted.go          — Global inverted index (INVERTED.gob) for accelerated candidate lookup
-    list.go              — ListPreview, ReadChunk, ReadChunkContext
-    remove.go            — RemoveDocument
-    tomstone.go          — Soft-delete tombstone manager with TTL-based cleanup
-    version.go           — Document/index version tracking for incremental updates
-    store_incremental.go — Incremental re-indexing on document re-upload
-    manifest.go          — Chunk manifest tracking for index integrity
-    reconcile.go         — Index consistency verification and repair
-    state_machine.go     — Document lifecycle state machine
-    chunk_id.go          — Chunk ID generation and management
-    config_api.go        — Runtime configuration read/write API
-    store_settings.go    — Store runtime settings management
-    middleware.go         — HTTP middleware (CORS, logging, recovery)
-    tool_descs.go         — Default MCP tool descriptions (customisable via Web UI)
-    searchlog.go          — FileSearchLogger (.searchlog.jsonl)
-    meta_extract.go       — Paper metadata extraction (title, authors, abstract, section roles)
-  retrieval/
-    bm25.go              — Tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
+    interfaces.go           — Core interfaces: Searcher, ChunkStore, Ingester, KBAdmin, DictService, ManageService, CacheClient
+    store.go                — Store Facade (~160 methods), delegates to sub-package engines
+    storage.go              — StorageBackend interface (storage backend abstraction)
+    mysql_backend.go        — MySQL/MariaDB storage backend
+    ── Sub-packages (engine implementations) ──
+    search/                 — Retrieval engine (implements Searcher)
+      engine.go             —   6 core search methods + 2 inverted-index write ops + query caching
+      query.go              —   Query rewriting, complexity analysis, RRF weight tuning
+      collect.go            —   Candidate collection, inverted-index fast path
+      rerank.go             —   Coarse-to-fine filtering, cross-encoder rerank, cache
+      helpers.go            —   Dedup, sort, cosine similarity utilities
+      types.go              —   Internal type definitions
+      retrieval/            —   BM25 tokenizer (CJK bigram-aware), BM25Score, MakeSnippet
+    chunkstore/             — Chunk I/O engine (implements ChunkStore)
+      engine.go             —   26 CRUD methods + 3-tier cache (chunk/meta/index)
+    kb/                     — KB admin engine (implements KBAdmin)
+      engine.go             —   7 methods: List/Create/Delete KBs + routing + cache
+    dict/                   — Dictionary engine (implements DictService)
+      engine.go             —   LoadDictionaries, GenerateDictionary, RunDictMine, RunDictGen
+    ingest/                 — Document ingestion engine (implements Ingester)
+      engine.go             —   UploadDocument, UploadDirectory, CopySource + full parse→chunk→embed→persist pipeline
+    manage/                 — Web management engine (uses ManageService interface)
+      server.go             —   Server struct (14 fields + DI constructor)
+      helpers.go            —   Shared utilities (JSON responses, file upload, SSE, model probing)
+      handlers_core.go      —   17 core handlers (doc CRUD, search, tombstone, vector, reconciliation)
+      handlers_enhanced.go  —   13 enhanced handlers (health, GPU, logs, metrics, import/export)
+      handlers_config.go    —   5 config handlers + hot-reload logic
+      router.go             —   Route registration, Start(), middleware, background goroutines
+    ── Legacy files (kept for ManageService interface & nil-engine fallback) ──
+    embed.go, rerank.go, vector_index.go, gpu_scheduler.go, kb_router.go,
+    rewrite.go, rewrite_llm.go, query_triage.go, dict_loader.go, dict_generator.go,
+    synonym_miner.go, chunker.go, doc.go, parser.go, upload.go, upload_task.go,
+    inverted.go, remove.go, tombstone.go, version.go, store_incremental.go,
+    manifest.go, reconcile.go, state_machine.go, chunk_id.go, config_api.go,
+    store_settings.go, middleware.go, tool_descs.go, searchlog.go, meta_extract.go
 cmd/
-  cleanup-vector/        — HNSW vector index orphan entry cleanup tool
-dictionaries/            — Domain dictionary YAML files
+  cleanup-vector/           — HNSW vector index orphan entry cleanup tool
+dictionaries/               — Domain dictionary YAML files
 scripts/
-  eval.go                — Retrieval evaluation script (NDCG@5, MRR, Recall@10)
-service-manager.sh       — Service management script for Ollama + Infinity dependencies
+  eval.go                   — Retrieval evaluation script (NDCG@5, MRR, Recall@10)
+service-manager.sh          — Service management script for Ollama + Infinity dependencies
 docs/
-  deployment-models.md   — Embedding & reranker model deployment guide
+  deployment-models.md      — Embedding & reranker model deployment guide
   deployment-models_zh.md
-  roadmap.md             — RAG optimization roadmap
+  roadmap.md                — RAG optimization roadmap
   roadmap_zh.md
 ```
 

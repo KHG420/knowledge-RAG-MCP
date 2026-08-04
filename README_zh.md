@@ -1113,69 +1113,73 @@ knowledge-mcp dict gen
 
 ## 架构总览
 
+项目采用 **Facade（门面）模式**：`Store` 作为统一入口，将请求委托给 6 个子包
+（search、chunkstore、kb、dict、ingest、manage），每个子包实现 `interfaces.go` 中定义的对应接口。
+
 ```
-main.go                  — CLI 入口点、子命令 (stdio / serve / manage / dict)、工具注册
+main.go                     — CLI 入口点、子命令 (stdio / serve / manage / dict)、工具注册
+init.go                     — 依赖注入：将所有子包引擎装配到 Store 门面
+tools.go / tools_*.go       — MCP 工具注册 (knowledge_research/read/list/list_kbs/upload/remove)
+serve.go / stdio.go          — HTTP SSE / Streamable HTTP / stdio MCP 传输
+dict.go                     — 字典管理子命令 (mine / gen)
+manage_run.go               — Web 管理界面启动器
 internal/
   config/
-    config.go            — TOML 配置加载、环境变量回退、默认值
+    config.go               — TOML 配置加载、环境变量回退、默认值
   setup/
-    setup.go             — 交互式配置向导
-    i18n.go              — 配置向导国际化文本
+    setup.go                — 交互式配置向导
+    i18n.go                 — 配置向导国际化文本
   logging/
-    logger.go            — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，按模块)
+    logger.go               — 结构化文件日志 (DEBUG/INFO/WARN/ERROR，按模块)
   cache/
-    cache.go             — Cache 接口 + NoopCache 空实现
-    redis.go             — Redis 缓存实现
-    keys.go              — 缓存键命名规范
+    cache.go                — Cache 接口 + NoopCache 空实现
+    redis.go                — Redis 缓存实现
+    keys.go                 — 缓存键命名规范
   knowledge/
-    store.go             — Store 核心结构体、数据目录管理、CHUNKS.toml I/O、KB CRUD
-    storage.go           — StorageBackend 接口（存储后端抽象层）
-    mysql_backend.go     — MySQL/MariaDB 存储后端
-    search.go            — Search、HybridSearch、SearchVector、coarseToFine、rerankTop
-    chunker.go           — ChunkText、ChunkTextHierarchical、语义合并、页码感知分块
-    doc.go               — DocumentMeta、ChunkWithMeta、SearchFilter、SearchHit、EvidenceMeta、ChunksIndex
-    embed.go             — Embedder 接口、OpenAIEmbedder（兼容 OpenAI + Ollama 原生）
-    rerank.go            — InfinityReranker（兼容 Cohere/Infinity）、Reranker 接口
-    vector_index.go      — HNSW 向量索引 (M=48, efConstruction=400) 用于 ANN
-    gpu_scheduler.go     — GPU 调度器，嵌入/重排序模型休眠唤醒
-    kb_router.go         — 多知识库智能路由（关键词+嵌入+描述+约束四维评分）
-    rewrite.go           — QueryRewriter 接口、SynonymRewriter（内置+YAML词典）
-    rewrite_llm.go       — LLMQueryRewriter（仅复杂查询触发）
-    query_triage.go      — 查询智能分流器（纯规则，Simple/Medium/Complex 三档）
-    dict_loader.go       — YAML 格式领域词典加载器
-    dict_generator.go    — LLM 离线词典批量生成器
-    synonym_miner.go     — 搜索日志同义词自动挖掘
-    manage.go            — Web 管理页面服务、KB CRUD、上传/删除/搜索处理器
-    manage_enhanced.go   — 增强管理功能（搜索控制台、配置、工具描述）
-    upload.go            — UploadDocument、UploadDirectory
-    upload_task.go       — 持久化上传任务记录
-    parser.go            — 文档解析调度 — 外部 HTTP API + tabula 回退
-    inverted.go          — 全局倒排索引 (INVERTED.gob)，加速候选查找
-    list.go              — ListPreview、ReadChunk、ReadChunkContext
-    remove.go            — RemoveDocument
-    tombstone.go         — 软删除墓碑管理器（TTL 过期清理）
-    version.go           — 文档/索引版本跟踪
-    store_incremental.go — 增量重新索引（UploadDocumentAtomic）
-    manifest.go          — 分块清单跟踪（MANIFEST.json）
-    reconcile.go         — 索引一致性校验与修复
-    chunk_id.go          — 内容寻址分块 ID 生成（SHA256，幂等）
-    config_api.go        — 运行时配置读写 API
-    store_settings.go    — Store 运行时设置管理
-    middleware.go         — HTTP 中间件（CORS、日志、异常恢复）
-    tool_descs.go        — 默认 MCP 工具描述（可通过 Web UI 自定义）
-    searchlog.go         — 搜索日志 (.searchlog.jsonl)
-    meta_extract.go      — 论文元数据提取（标题、作者、摘要、章节角色）
-  retrieval/
-    bm25.go              — 分词器（CJK 双字感知）、BM25Score、MakeSnippet
-scripts/
-  eval.go                — 检索评估脚本 (NDCG@5、MRR、Recall@10)
+    interfaces.go           — 核心接口：Searcher、ChunkStore、Ingester、KBAdmin、DictService、ManageService、CacheClient
+    store.go                — Store 门面（约 160 方法），委托给子包引擎
+    storage.go              — StorageBackend 接口（存储后端抽象层）
+    mysql_backend.go        — MySQL/MariaDB 存储后端
+    ── 子包（引擎实现） ──
+    search/                 — 检索引擎（实现 Searcher）
+      engine.go             —   6 核心搜索方法 + 2 倒排索引写操作 + 查询缓存
+      query.go              —   查询改写、复杂度分析、RRF 权重调优
+      collect.go            —   候选收集、倒排索引快速路径
+      rerank.go             —   粗到细过滤、交叉编码器重排序、缓存
+      helpers.go            —   去重、排序、余弦相似度工具
+      types.go              —   内部类型定义
+      retrieval/            —   BM25 分词器（CJK 双字感知）、BM25Score、MakeSnippet
+    chunkstore/             — 分块 I/O 引擎（实现 ChunkStore）
+      engine.go             —   26 个 CRUD 方法 + 三级缓存 (chunk/meta/index)
+    kb/                     — KB 管理引擎（实现 KBAdmin）
+      engine.go             —   7 方法：List/Create/Delete KB + 路由 + 缓存
+    dict/                   — 字典引擎（实现 DictService）
+      engine.go             —   LoadDictionaries、GenerateDictionary、RunDictMine、RunDictGen
+    ingest/                 — 文档摄取引擎（实现 Ingester）
+      engine.go             —   UploadDocument、UploadDirectory、CopySource + 完整 parse→chunk→embed→persist 管线
+    manage/                 — Web 管理引擎（使用 ManageService 接口）
+      server.go             —   Server 结构体（14 字段 + DI 构造）
+      helpers.go            —   共享工具（JSON 响应、文件上传、SSE、模型探测）
+      handlers_core.go      —   17 个核心处理器（文档 CRUD、搜索、墓碑、向量、对账）
+      handlers_enhanced.go  —   13 个增强处理器（健康、GPU、日志、指标、导入导出）
+      handlers_config.go    —   5 个配置处理器 + hot-reload 逻辑
+      router.go             —   路由注册、Start()、中间件、后台协程
+    ── 遗留文件（为 ManageService 接口和 nil-engine 回退保留） ──
+    embed.go、rerank.go、vector_index.go、gpu_scheduler.go、kb_router.go、
+    rewrite.go、rewrite_llm.go、query_triage.go、dict_loader.go、dict_generator.go、
+    synonym_miner.go、chunker.go、doc.go、parser.go、upload.go、upload_task.go、
+    inverted.go、remove.go、tombstone.go、version.go、store_incremental.go、
+    manifest.go、reconcile.go、state_machine.go、chunk_id.go、config_api.go、
+    store_settings.go、middleware.go、tool_descs.go、searchlog.go、meta_extract.go
 cmd/
-  cleanup-vector/        — 向量索引清理工具
-dictionaries/            — 领域词典文件
+  cleanup-vector/           — 向量索引清理工具
+scripts/
+  eval.go                   — 检索评估脚本 (NDCG@5、MRR、Recall@10)
+dictionaries/               — 领域词典文件
 docs/
-  deployment-models.md   — 嵌入与重排序模型部署指南
+  deployment-models.md      — 嵌入与重排序模型部署指南
   deployment-models_zh.md
-  roadmap.md             — RAG 优化路线图
+  roadmap.md                — RAG 优化路线图
   roadmap_zh.md
 ```
 
