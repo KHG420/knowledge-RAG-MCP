@@ -70,7 +70,7 @@ func (r *LLMQueryRewriter) Rewrite(query string) []string {
 		return nil
 	}
 
-	variants, llmErr := r.llmRewrite(query)
+	variants, llmErr := r.llmRewrite(context.Background(), query)
 	if llmErr != nil || len(variants) <= 1 {
 		// LLM failed or returned nothing beyond the original query;
 		// fall back to the configured rewriter.
@@ -82,9 +82,10 @@ func (r *LLMQueryRewriter) Rewrite(query string) []string {
 // llmRewrite attempts to generate query variants via the LLM, always
 // guaranteeing the original query is first. Returns a non-nil error on
 // any LLM failure (network, timeout, empty response).
-func (r *LLMQueryRewriter) llmRewrite(query string) ([]string, error) {
+// TODO: accept ctx from the caller once QueryRewriter interface supports it.
+func (r *LLMQueryRewriter) llmRewrite(ctx context.Context, query string) ([]string, error) {
 	fullPrompt := r.prompt + "\n" + query
-	resp, err := r.completer.Complete(context.Background(), fullPrompt)
+	resp, err := r.completer.Complete(ctx, fullPrompt)
 	if err != nil {
 		return nil, err
 	}

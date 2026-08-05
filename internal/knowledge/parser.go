@@ -24,7 +24,7 @@ import (
 type DocParser interface {
 	// Parse extracts text from the document at path. Returns the extracted
 	// text or an error. Implementations should be safe for concurrent use.
-	Parse(path string) (string, error)
+	Parse(ctx context.Context, path string) (string, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ type HTTPDocParser struct {
 	// sendFile constructs and sends the HTTP request for a given file path.
 	// Override this field to customise the request format (e.g. change the
 	// form field name, add custom headers, use base64 instead of multipart).
-	sendFile func(path string) (*http.Response, error)
+	sendFile func(ctx context.Context, path string) (*http.Response, error)
 
 	// extractText reads the HTTP response and returns the extracted text.
 	// Override this field to customise how the API response is parsed
@@ -127,7 +127,7 @@ func NewHTTPDocParser(opts ...HTTPDocParserOption) *HTTPDocParser {
 
 // defaultSendFile sends the file as a multipart/form-data upload.
 // The form field is named "file"; the filename is the basename of path.
-func (p *HTTPDocParser) defaultSendFile(path string) (*http.Response, error) {
+func (p *HTTPDocParser) defaultSendFile(ctx context.Context, path string) (*http.Response, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
@@ -147,7 +147,7 @@ func (p *HTTPDocParser) defaultSendFile(path string) (*http.Response, error) {
 		return nil, fmt.Errorf("close multipart writer: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, p.endpoint, &b)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, &b)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -179,13 +179,13 @@ func (p *HTTPDocParser) defaultExtractText(resp *http.Response) (string, error) 
 
 // Parse sends the file to the configured HTTP API for parsing.
 // Implements the DocParser interface.
-func (p *HTTPDocParser) Parse(path string) (string, error) {
+func (p *HTTPDocParser) Parse(ctx context.Context, path string) (string, error) {
 	if p.endpoint == "" {
 		return "", fmt.Errorf("HTTPDocParser: endpoint not configured")
 	}
 	p.logger.Infof("HTTP parser: sending %s to %s", filepath.Base(path), p.endpoint)
 
-	resp, err := p.sendFile(path)
+	resp, err := p.sendFile(ctx, path)
 	if err != nil {
 		return "", fmt.Errorf("HTTP parser: send failed: %w", err)
 	}
@@ -223,7 +223,7 @@ func (p *TabulaParser) SetLogger(l *logging.Logger) {
 // interface. Scanned-image PDFs with no embedded text return a descriptive
 // error hinting that OCR requires a Tesseract installation with the "ocr"
 // build tag.
-func (p *TabulaParser) Parse(path string) (string, error) {
+func (p *TabulaParser) Parse(_ context.Context, path string) (string, error) {
 	text, warnings, err := tabula.Open(path).Text()
 	if err != nil {
 		return "", fmt.Errorf("tabula parse %s: %w", filepath.Base(path), err)
@@ -384,7 +384,7 @@ func parseWithMinerU(_ string) (string, error) {
 //  1. Plain-text formats (.md, .txt) → read directly
 //  2. Configured DocParser (e.g. HTTP API) → if set
 //  3. Tabula (local library) → final fallback
-func ParseFile(path string) (string, error) {
+func ParseFile(ctx context.Context, path string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 
 	// Plain-text formats: read directly — they are already text.
@@ -407,7 +407,7 @@ func ParseFile(path string) (string, error) {
 			restoreDoc = parserGPUScheduler.PrepareForDocParsing()
 		}
 
-		text, err := docParser.Parse(path)
+		text, err := docParser.Parse(ctx, path)
 
 		// Restore: sleep doc parser so others can reload.
 		if restoreDoc != nil {
@@ -425,7 +425,7 @@ func ParseFile(path string) (string, error) {
 
 	// Fall back to tabula for all other supported formats.
 	parserLogger.Infof("Tabula fallback: parsing %s", filepath.Base(path))
-	text, err := fallbackParser.Parse(path)
+	text, err := fallbackParser.Parse(ctx, path)
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", filepath.Base(path), err)
 	}

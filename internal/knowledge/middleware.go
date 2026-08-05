@@ -44,11 +44,10 @@ func AuthMiddleware(apiToken string) func(http.Handler) http.Handler {
 
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
-				// Also check query parameter for SSE connections that can't set headers.
-				auth = r.URL.Query().Get("token")
-				if auth != "" {
-					auth = "Bearer " + auth
-				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"missing Authorization header"}`))
+				return
 			}
 
 			if !strings.HasPrefix(auth, "Bearer ") {
@@ -71,23 +70,3 @@ func AuthMiddleware(apiToken string) func(http.Handler) http.Handler {
 	}
 }
 
-// RateLimitMiddleware applies a simple token-bucket rate limit to API endpoints.
-// maxRequests is the burst size; perSecond is the refill rate.
-// When maxRequests is 0, rate limiting is disabled.
-//
-// NOTE: This is a placeholder implementation. For production use, deploy a
-// reverse proxy (nginx, Caddy) with proper rate limiting, or implement
-// per-IP token-bucket tracking with sync.Map.
-func RateLimitMiddleware(maxRequests int, perSecond float64) func(http.Handler) http.Handler {
-	if maxRequests <= 0 {
-		return func(next http.Handler) http.Handler { return next }
-	}
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// TODO: implement per-IP token-bucket rate limiting.
-			// For now, pass through — deploy reverse-proxy rate limiting instead.
-			next.ServeHTTP(w, r)
-		})
-	}
-}

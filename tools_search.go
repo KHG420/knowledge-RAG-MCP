@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -71,8 +70,8 @@ func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging
 		}
 
 		kbName := getString(req, "kbName")
-		if kbName != "" && strings.Contains(kbName, "..") {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		if kbName != "" && !isPathSafe(kbName) {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q", kbName)), nil
 		}
 
 		// v4: When kbName is empty, use KB Router to select best 1–3 KBs.
@@ -119,14 +118,20 @@ func searchMultiKB(store *knowledge.Store, query string, limit int, filter knowl
 	}
 
 	var allHits []knowledge.SearchHit
+	var lastErr error
 	for _, kb := range kbNames {
 		kbStore := store.WithKB(kb)
 		hits, err := kbStore.HybridSearch(query, perKB, filter)
 		if err != nil {
 			// Log and continue — one KB failure shouldn't block others.
+			lastErr = fmt.Errorf("search KB %q: %w", kb, err)
 			continue
 		}
 		allHits = append(allHits, hits...)
+	}
+
+	if len(allHits) == 0 && lastErr != nil {
+		return nil, lastErr
 	}
 
 	// Sort merged results by score descending and truncate to limit.

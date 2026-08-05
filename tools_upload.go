@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -59,7 +58,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 			if filePath != "" {
 				return mcp.NewToolResultError("filePath and directory are mutually exclusive"), nil
 			}
-			if strings.Contains(directory, "..") {
+			if !isPathSafe(directory) {
 				return mcp.NewToolResultError("invalid directory path"), nil
 			}
 			tlog.Debugf("knowledge_upload: directory=%q recursive=%v kb=%q", directory, recursive, kbName)
@@ -73,7 +72,7 @@ func registerUpload(s *server.MCPServer, store *knowledge.Store, logger *logging
 		if filePath == "" {
 			return mcp.NewToolResultError("filePath or directory is required for upload"), nil
 		}
-		if strings.Contains(filePath, "..") {
+		if !isPathSafe(filePath) {
 			return mcp.NewToolResultError("invalid file path"), nil
 		}
 		meta, err := uploadStore.UploadDocument(filePath, tags...)

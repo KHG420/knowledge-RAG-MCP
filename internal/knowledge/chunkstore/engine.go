@@ -100,6 +100,12 @@ func (e *Engine) SetCacheTTLs(chunkTTL, metaTTL, indexTTL, kbListTTL time.Durati
 // cacheEnabled reports whether the cache layer is available.
 func (e *Engine) cacheEnabled() bool { return e.cacheClient != nil }
 
+// NOTE: All cache operations (Get/Set/Delete/DeletePattern) in this file
+// intentionally use context.Background() because cache reads and writes
+// are best-effort and insensitive to request cancellation — a cancelled
+// search should not prevent the cache from being populated for future
+// requests, and a stale cache entry is harmless.
+
 // =============================================================================
 // Chunk CRUD — migrated from Store
 // =============================================================================

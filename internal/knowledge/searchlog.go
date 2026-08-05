@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,12 +9,14 @@ import (
 )
 
 // FileSearchLogger is a SearchLogger implementation that appends JSONL entries
-// to a file. Each search event is written as a single JSON line appended to the
-// configured path. Write errors are silently discarded to avoid blocking search.
+// to a file. Writes are buffered through a bufio.Writer to avoid blocking
+// search on every log entry. The buffer is flushed on each write when it
+// reaches the default buffer size or on Close.
 type FileSearchLogger struct {
-	path string
-	mu   sync.Mutex
-	f    *os.File
+	path   string
+	mu     sync.Mutex
+	f      *os.File
+	buf    *bufio.Writer
 }
 
 // NewFileSearchLogger creates a FileSearchLogger that writes to
@@ -55,8 +58,10 @@ func (l *FileSearchLogger) LogSearch(entry SearchLogEntry) {
 			return
 		}
 		l.f = f
+		l.buf = bufio.NewWriter(f)
 	}
-	l.f.Write(data) //nolint:errcheck
+	// Buffered write: flushed when buffer is full (4 KiB default) or on Close.
+	l.buf.Write(data) //nolint:errcheck
 }
 
 // Close releases the underlying file handle. Safe to call multiple times.
@@ -64,9 +69,10 @@ func (l *FileSearchLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.f != nil {
-		err := l.f.Close()
+		l.buf.Flush()
+		l.f.Close()
 		l.f = nil
-		return err
+		l.buf = nil
 	}
 	return nil
 }

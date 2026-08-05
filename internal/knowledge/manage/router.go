@@ -15,8 +15,10 @@ import (
 //go:embed ui/index.html
 var manageUI embed.FS
 
-// Start starts the HTTP management server on the given port.
-func Start(srv *Server, port string) error {
+// BuildMux builds and returns the HTTP handler (mux + middleware) for the
+// management API. It does NOT start any background goroutines or listeners.
+// Tests can use this to exercise the exact same handler stack as production.
+func BuildMux(srv *Server) http.Handler {
 	mux := http.NewServeMux()
 
 	// ── Health ──
@@ -25,6 +27,10 @@ func Start(srv *Server, port string) error {
 
 	// ── UI ──
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		data, err := manageUI.ReadFile("ui/index.html")
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -166,14 +172,22 @@ func Start(srv *Server, port string) error {
 	handler := knowledge.CORSMiddleware(mux)
 
 	// Metrics middleware: count every API request.
+	next := handler
 	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		IncrementRequestCounter()
-		handler.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	})
 
 	if cfg := srv.Config(); cfg != nil && cfg.APIToken != "" {
 		handler = knowledge.AuthMiddleware(cfg.APIToken)(handler)
 	}
+
+	return handler
+}
+
+// Start starts the HTTP management server on the given port.
+func Start(srv *Server, port string) error {
+	handler := BuildMux(srv)
 
 	// ── Background goroutines ──
 	go func() {

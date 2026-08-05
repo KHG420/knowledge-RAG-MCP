@@ -71,7 +71,7 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 
 	// Step 1: parse.
 	emit(StageParsing, "started", "")
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		log.Errorf("UploadDocument %q: parse failed: %v", path, err)
 		emit(StageParsing, "error", err.Error())
@@ -149,7 +149,7 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	if len(coarseChunks) > 0 {
 		if err := s.WriteSectionChunks(slug, coarseChunks); err != nil {
 			// Non-fatal: sections are a convenience, not essential.
-			_ = err
+			log.Warnf("WriteSectionChunks %q: %v", slug, err)
 		}
 	}
 	if err := s.WriteMeta(slug, meta); err != nil {
@@ -167,19 +167,19 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	// Step 6: optionally copy source file for traceability.
 	if err := s.copySource(path, slug); err != nil {
 		// Non-fatal: the document is already ingested.
-		_ = err
+		log.Warnf("copySource %q: %v", slug, err)
 	}
 
 	// Step 7: write the full raw markdown text as document.md for reference.
 	if err := s.WriteRawText(slug, text); err != nil {
 		// Non-fatal: the document is already ingested.
-		_ = err
+		log.Warnf("WriteRawText %q: %v", slug, err)
 	}
 
 	// Step 8: update INDEX.md.
 	if err := s.updateIndex(slug, meta); err != nil {
 		// Non-fatal: re-index can be rebuilt.
-		_ = err
+		log.Warnf("updateIndex %q: %v", slug, err)
 	}
 	emit(StageIndexing, "done", "搜索索引已建立")
 

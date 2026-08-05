@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ func TestParseFile_TXT_Direct(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile TXT: %v", err)
 	}
@@ -37,7 +38,7 @@ func TestParseFile_MD_Direct(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile MD: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestParseFile_EmptyFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile empty: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestParseFile_EmptyMD(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile empty MD: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestParseFile_EmptyMD(t *testing.T) {
 
 func TestParseFile_NotFound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does_not_exist.txt")
-	_, err := ParseFile(path)
+	_, err := ParseFile(context.Background(), path)
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}
@@ -89,7 +90,7 @@ func TestParseFile_NotFound(t *testing.T) {
 func TestParseFile_NotFound_BinaryFormat(t *testing.T) {
 	// A missing non-txt/md file should fail with an error.
 	path := filepath.Join(t.TempDir(), "does_not_exist.pdf")
-	_, err := ParseFile(path)
+	_, err := ParseFile(context.Background(), path)
 	if err == nil {
 		t.Error("expected error for missing PDF file, got nil")
 	}
@@ -104,7 +105,7 @@ func TestParseFile_LargeTXT(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile large TXT: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestParseFile_UnicodeTXT(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile unicode: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestTabulaParser_SetLogger(t *testing.T) {
 func TestTabulaParser_ParseNotFound(t *testing.T) {
 	p := NewTabulaParser()
 	path := filepath.Join(t.TempDir(), "no_such_file.pdf")
-	_, err := p.Parse(path)
+	_, err := p.Parse(context.Background(), path)
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}
@@ -159,7 +160,7 @@ func TestTabulaParser_ParseNotFound(t *testing.T) {
 func TestTabulaParser_ParseEmptyDir(t *testing.T) {
 	// Passing a directory path should fail cleanly.
 	p := NewTabulaParser()
-	_, err := p.Parse(t.TempDir())
+	_, err := p.Parse(context.Background(), t.TempDir())
 	if err == nil {
 		t.Error("expected error for directory path, got nil")
 	}
@@ -176,7 +177,7 @@ func TestTabulaParser_ParseTXTFile(t *testing.T) {
 	}
 
 	p := NewTabulaParser()
-	_, err := p.Parse(path)
+	_, err := p.Parse(context.Background(), path)
 	if err == nil {
 		t.Error("expected error for unsupported format .xyz, got nil")
 	}
@@ -225,7 +226,7 @@ func TestHTTPDocParser_New_WithOptions(t *testing.T) {
 func TestHTTPDocParser_Parse_NoEndpoint(t *testing.T) {
 	p := NewHTTPDocParser()
 	// No endpoint configured — Parse should return a clear error.
-	_, err := p.Parse("/some/file.pdf")
+	_, err := p.Parse(context.Background(), "/some/file.pdf")
 	if err == nil {
 		t.Error("expected error when endpoint is not configured, got nil")
 	}
@@ -333,7 +334,7 @@ func TestParseFile_UnknownExt_FallbackTabula(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	// Tabula may succeed or fail depending on the library; either is fine.
 	// We just verify no panic occurs.
 	_ = text
@@ -410,7 +411,7 @@ func TestParseFile_RelativePath(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ParseFile relative: %v", err)
 	}

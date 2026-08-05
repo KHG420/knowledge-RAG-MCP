@@ -45,14 +45,14 @@ func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.L
 
 		// Path-traversal guard: reject ".." in user-supplied path components.
 		for _, v := range []string{docSlug, chunkID} {
-			if strings.Contains(v, "..") {
-				return mcp.NewToolResultError(fmt.Sprintf("invalid parameter %q: must not contain '..'", v)), nil
+			if !isPathSafe(v) {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid parameter %q", v)), nil
 			}
 		}
 
 		kbName := getString(req, "kbName")
-		if kbName != "" && strings.Contains(kbName, "..") {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		if kbName != "" && !isPathSafe(kbName) {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q", kbName)), nil
 		}
 
 		ctxCount := 0

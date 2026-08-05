@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -9,6 +10,15 @@ type Posting struct {
 	DocSlug string
 	ChunkID string
 	TF      int // term frequency in that chunk
+}
+
+// InvertedEntry is a single row to be upserted into the inverted index table.
+// It is used for incremental index updates (delete old + insert new per doc).
+type InvertedEntry struct {
+	Term    string
+	DocSlug string
+	ChunkID string
+	TF      int
 }
 
 // InvertedIndex maps each term to the list of chunks where it appears.
@@ -33,35 +43,21 @@ func (s *Store) saveInvertedIndex(idx *InvertedIndex) error {
 
 // updateInvertedIndex adds postings for a document's chunks and removes any
 // stale entries for that document. Called after writing CHUNKS.toml.
+//
+// Uses incremental backend operations (delete + upsert) instead of
+// loading the full index into memory and rewriting it.
 func (s *Store) updateInvertedIndex(slug string, entries []ChunkIndexEntry) error {
-	idx, err := s.loadInvertedIndex()
-	if err != nil {
-		// Corrupt index — rebuild from scratch.
-		idx = NewInvertedIndex()
-	}
-	if idx == nil {
-		idx = NewInvertedIndex()
+	// Step 1: Delete all existing entries for this document.
+	if err := s.backend.DeleteInvertedDocEntries(s.kbName, slug); err != nil {
+		return fmt.Errorf("delete inverted entries for %q: %w", slug, err)
 	}
 
-	// Remove all existing postings for this document.
-	for term, postings := range idx.Index {
-		filtered := postings[:0]
-		for _, p := range postings {
-			if p.DocSlug != slug {
-				filtered = append(filtered, p)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(idx.Index, term)
-		} else {
-			idx.Index[term] = filtered
-		}
-	}
-
-	// Add new postings from the index entries.
+	// Step 2: Build flat entry list from index entries.
+	var invEntries []InvertedEntry
 	for _, e := range entries {
 		for _, tf := range e.Terms {
-			idx.Index[tf.Term] = append(idx.Index[tf.Term], Posting{
+			invEntries = append(invEntries, InvertedEntry{
+				Term:    tf.Term,
 				DocSlug: slug,
 				ChunkID: e.ID,
 				TF:      tf.Count,
@@ -69,7 +65,12 @@ func (s *Store) updateInvertedIndex(slug string, entries []ChunkIndexEntry) erro
 		}
 	}
 
-	return s.saveInvertedIndex(idx)
+	// Step 3: Batch upsert.
+	if err := s.backend.UpsertInvertedEntries(s.kbName, invEntries); err != nil {
+		return fmt.Errorf("upsert inverted entries for %q: %w", slug, err)
+	}
+
+	return nil
 }
 
 // rebuildInvertedIndex scans all CHUNKS.toml files and rebuilds the global

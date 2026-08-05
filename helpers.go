@@ -102,3 +102,15 @@ func parseTime(raw string) time.Time {
 	}
 	return time.Time{}
 }
+
+// isPathSafe checks a user-supplied path component for traversal attacks.
+// It rejects strings containing ".." (parent directory) or absolute paths.
+func isPathSafe(p string) bool {
+	if strings.Contains(p, "..") {
+		return false
+	}
+	if filepath.IsAbs(p) {
+		return false
+	}
+	return true
+}

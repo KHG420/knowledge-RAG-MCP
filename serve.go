@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -92,9 +93,19 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 		}
 		go func() {
 			log.Infof("management UI starting on %s", formatManageURL(managePort))
-			if err := manage.Start(mgmtSrv, managePort); err != nil {
-				log.Errorf("management UI failed to start on port %s: %v", managePort, err)
+			// Retry up to 3 times on startup failure (port may still be in TIME_WAIT).
+			var err error
+			for retry := 0; retry < 3; retry++ {
+				if retry > 0 {
+					time.Sleep(1 * time.Second)
+					log.Infof("management UI retry %d/3 on port %s", retry+1, managePort)
+				}
+				err = manage.Start(mgmtSrv, managePort)
+				if err == nil {
+					return
+				}
 			}
+			log.Errorf("management UI failed to start on port %s after 3 attempts: %v", managePort, err)
 		}()
 	}
 
@@ -116,13 +127,18 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 	mux.HandleFunc("/mcp", streamableHTTPHandler(s, log))
 
 	httpServer := &http.Server{
-		Addr:    ":" + servePort,
-		Handler: mux,
+		Addr:              ":" + servePort,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Set up signal handling for graceful shutdown.
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	httpServer.BaseContext = func(_ net.Listener) context.Context { return ctx }
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

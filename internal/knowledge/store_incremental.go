@@ -68,7 +68,7 @@ func (s *Store) UploadDocumentAtomicWithProgress(path string, progress ProgressF
 
 	// ── Stage 1: Parse ─────────────────────────────────────────────────────
 	emit(StageParsing, "started", "")
-	text, err := ParseFile(path)
+	text, err := ParseFile(context.Background(), path)
 	if err != nil {
 		log.Errorf("UploadDocumentAtomic %q: parse failed: %v", path, err)
 		emit(StageParsing, "error", err.Error())

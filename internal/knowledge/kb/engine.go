@@ -59,6 +59,11 @@ func (e *Engine) Mutex() *sync.Mutex                    { return e.mu }
 
 func (e *Engine) cacheEnabled() bool { return e.cacheClient != nil && !cache.IsNoop(e.cacheClient) }
 
+// NOTE: All cache operations (Get/Set/Delete/DeletePattern) in this file
+// intentionally use context.Background() because cache reads and writes
+// are best-effort and insensitive to request cancellation — a cancelled
+// request should not prevent cache invalidation or population.
+
 // InvalidateKBList removes the cached KB list (used after create/delete KB).
 func (e *Engine) InvalidateKBList() {
 	if !e.cacheEnabled() {

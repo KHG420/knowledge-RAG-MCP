@@ -152,6 +152,10 @@ type Store struct {
 	// ── Cache layer (DEPRECATED for search: use searchEngine cacheClient/TTL) ──
 	// Retained for ManageService data-plane caching (ReadChunk, ReadMeta, ReadChunksIndex,
 	// ListKBs) and for direct cache manipulation via ManageService.
+	//
+	// NOTE: Cache operations in the Store use context.Background() because cache
+	// reads and writes are best-effort and insensitive to request cancellation.
+	// A cancelled request should not prevent cache population/invalidation.
 	cacheClient    cache.Cache
 	queryCacheTTL  time.Duration
 	chunkCacheTTL  time.Duration
@@ -740,6 +744,11 @@ func (s *Store) knowledgeDir() string {
 // DataDir returns the root data directory (e.g. ~/knowledge_base/).
 func (s *Store) DataDir() string {
 	return s.dataDir
+}
+
+// SetDataDir sets the root data directory (primarily for testing).
+func (s *Store) SetDataDir(d string) {
+	s.dataDir = d
 }
 
 // KBName returns the current knowledge base name, or empty string for

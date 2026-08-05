@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -73,6 +75,26 @@ type GPUScheduler struct {
 
 // GPUSchedulerOption configures a GPUScheduler.
 type GPUSchedulerOption func(*GPUScheduler)
+
+// validateLoopbackURL checks that urlStr is safe for SSRF prevention:
+// host must be localhost, 127.0.0.1, or ::1 (loopback-only).
+func validateLoopbackURL(urlStr string) error {
+	if urlStr == "" {
+		return nil
+	}
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("gpu-scheduler: parse URL %q: %w", urlStr, err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("gpu-scheduler: URL %q has no host", urlStr)
+	}
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return fmt.Errorf("gpu-scheduler: URL %q host %q is not loopback — SSRF prevention", urlStr, host)
+	}
+	return nil
+}
 
 // WithSchedulerEmbeddingSleepURL sets the URL to sleep the embedding model.
 func WithSchedulerEmbeddingSleepURL(url string) GPUSchedulerOption {
@@ -147,6 +169,20 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 		enabled:           false,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					// SSRF prevention: only allow loopback connections.
+					host, _, err := net.SplitHostPort(addr)
+					if err != nil {
+						host = addr
+					}
+					if host != "127.0.0.1" && host != "::1" && host != "localhost" {
+						return nil, fmt.Errorf("gpu-scheduler: connection to %q blocked (loopback only)", host)
+					}
+					d := net.Dialer{}
+					return d.DialContext(ctx, network, addr)
+				},
+			},
 		},
 		logger: logging.NewNopLogger(),
 	}
@@ -187,6 +223,18 @@ func NewGPUScheduler(opts ...GPUSchedulerOption) *GPUScheduler {
 
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	// SSRF prevention: validate all sleep URLs are loopback-only and disable
+	// the scheduler if any are misconfigured.
+	if s.enabled {
+		for _, u := range []string{s.embeddingSleepURL, s.rerankerSleepURL, s.docParserSleepURL} {
+			if err := validateLoopbackURL(u); err != nil {
+				s.logger.Errorf("%v — GPU scheduler disabled", err)
+				s.enabled = false
+				break
+			}
+		}
 	}
 
 	return s

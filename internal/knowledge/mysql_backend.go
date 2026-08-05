@@ -614,6 +614,43 @@ func (mb *MySQLBackend) WriteInvertedIndex(kbName string, idx *InvertedIndex) er
 	return tx.Commit()
 }
 
+// DeleteInvertedDocEntries removes all inverted index rows for a document.
+// Used for incremental index updates (per-document CHUNKS.toml writes).
+func (mb *MySQLBackend) DeleteInvertedDocEntries(kbName, docSlug string) error {
+	_, err := mb.db.Exec("DELETE FROM inverted_index WHERE kb_name = ? AND doc_slug = ?", kbName, docSlug)
+	if err != nil {
+		return fmt.Errorf("delete inverted entries for %q/%q: %w", kbName, docSlug, err)
+	}
+	return nil
+}
+
+// UpsertInvertedEntries inserts or updates a batch of inverted index rows using
+// INSERT ... ON DUPLICATE KEY UPDATE for efficient incremental updates.
+func (mb *MySQLBackend) UpsertInvertedEntries(kbName string, entries []InvertedEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := mb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx for upsert inverted: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO inverted_index (kb_name, term, doc_slug, chunk_id, tf) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE tf = VALUES(tf)")
+	if err != nil {
+		return fmt.Errorf("prepare upsert inverted: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, e := range entries {
+		if _, err := stmt.Exec(kbName, e.Term, e.DocSlug, e.ChunkID, e.TF); err != nil {
+			return fmt.Errorf("upsert inverted entry (%q,%q,%q): %w", kbName, e.Term, e.ChunkID, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // ── Raw text & source ─────────────────────────────────────────────────────────
 
 func (mb *MySQLBackend) WriteRawText(kbName, slug, text string) error {

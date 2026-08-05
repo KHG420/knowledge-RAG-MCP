@@ -168,7 +168,7 @@ func (e *Engine) uploadDocumentWithProgress(path string, progress knowledge.Prog
 
 	// Step 1: parse.
 	emit(knowledge.StageParsing, "started", "")
-	text, err := knowledge.ParseFile(path)
+	text, err := knowledge.ParseFile(context.Background(), path)
 	if err != nil {
 		if log != nil {
 			log.Errorf("UploadDocument %q: parse failed: %v", path, err)

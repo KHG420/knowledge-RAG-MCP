@@ -48,6 +48,12 @@ type StorageBackend interface {
 	// ── Global inverted index ────────────────────────────────────────────────
 	ReadInvertedIndex(kbName string) (*InvertedIndex, error)
 	WriteInvertedIndex(kbName string, idx *InvertedIndex) error
+	// DeleteInvertedDocEntries removes all inverted index entries for a document.
+	// Used for incremental updates: delete old entries, then upsert new ones.
+	DeleteInvertedDocEntries(kbName, docSlug string) error
+	// UpsertInvertedEntries inserts or updates a batch of inverted index entries.
+	// Used for incremental updates after per-document CHUNKS.toml writes.
+	UpsertInvertedEntries(kbName string, entries []InvertedEntry) error
 
 	// ── Full raw text & source file ──────────────────────────────────────────
 	WriteRawText(kbName, slug, text string) error

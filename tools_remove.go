@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -30,13 +29,13 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging
 			return mcp.NewToolResultError("docSlug is required for remove"), nil
 		}
 
-		if strings.Contains(docSlug, "..") {
+		if !isPathSafe(docSlug) {
 			return mcp.NewToolResultError("invalid docSlug"), nil
 		}
 
 		kbName := getString(req, "kbName")
-		if kbName != "" && strings.Contains(kbName, "..") {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		if kbName != "" && !isPathSafe(kbName) {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q", kbName)), nil
 		}
 		tlog := logger.WithModule("tool")
 		tlog.Debugf("knowledge_remove: slug=%q kb=%q", docSlug, kbName)
