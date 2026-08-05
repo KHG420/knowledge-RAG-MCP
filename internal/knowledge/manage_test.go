@@ -95,7 +95,7 @@ func newManageMux(s *Store) *http.ServeMux {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := manageUI.ReadFile("ui/index.html")
+		data, err := manageUI.ReadFile("manage/ui/index.html")
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

@@ -141,6 +141,9 @@ var (
 	metricsStartTime = time.Now()
 )
 
+// IncrementRequestCounter increments the request counter (called from middleware).
+func IncrementRequestCounter() { metricsRequests.Add(1) }
+
 // IncrementSearchCounter increments the search counter.
 func IncrementSearchCounter() { metricsSearches.Add(1) }
 
@@ -514,6 +517,7 @@ func (srv *Server) handleSearchConsole(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	IncrementSearchCounter()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"query":     body.Query,
 		"mode":      body.Mode,

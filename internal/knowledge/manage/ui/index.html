@@ -1264,10 +1264,20 @@ async function deleteKB(name) {
 }
 
 // === API ===
+// APIs that don't need a KB context — skip injecting the ?kb= param.
+var KB_UNAWARE_APIS = ['/api/knowledge-bases','/api/models','/api/config','/api/tool-descriptions','/api/restart','/api/health','/api/system-info'];
+
+function needsKB(path) {
+  for (var i = 0; i < KB_UNAWARE_APIS.length; i++) {
+    if (path.indexOf(KB_UNAWARE_APIS[i]) === 0) return false;
+  }
+  return true;
+}
+
 async function api(path, opts) {
   if (!opts) opts = {};
   var url = path;
-  if (currentKB) {
+  if (currentKB && needsKB(path)) {
     var sep = path.indexOf('?') >= 0 ? '&' : '?';
     url = path + sep + 'kb=' + encodeURIComponent(currentKB);
   }
@@ -1280,7 +1290,7 @@ async function api(path, opts) {
 async function apiRaw(path, opts) {
   if (!opts) opts = {};
   var url = path;
-  if (currentKB) {
+  if (currentKB && needsKB(path)) {
     var sep = path.indexOf('?') >= 0 ? '&' : '?';
     url = path + sep + 'kb=' + encodeURIComponent(currentKB);
   }
@@ -2295,10 +2305,7 @@ async function testModel(type) {
   }
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
+
 
 function formatTime(iso) {
   if (!iso) return '';
@@ -3088,7 +3095,8 @@ function saveToolDescs() {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function restartService() {

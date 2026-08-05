@@ -35,6 +35,9 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging
 		}
 
 		kbName := getString(req, "kbName")
+		if kbName != "" && strings.Contains(kbName, "..") {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid kbName %q: must not contain '..'", kbName)), nil
+		}
 		tlog := logger.WithModule("tool")
 		tlog.Debugf("knowledge_remove: slug=%q kb=%q", docSlug, kbName)
 		if kbName != "" {

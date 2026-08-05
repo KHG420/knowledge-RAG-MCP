@@ -64,16 +64,26 @@ func formatManageURL(port string) string {
 }
 
 // findConfigPath returns the path to the config file.
-// It first checks the executable directory; if no config exists there (e.g. go run),
-// it falls back to knowledge-mcp.toml in the current working directory.
+// It first checks the --config CLI flag, then the executable directory,
+// then falls back to knowledge-mcp.toml in the current working directory.
 func findConfigPath() string {
+	// 1. Respect --config CLI flag when present.
+	for i, a := range os.Args {
+		if a == "--config" && i+1 < len(os.Args) {
+			return os.Args[i+1]
+		}
+		if strings.HasPrefix(a, "--config=") {
+			return strings.TrimPrefix(a, "--config=")
+		}
+	}
+	// 2. Look next to the executable (production install).
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), "knowledge-mcp.toml")
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	// go run / dev mode: use CWD
+	// 3. go run / dev mode: use CWD.
 	return filepath.Join(".", "knowledge-mcp.toml")
 }
 
@@ -92,4 +102,3 @@ func parseTime(raw string) time.Time {
 	}
 	return time.Time{}
 }
-

@@ -2,6 +2,7 @@
 package manage
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,38 +12,8 @@ import (
 	"knowledge-mcp/internal/knowledge"
 )
 
-const manageUIHTML = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Knowledge RAG MCP — 管理</title>
-<style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { color: #333; } a { color: #06c; }
-  .section { margin: 2rem 0; padding: 1rem; background: #f5f5f5; border-radius: 8px; }
-  code { background: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
-</style>
-</head>
-<body>
-<h1>🧠 Knowledge RAG MCP</h1>
-<div class="section">
-  <h2>API 端点</h2>
-  <ul>
-    <li><a href="/api/health">GET /api/health</a> — 健康检查</li>
-    <li><a href="/api/documents">GET /api/documents</a> — 文档列表</li>
-    <li><a href="/api/search?q=test">GET /api/search</a> — 文档搜索</li>
-    <li><a href="/api/knowledge-bases">GET /api/knowledge-bases</a> — 知识库列表</li>
-    <li><a href="/api/config">GET /api/config</a> — 运行时配置</li>
-    <li><a href="/api/metrics">GET /api/metrics</a> — 指标监控</li>
-    <li><a href="/api/logs">GET /api/logs</a> — 日志查看</li>
-    <li><a href="/api/gpu-scheduler">GET /api/gpu-scheduler</a> — GPU 调度器</li>
-    <li><a href="/api/system-info">GET /api/system-info</a> — 系统信息</li>
-    <li><a href="/api/models">GET /api/models</a> — 模型信息</li>
-  </ul>
-</div>
-</body>
-</html>`
+//go:embed ui/index.html
+var manageUI embed.FS
 
 // Start starts the HTTP management server on the given port.
 func Start(srv *Server, port string) error {
@@ -54,8 +25,13 @@ func Start(srv *Server, port string) error {
 
 	// ── UI ──
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		data, err := manageUI.ReadFile("ui/index.html")
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(manageUIHTML)) //nolint:errcheck
+		w.Write(data) //nolint:errcheck
 	})
 
 	// ── Documents ──
@@ -188,6 +164,13 @@ func Start(srv *Server, port string) error {
 
 	// ── Middleware ──
 	handler := knowledge.CORSMiddleware(mux)
+
+	// Metrics middleware: count every API request.
+	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		IncrementRequestCounter()
+		handler.ServeHTTP(w, r)
+	})
+
 	if cfg := srv.Config(); cfg != nil && cfg.APIToken != "" {
 		handler = knowledge.AuthMiddleware(cfg.APIToken)(handler)
 	}

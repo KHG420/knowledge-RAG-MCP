@@ -228,6 +228,7 @@ func (srv *Server) handleManageUpload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			log.Infof("Upload: single file %q → slug=%q", header.Filename, meta.Slug)
+			IncrementUploadCounter()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"message": "uploaded",
 				"slug":    meta.Slug,
@@ -367,7 +368,19 @@ func (srv *Server) handleManageUploadSSE(w http.ResponseWriter, r *http.Request)
 		task := tm.Create(fh.Filename, kbName, tmpDir)
 
 		go func(t *knowledge.UploadTask, taskSvc knowledge.ManageService, path, taskKBName string) {
-		t.RecordEvent(knowledge.ProgressEvent{Stage: "prepare", Status: "pending", Detail: "task queued"})
+			defer func() {
+				if r := recover(); r != nil {
+					t.RecordEvent(knowledge.ProgressEvent{
+						Stage: "error", Status: "error",
+						Detail: fmt.Sprintf("panic: %v", r),
+					})
+					t.MarkError(fmt.Errorf("panic: %v", r))
+				}
+				// Clean up temp directory regardless of outcome.
+				os.RemoveAll(path)
+			}()
+
+			t.RecordEvent(knowledge.ProgressEvent{Stage: "prepare", Status: "pending", Detail: "task queued"})
 
 			// Apply KB scope for this task.
 			scopedSvc := taskSvc
@@ -574,6 +587,7 @@ func (srv *Server) handleManageDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Infof("Delete(tombstone): slug=%q tombstoned", slug)
+		IncrementDeleteCounter()
 		writeJSON(w, http.StatusOK, map[string]string{"message": "tombstoned", "slug": slug})
 		return
 	}
@@ -585,6 +599,7 @@ func (srv *Server) handleManageDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Infof("Delete: slug=%q deleted", slug)
+	IncrementDeleteCounter()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "deleted", "slug": slug})
 }
 
@@ -660,6 +675,7 @@ func (srv *Server) handleManageSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debugf("Search: q=%q hits=%d", q, len(hits))
 
+	IncrementSearchCounter()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"query": q,
 		"hits":  hits,

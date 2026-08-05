@@ -74,24 +74,19 @@ func AuthMiddleware(apiToken string) func(http.Handler) http.Handler {
 // RateLimitMiddleware applies a simple token-bucket rate limit to API endpoints.
 // maxRequests is the burst size; perSecond is the refill rate.
 // When maxRequests is 0, rate limiting is disabled.
+//
+// NOTE: This is a placeholder implementation. For production use, deploy a
+// reverse proxy (nginx, Caddy) with proper rate limiting, or implement
+// per-IP token-bucket tracking with sync.Map.
 func RateLimitMiddleware(maxRequests int, perSecond float64) func(http.Handler) http.Handler {
-	type bucket struct {
-		tokens float64
-		last   int64 // unix nano
-	}
-	// Use a simple per-IP tracking. In production, use a proper rate limiter.
 	if maxRequests <= 0 {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
-	// Simple implementation: allow up to maxRequests then start rejecting.
-	// This is a basic guard, not a full token bucket.
-	var counter int64
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// For now, just pass through — full rate limiting needs
-			// per-IP tracking and is better handled by a reverse proxy.
-			_ = counter
+			// TODO: implement per-IP token-bucket rate limiting.
+			// For now, pass through — deploy reverse-proxy rate limiting instead.
 			next.ServeHTTP(w, r)
 		})
 	}

@@ -96,7 +96,6 @@ type Store struct {
 	// ── Sub-components (REFACTOR_PLAN Phase 3 extraction) ──
 	searchEngine Searcher       // retrieval core: BM25, vector, hybrid, rerank
 	chunkStore ChunkStore       // chunk I/O: CRUD, manifest, tombstone, staging
-	manage   *ManageServer       // web management: config, settings, HTTP handlers
 	dictSvc  DictService          // dictionary: synonyms, mining, rewriting
 	ingestSvc Ingester            // document ingestion: parse, chunk, upload
 	kbAdmin  KBAdmin              // KB lifecycle: CRUD, routing, router-desc sync
@@ -185,8 +184,6 @@ func NewStoreWithBackend(backend StorageBackend) *Store {
 		settings:      &s,
 		taskManager:   NewUploadTaskManager(tasksDir, logging.NewNopLogger()),
 	}
-	// Wire up ManageServer (Phase 3.4: external assembly via manage.Server).
-	st.manage = NewManageServer(nil, "", &s, nil, nil, st.taskManager, st.mu, st.logger)
 	return st
 }
 
@@ -405,6 +402,13 @@ func (s *Store) WithKB(name string) *Store {
 	if cp.ingestSvc != nil {
 		if eng, ok := cp.ingestSvc.(interface{ SetKBName(string) }); ok {
 			eng.SetKBName(name)
+		}
+	}
+
+	// Keep the chunk store in sync with the current KB.
+	if cp.chunkStore != nil {
+		if cs, ok := cp.chunkStore.(interface{ SetKBName(string) }); ok {
+			cs.SetKBName(name)
 		}
 	}
 

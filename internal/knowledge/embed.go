@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"knowledge-mcp/internal/logging"
@@ -29,6 +30,7 @@ type OpenAIEmbedder struct {
 	apiKey      string
 	model       string
 	dim         int
+	dimOnce     sync.Once // protects first-write of dim from auto-detection
 	client      *http.Client
 	logger      *logging.Logger
 }
@@ -281,9 +283,11 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("embed: server returned 200 OK with no embedding data (%d texts sent)", len(texts))
 	}
 
-	// Detect dimension from first response.
-	if e.dim == 0 && len(vectors) > 0 && len(vectors[0]) > 0 {
-		e.dim = len(vectors[0])
+	// Detect dimension from first response (thread-safe via sync.Once).
+	if len(vectors) > 0 && len(vectors[0]) > 0 {
+		e.dimOnce.Do(func() {
+			e.dim = len(vectors[0])
+		})
 	}
 
 	return vectors, nil

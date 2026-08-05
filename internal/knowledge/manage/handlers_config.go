@@ -59,6 +59,7 @@ type configAPIResponse struct {
 	// MySQL
 	MySQLDSN        string `json:"mysqlDsn,omitempty"`
 	MySQLUser       string `json:"mysqlUser,omitempty"`
+	MySQLPassword   string `json:"mysqlPassword,omitempty"` // masked
 	MySQLHost       string `json:"mysqlHost,omitempty"`
 	MySQLPort       string `json:"mysqlPort,omitempty"`
 	MySQLDatabase   string `json:"mysqlDatabase,omitempty"`
@@ -117,10 +118,8 @@ func (srv *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mask := func(v string) string {
-		if v != "" {
-			return "***"
-		}
-		return ""
+		// Always return "***" to avoid leaking whether a key is configured.
+		return "***"
 	}
 
 	resp := configAPIResponse{
@@ -157,6 +156,7 @@ func (srv *Server) handleConfigGet(w http.ResponseWriter, r *http.Request) {
 
 		MySQLDSN:        mask(cfg.MySQLDSN),
 		MySQLUser:       cfg.MySQLUser,
+		MySQLPassword:   mask(cfg.MySQLPassword),
 		MySQLHost:       cfg.MySQLHost,
 		MySQLPort:       cfg.MySQLPort,
 		MySQLDatabase:   cfg.MySQLDatabase,
