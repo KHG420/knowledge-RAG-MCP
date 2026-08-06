@@ -104,13 +104,25 @@ func parseTime(raw string) time.Time {
 }
 
 // isPathSafe checks a user-supplied path component for traversal attacks.
-// It rejects strings containing ".." (parent directory) or absolute paths.
+// It rejects ".." when it appears as a complete path component (bounded by
+// separators or string edges) and rejects absolute paths.  Strings such as
+// "...doc.txt" (ellipsis prefix) or "foo..bar" are allowed — ".." is only
+// dangerous when it is a standalone directory entry.
 func isPathSafe(p string) bool {
-	if strings.Contains(p, "..") {
-		return false
-	}
 	if filepath.IsAbs(p) {
 		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if i+1 < len(p) && p[i] == '.' && p[i+1] == '.' {
+			// ".." found at position i — reject only when it is a
+			// complete path component (flanked by separators or edges).
+			prevOK := i == 0 || p[i-1] == '/' || p[i-1] == '\\'
+			next := i + 2
+			nextOK := next >= len(p) || p[next] == '/' || p[next] == '\\'
+			if prevOK && nextOK {
+				return false
+			}
+		}
 	}
 	return true
 }

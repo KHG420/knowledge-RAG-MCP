@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -133,7 +134,7 @@ func DefaultConfig() *Config {
 		GPUSchedulerEmbeddingSleepURL: "",
 		GPUSchedulerRerankerSleepURL:  "",
 		GPUSchedulerDocParserSleepURL: "",
-		MinerUEnabled:                 true,
+		MinerUEnabled:                 false,
 		DocParserEndpoint:             "",
 		DocParserAPIKey:               "",
 		DocParserTimeout:              "600s",
@@ -183,7 +184,31 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, err
 	}
+	cfg.expandTildePaths()
 	return &cfg, nil
+}
+
+// expandTildePaths expands ~/ prefixes in path-like fields to the user's home
+// directory, so that values like "~/knowledge_base/" work correctly across
+// different users and environments.
+func (c *Config) expandTildePaths() {
+	c.DataDir = expandTilde(c.DataDir)
+	c.LogFile = expandTilde(c.LogFile)
+}
+
+// expandTilde replaces a leading ~/ or ~\ with the user's home directory.
+// Values without a tilde prefix are returned unchanged.
+func expandTilde(path string) string {
+	if path == "" {
+		return path
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 // Save writes a Config to a TOML file.

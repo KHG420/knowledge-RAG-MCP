@@ -60,12 +60,24 @@ func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging
 			limit = 20
 		}
 
+		addedAfterRaw := getString(req, "addedAfter")
+		addedBeforeRaw := getString(req, "addedBefore")
+
+		addedAfter := parseTime(addedAfterRaw)
+		if addedAfterRaw != "" && addedAfter.IsZero() {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid addedAfter %q — use ISO 8601 format (e.g. '2026-07-01')", addedAfterRaw)), nil
+		}
+		addedBefore := parseTime(addedBeforeRaw)
+		if addedBeforeRaw != "" && addedBefore.IsZero() {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid addedBefore %q — use ISO 8601 format (e.g. '2026-07-31')", addedBeforeRaw)), nil
+		}
+
 		filter := knowledge.SearchFilter{
 			SourceType:  getString(req, "sourceType"),
 			Section:     getString(req, "section"),
 			Tags:        parseTags(getString(req, "tags")),
-			AddedAfter:  parseTime(getString(req, "addedAfter")),
-			AddedBefore: parseTime(getString(req, "addedBefore")),
+			AddedAfter:  addedAfter,
+			AddedBefore: addedBefore,
 			Coarse:      getBool(req, "coarse"),
 		}
 

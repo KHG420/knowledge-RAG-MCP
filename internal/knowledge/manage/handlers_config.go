@@ -630,21 +630,6 @@ func (srv *Server) reloadDeepSeek(cfg *config.Config) {
 	srv.Logger().Infof("deepseek reloaded: endpoint=%s model=%s", cfg.DeepSeekEndpoint, cfg.DeepSeekModel)
 }
 
-// makeConfigPtr is a helper for int literal pointers.
-func makeConfigPtr[T any](v T) *T { return &v }
-
-// strPtr helper
-func strPtr(s string) *string { return &s }
-
-// intPtr helper
-func intPtr(i int) *int { return &i }
-
-// floatPtr helper
-func floatPtr(f float64) *float64 { return &f }
-
-// boolPtr helper
-func boolPtr(b bool) *bool { return &b }
-
 // parseIntParam parses an integer query parameter.
 func parseIntParam(r *http.Request, key string, defaultVal int) int {
 	v := r.URL.Query().Get(key)

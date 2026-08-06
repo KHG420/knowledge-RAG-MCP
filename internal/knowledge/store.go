@@ -409,6 +409,13 @@ func (s *Store) WithKB(name string) *Store {
 		}
 	}
 
+	// Keep the search engine in sync with the current KB.
+	if cp.searchEngine != nil {
+		if se, ok := cp.searchEngine.(interface{ SetKBName(string) }); ok {
+			se.SetKBName(name)
+		}
+	}
+
 	// Keep the chunk store in sync with the current KB.
 	if cp.chunkStore != nil {
 		if cs, ok := cp.chunkStore.(interface{ SetKBName(string) }); ok {
@@ -1887,7 +1894,9 @@ func (s *Store) GetVectorStats() (*VectorStats, error) {
 
 	stats := &VectorStats{KBName: s.kbName}
 	if s.embedder != nil {
-		stats.EmbedderModel = s.EmbedderInfo()["model"].(string)
+		if model, _ := s.EmbedderInfo()["model"].(string); model != "" {
+			stats.EmbedderModel = model
+		}
 		stats.VectorDim = s.embedder.Dim()
 	}
 

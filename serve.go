@@ -85,6 +85,13 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 
 	registerAllTools(s, store, logger)
 
+	// Set up signal handling for graceful shutdown.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	if !mcpOnly {
 		// Start management UI in the background.
 		managePort := cfg.ManagePort
@@ -100,9 +107,15 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 					time.Sleep(1 * time.Second)
 					log.Infof("management UI retry %d/3 on port %s", retry+1, managePort)
 				}
-				err = manage.Start(mgmtSrv, managePort)
+				// Use background context for retries, but StartWithContext uses signal ctx for shutdown
+				err = manage.StartWithContext(ctx, mgmtSrv, managePort)
 				if err == nil {
 					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				default:
 				}
 			}
 			log.Errorf("management UI failed to start on port %s after 3 attempts: %v", managePort, err)
@@ -135,13 +148,8 @@ func runServe(cfg *config.Config, store *knowledge.Store, logger *logging.Logger
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Set up signal handling for graceful shutdown.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	httpServer.BaseContext = func(_ net.Listener) context.Context { return ctx }
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
 		log.Infof("received signal %v, shutting down...", sig)

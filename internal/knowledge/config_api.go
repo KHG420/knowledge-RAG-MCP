@@ -183,12 +183,6 @@ func (s *Store) reloadDeepSeek(cfg *config.Config) {
 
 // ── Type helpers ─────────────────────────────────────────────────────────────
 
-func makeConfigPtr[T any](v T) *T { return &v }
-func strPtr(s string) *string    { return &s }
-func intPtr(i int) *int          { return &i }
-func floatPtr(f float64) *float64 { return &f }
-func boolPtr(b bool) *bool       { return &b }
-
 // toolDescriptionsResponse wraps current custom descriptions plus their
 // built-in defaults so the UI can show both side-by-side.
 type toolDescriptionsResponse struct {

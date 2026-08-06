@@ -37,7 +37,14 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger, 
 		os.Exit(1)
 	}
 	log := logger.WithModule("startup")
-	log.Infof("log file: %s level=%s", logPath, []string{"debug", "info"}[logLevel])
+	var levelName string
+	switch logLevel {
+	case logging.DEBUG:
+		levelName = "debug"
+	default:
+		levelName = "info"
+	}
+	log.Infof("log file: %s level=%s", logPath, levelName)
 
 	// Create the MySQL storage backend (required).
 	if cfg.MySQLDSN == "" && cfg.MySQLHost == "" && cfg.MySQLSocketPath == "" {
@@ -88,6 +95,8 @@ func initStoreAndLogger(cfg *config.Config) (*knowledge.Store, *logging.Logger, 
 	// Wire up ChunkStoreEngine (Phase 3.3: chunk I/O extraction).
 	chunkEng := chunkstore.New(store.Backend(), "", store.DataDir(), store.Mutex(), logger.WithModule("chunkstore"))
 	store.SetChunkStore(chunkEng)
+	// Also wire the chunk store into the search engine (required for BM25 retrieval).
+	eng.SetChunkStore(store.ChunkStore())
 
 	// Wire up DictService + IngestService (Phase 3.5).
 	dictEng := dict.New(store.Mutex(), logger.WithModule("dict"))

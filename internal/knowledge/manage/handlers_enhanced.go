@@ -452,6 +452,11 @@ func (srv *Server) handleSearchConsole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query is required")
 		return
 	}
+
+	if msg := ValidateSearchQuery(body.Query); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if body.Limit <= 0 {
 		body.Limit = 10
 	}
@@ -607,6 +612,25 @@ func (srv *Server) handleKBExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := srv.Service().ValidateComponent(name); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid name: "+err.Error())
+		return
+	}
+
+	// Verify the KB actually exists.
+	kbs, err := srv.Service().ListKBsInfo()
+	if err != nil {
+		log.Errorf("KBExport: list KBs failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to list knowledge bases")
+		return
+	}
+	found := false
+	for _, kb := range kbs {
+		if kb.Name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "knowledge base not found: "+name)
 		return
 	}
 

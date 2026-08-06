@@ -83,15 +83,39 @@ func New(
 // ── Accessors ────────────────────────────────────────────────────────────────
 
 func (s *Server) Service() knowledge.ManageService              { return s.svc }
-func (s *Server) Config() *config.Config                        { return s.config }
-func (s *Server) SetConfig(cfg *config.Config)                  { s.config = cfg }
+func (s *Server) Config() *config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.config
+}
+func (s *Server) SetConfig(cfg *config.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = cfg
+}
 func (s *Server) ConfigPath() string                            { return s.configPath }
 func (s *Server) SetConfigPath(p string)                        { s.configPath = p }
 func (s *Server) Backend() knowledge.StorageBackend             { return s.backend }
-func (s *Server) Embedder() knowledge.Embedder                  { return s.embedder }
-func (s *Server) SetEmbedder(e knowledge.Embedder)              { s.embedder = e }
-func (s *Server) Reranker() knowledge.Reranker                  { return s.reranker }
-func (s *Server) SetReranker(r knowledge.Reranker)              { s.reranker = r }
+func (s *Server) Embedder() knowledge.Embedder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.embedder
+}
+func (s *Server) SetEmbedder(e knowledge.Embedder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embedder = e
+}
+func (s *Server) Reranker() knowledge.Reranker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reranker
+}
+func (s *Server) SetReranker(r knowledge.Reranker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reranker = r
+}
 func (s *Server) VectorIndex() interface{}                { return s.vectorIndex }
 func (s *Server) SetVectorIndex(vi interface{})           { s.vectorIndex = vi }
 func (s *Server) KBName() string                                { return s.kbName }

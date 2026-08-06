@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"knowledge-mcp/internal/knowledge"
 	"knowledge-mcp/internal/logging"
@@ -175,6 +177,69 @@ func SendTaskFinalEvent(w io.Writer, flusher http.Flusher, taskID, status, messa
 }
 
 // ── Other helpers ──
+
+// ValidateSearchQuery checks a search query for problematic characters and
+// returns an error message suitable for a 400 response. Valid queries must
+// contain at least one letter, number or CJK character, and must not contain
+// null bytes or other non-printable control characters.
+func ValidateSearchQuery(q string) string {
+	// Reject empty / whitespace-only.
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "query param 'q' is required"
+	}
+
+	// Reject queries that are too long (defence against abuse).
+	if len(q) > 2000 {
+		return "query is too long (max 2000 characters)"
+	}
+
+	hasValid := false
+	for _, r := range q {
+		// Reject null bytes and other dangerous control characters.
+		if r == 0 || (r < 0x20 && r != '\t' && r != '\n' && r != '\r') {
+			return "query contains invalid characters"
+		}
+		// Reject zero-width and bidi-override characters that can be used
+		// for injection/spoofing attacks.
+		if isInvisibleOrControl(r) {
+			return "query contains invisible/control characters"
+		}
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			hasValid = true
+		}
+	}
+	if !hasValid {
+		return "query must contain at least one letter or number"
+	}
+	return ""
+}
+
+// isInvisibleOrControl reports whether r is a zero-width, bidi-control or
+// other normally invisible character that should not appear in search queries.
+func isInvisibleOrControl(r rune) bool {
+	switch {
+	case r == '\u200B', // zero-width space
+		r == '\u200C', // zero-width non-joiner
+		r == '\u200D', // zero-width joiner
+		r == '\u200E', // left-to-right mark
+		r == '\u200F', // right-to-left mark
+		r == '\u202A', // left-to-right embedding
+		r == '\u202B', // right-to-left embedding
+		r == '\u202C', // pop directional formatting
+		r == '\u202D', // left-to-right override
+		r == '\u202E', // right-to-left override
+		r == '\uFEFF', // BOM / zero-width no-break space
+		r == '\u2060', // word joiner
+		r == '\u2061', // function application
+		r == '\u2062', // invisible times
+		r == '\u2063', // invisible separator
+		r == '\u2064': // invisible plus
+		return true
+	default:
+		return false
+	}
+}
 
 // parseIntParam parses an integer query parameter with a default.
 func ParseIntParam(r *http.Request, key string, defaultVal int) int {

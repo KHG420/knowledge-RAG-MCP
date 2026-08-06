@@ -84,9 +84,10 @@ func (l *Logger) SetLevel(level Level) {
 // The returned logger shares the same underlying file and level.
 func (l *Logger) WithModule(module string) *Logger {
 	return &Logger{
-		out:    l.out,
-		level:  l.level,
-		module: module,
+		out:     l.out,
+		level:   l.level,
+		module:  module,
+		logPath: l.logPath,
 	}
 }
 
@@ -105,7 +106,10 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 		line = fmt.Sprintf("[%s] [%s] %s\n", now, levelStr, msg)
 	}
 	l.mu.Lock()
-	_, _ = l.out.Write([]byte(line))
+	if _, err := l.out.Write([]byte(line)); err != nil {
+		// Log write failures to stderr so they are not silently lost
+		fmt.Fprintf(os.Stderr, "logger: write error: %v\n", err)
+	}
 	l.mu.Unlock()
 }
 

@@ -59,6 +59,10 @@ func TestLogger_WithModule(t *testing.T) {
 	if child.module != "child" {
 		t.Errorf("expected module 'child', got %q", child.module)
 	}
+	// Verify the child inherits logPath (regression test)
+	if child.Path() != logPath {
+		t.Errorf("expected child Path() = %q, got %q", logPath, child.Path())
+	}
 	// Verify the file has content
 	data, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(data), "test message") {

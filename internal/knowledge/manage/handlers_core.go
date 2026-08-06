@@ -593,6 +593,14 @@ func (srv *Server) handleManageDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Debugf("Delete: slug=%q kb=%q", slug, svc.KBName())
+
+	// Check that the document actually exists before attempting deletion.
+	if _, metaErr := svc.ReadMeta(slug); metaErr != nil {
+		log.Infof("Delete: slug=%q not found (skip)", slug)
+		writeError(w, http.StatusNotFound, "document not found: "+slug)
+		return
+	}
+
 	if err := svc.RemoveDocument(slug); err != nil {
 		log.Errorf("Delete: slug=%q failed: %v", slug, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -645,8 +653,9 @@ func (srv *Server) handleManageSearch(w http.ResponseWriter, r *http.Request) {
 	log := srv.Logger().WithModule("manage")
 	kb := r.URL.Query().Get("kb")
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		writeError(w, http.StatusBadRequest, "query param 'q' is required")
+
+	if msg := ValidateSearchQuery(q); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	limitStr := r.URL.Query().Get("limit")
@@ -774,6 +783,12 @@ func (srv *Server) handleTombstoneRestore(w http.ResponseWriter, r *http.Request
 		return
 	}
 	log.Infof("TombstoneRestore: slug=%q kb=%q", slug, svc.KBName())
+
+	// Verify the tombstone actually exists before attempting restore.
+	if !svc.IsTombstoned(slug) {
+		writeError(w, http.StatusNotFound, "tombstone not found for slug: "+slug)
+		return
+	}
 
 	if err := svc.RestoreTombstone(slug); err != nil {
 		log.Errorf("TombstoneRestore: slug=%q failed: %v", slug, err)

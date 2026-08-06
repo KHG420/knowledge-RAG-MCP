@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -39,30 +40,43 @@ func registerRemove(s *server.MCPServer, store *knowledge.Store, logger *logging
 		}
 		tlog := logger.WithModule("tool")
 		tlog.Debugf("knowledge_remove: slug=%q kb=%q", docSlug, kbName)
+
+		var removedFrom []string
 		if kbName != "" {
 			if err := store.WithKB(kbName).RemoveDocument(docSlug); err != nil {
 				tlog.Errorf("knowledge_remove: slug=%q kb=%q failed: %v", docSlug, kbName, err)
 				return mcp.NewToolResultError(fmt.Sprintf("remove failed: %v", err)), nil
 			}
+			removedFrom = []string{kbName}
 		} else {
-			// Try to remove from all KBs
+			// Remove from every KB that contains this document.
 			kbs, err := store.ListKBs()
 			if err != nil {
 				tlog.Errorf("knowledge_remove: list KBs failed: %v", err)
 				return mcp.NewToolResultError(fmt.Sprintf("list KBs failed: %v", err)), nil
 			}
-			removed := false
+			var errs []string
 			for _, kb := range kbs {
 				if err := store.WithKB(kb).RemoveDocument(docSlug); err == nil {
-					removed = true
-					break
+					removedFrom = append(removedFrom, kb)
+				} else {
+					errs = append(errs, fmt.Sprintf("%s: %v", kb, err))
 				}
 			}
-			if !removed {
-				return mcp.NewToolResultError(fmt.Sprintf("document %q not found in any KB", docSlug)), nil
+			if len(removedFrom) == 0 {
+				detail := strings.Join(errs, "; ")
+				if detail == "" {
+					detail = "no KBs available"
+				}
+				return mcp.NewToolResultError(fmt.Sprintf("document %q not found in any KB: %s", docSlug, detail)), nil
 			}
 		}
-		tlog.Debugf("knowledge_remove: slug=%q done", docSlug)
-		return mcp.NewToolResultText(fmt.Sprintf("Document %q removed.", docSlug)), nil
+
+		msg := fmt.Sprintf("Document %q removed.", docSlug)
+		if len(removedFrom) > 1 {
+			msg = fmt.Sprintf("Document %q removed from %d KBs.", docSlug, len(removedFrom))
+		}
+		tlog.Debugf("knowledge_remove: slug=%q done (%d KBs)", docSlug, len(removedFrom))
+		return mcp.NewToolResultText(msg), nil
 	})
 }

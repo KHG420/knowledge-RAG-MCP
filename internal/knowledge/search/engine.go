@@ -9,6 +9,8 @@ package search
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -1199,8 +1201,18 @@ func keepTopRelativeScore(results []rankedEntry, fraction float64) []rankedEntry
 // ── Cache helpers ────────────────────────────────────────────────────────────
 
 func cacheQueryHash(query, mode string, limit int, sourceType, section string) string {
-	// Simple hash using the query, mode, limit, and filter fields.
-	return fmt.Sprintf("%s|%s|%d|%s|%s", query, mode, limit, sourceType, section)
+	// Hash using SHA-256 to keep Redis keys bounded regardless of query length.
+	h := sha256.New()
+	h.Write([]byte(query))
+	h.Write([]byte("|"))
+	h.Write([]byte(mode))
+	h.Write([]byte("|"))
+	h.Write([]byte(fmt.Sprintf("%d", limit)))
+	h.Write([]byte("|"))
+	h.Write([]byte(sourceType))
+	h.Write([]byte("|"))
+	h.Write([]byte(section))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func cacheQueryKey(kbName, hash string) string {

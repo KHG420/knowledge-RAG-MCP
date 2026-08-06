@@ -1,8 +1,10 @@
 package manage_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -428,7 +430,7 @@ func TestManage_CreateKB(t *testing.T) {
 	_, srv, _, _ := newTestStore(t)
 	body := strings.NewReader(`{"name":"kb2","description":"second kb"}`)
 	w := doRequest(srv, "POST", "/api/knowledge-bases", body)
-	mustGetBody(t, w, http.StatusOK)
+	mustGetBody(t, w, http.StatusCreated)
 
 	var resp struct {
 		Message string `json:"message"`
@@ -1206,5 +1208,926 @@ func TestConfig_ConcurrentGet(t *testing.T) {
 	}
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Document chunks ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_DocChunks_OK(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents/"+slug+"/chunks", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Slug       string `json:"slug"`
+		ChunkCount int    `json:"chunkCount"`
+		Chunks     []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+			Index   int    `json:"index"`
+		} `json:"chunks"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Slug != slug {
+		t.Errorf("expected slug %q, got %q", slug, resp.Slug)
+	}
+	if resp.ChunkCount == 0 {
+		t.Error("expected non-zero chunk count")
+	}
+	if len(resp.Chunks) != resp.ChunkCount {
+		t.Errorf("chunk count mismatch: %d vs %d", len(resp.Chunks), resp.ChunkCount)
+	}
+}
+
+func TestManage_DocChunks_NotFound(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents/nonexistent/chunks", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for nonexistent doc, got %d", w.Code)
+	}
+}
+
+func TestManage_DocChunks_InvalidSlug(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	// Use a slug containing ".." that passes HTTP routing but fails ValidateComponent.
+	w := doRequest(srv, "GET", "/api/documents/test..invalid/chunks", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid slug, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Document download ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_DocDownload_OK(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents/"+slug+"/download", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "text/plain") {
+		t.Errorf("expected text/plain Content-Type, got %q", ct)
+	}
+	cd := w.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, "attachment") {
+		t.Errorf("expected attachment Content-Disposition, got %q", cd)
+	}
+	if w.Body.Len() == 0 {
+		t.Error("expected non-empty download body")
+	}
+}
+
+func TestManage_DocDownload_NotFound(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents/nonexistent/download", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestManage_DocDownload_InvalidSlug(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents/test..invalid/download", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Document replace ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_DocReplace_OK(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", "replace.md")
+	part.Write([]byte("# Replaced\n\nNew content for replacement test."))
+	mw.Close()
+
+	w := doMultipartRequest(srv, "PUT", "/api/documents/"+slug, &buf, mw.FormDataContentType())
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Message string `json:"message"`
+		OldSlug string `json:"oldSlug"`
+		NewSlug string `json:"newSlug"`
+		Name    string `json:"name"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Message != "document replaced" {
+		t.Errorf("unexpected message: %q", resp.Message)
+	}
+	if resp.OldSlug != slug {
+		t.Errorf("expected oldSlug %q, got %q", slug, resp.OldSlug)
+	}
+}
+
+func TestManage_DocReplace_NotFound(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", "test.md")
+	part.Write([]byte("test"))
+	mw.Close()
+
+	w := doMultipartRequest(srv, "PUT", "/api/documents/nonexistent", &buf, mw.FormDataContentType())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestManage_DocReplace_NoFile(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.Close()
+
+	w := doMultipartRequest(srv, "PUT", "/api/documents/"+slug, &buf, mw.FormDataContentType())
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing file, got %d", w.Code)
+	}
+}
+
+func TestManage_DocReplace_InvalidSlug(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", "test.md")
+	part.Write([]byte("test"))
+	mw.Close()
+
+	w := doMultipartRequest(srv, "PUT", "/api/documents/test..invalid", &buf, mw.FormDataContentType())
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid slug, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Document tags update ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_DocTagsUpdate_OK(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	body := strings.NewReader(`{"tags":["tag1","tag2","tag3"]}`)
+	w := doRequest(srv, "PATCH", "/api/documents/"+slug+"/tags", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Message string   `json:"message"`
+		Slug    string   `json:"slug"`
+		Tags    []string `json:"tags"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Slug != slug {
+		t.Errorf("expected slug %q, got %q", slug, resp.Slug)
+	}
+	if len(resp.Tags) != 3 {
+		t.Errorf("expected 3 tags, got %d: %v", len(resp.Tags), resp.Tags)
+	}
+}
+
+func TestManage_DocTagsUpdate_EmptyTags(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	body := strings.NewReader(`{"tags":[]}`)
+	w := doRequest(srv, "PATCH", "/api/documents/"+slug+"/tags", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Tags []string `json:"tags"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if len(resp.Tags) != 0 {
+		t.Errorf("expected empty tags, got %v", resp.Tags)
+	}
+}
+
+func TestManage_DocTagsUpdate_NotFound(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"tags":["test"]}`)
+	w := doRequest(srv, "PATCH", "/api/documents/nonexistent/tags", body)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestManage_DocTagsUpdate_InvalidSlug(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"tags":["test"]}`)
+	w := doRequest(srv, "PATCH", "/api/documents/test..invalid/tags", body)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestManage_DocTagsUpdate_InvalidJSON(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	w := doRequest(srv, "PATCH", "/api/documents/"+slug+"/tags", strings.NewReader("not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Batch delete ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_BatchDelete_OK(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	body := strings.NewReader(fmt.Sprintf(`{"slugs":["%s"],"tombstone":false}`, slug))
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Message string `json:"message"`
+		Deleted int    `json:"deleted"`
+		Failed  int    `json:"failed"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", resp.Deleted)
+	}
+	if resp.Failed != 0 {
+		t.Errorf("expected 0 failed, got %d", resp.Failed)
+	}
+}
+
+func TestManage_BatchDelete_Tombstone(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	body := strings.NewReader(fmt.Sprintf(`{"slugs":["%s"],"tombstone":true,"reason":"test cleanup"}`, slug))
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Deleted int `json:"deleted"`
+		Failed  int `json:"failed"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", resp.Deleted)
+	}
+}
+
+func TestManage_BatchDelete_EmptySlugs(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", strings.NewReader(`{"slugs":[]}`))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty slugs, got %d", w.Code)
+	}
+}
+
+func TestManage_BatchDelete_TooManySlugs(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	slugs := make([]string, 101)
+	for i := range slugs {
+		slugs[i] = fmt.Sprintf("doc-%d", i)
+	}
+	body, _ := json.Marshal(map[string]any{"slugs": slugs})
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", bytes.NewReader(body))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for >100 slugs, got %d", w.Code)
+	}
+}
+
+func TestManage_BatchDelete_InvalidJSON(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", strings.NewReader("not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestManage_BatchDelete_MixedResults(t *testing.T) {
+	_, srv, _, slug := newTestStore(t)
+	body := strings.NewReader(fmt.Sprintf(`{"slugs":["%s","nonexistent-slug","/invalid"],"tombstone":false}`, slug))
+	w := doRequest(srv, "POST", "/api/documents/batch-delete", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Deleted int `json:"deleted"`
+		Failed  int `json:"failed"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	// At least 1 deleted (the valid slug), others may fail
+	if resp.Deleted < 1 {
+		t.Errorf("expected at least 1 deleted, got %d", resp.Deleted)
+	}
+}
+
+// doMultipartRequest is a helper for multipart form upload tests.
+func doMultipartRequest(srv *manage.Server, method, path string, body io.Reader, contentType string) *httptest.ResponseRecorder {
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Content-Type", contentType)
+	if cfg := srv.Config(); cfg != nil && cfg.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Search console ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_SearchConsole_OK(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"query":"test document","mode":"bm25","limit":5}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Query     string `json:"query"`
+		Mode      string `json:"mode"`
+		LatencyMs int64  `json:"latencyMs"`
+		TotalHits int    `json:"totalHits"`
+		Results   []struct {
+			Rank    int     `json:"rank"`
+			Score   float64 `json:"score"`
+			Snippet string  `json:"snippet"`
+		} `json:"results"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Query != "test document" {
+		t.Errorf("expected query 'test document', got %q", resp.Query)
+	}
+	if resp.Mode != "bm25" {
+		t.Errorf("expected mode bm25, got %q", resp.Mode)
+	}
+}
+
+func TestManage_SearchConsole_DefaultMode(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"query":"test","limit":3}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_SearchConsole_Rerank(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"query":"test","rerank":true,"limit":5}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_SearchConsole_VectorMode(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	body := strings.NewReader(`{"query":"test","mode":"vector","limit":5}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	// Vector mode may fail if no real embedder is reachable; just verify non-empty response.
+	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
+		t.Errorf("unexpected status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestManage_SearchConsole_HybridMode(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"query":"test","mode":"hybrid","limit":5}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_SearchConsole_MissingQuery(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/search-console", strings.NewReader(`{"limit":5}`))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestManage_SearchConsole_InvalidJSON(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/search-console", strings.NewReader("not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestManage_SearchConsole_WithKBName(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	body := strings.NewReader(`{"query":"test","kbName":"test-kb","limit":5}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_SearchConsole_LimitDefaults(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	// No limit specified → defaults to 10.
+	body := strings.NewReader(`{"query":"test"}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_SearchConsole_LimitCapped(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	// Limit > 50 should be capped at 50.
+	body := strings.NewReader(`{"query":"test","limit":500}`)
+	w := doRequest(srv, "POST", "/api/search-console", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Tool descriptions ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_ToolDescriptions_Get(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/tool-descriptions", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Custom   map[string]string `json:"custom"`
+		Defaults map[string]string `json:"defaults"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Defaults == nil {
+		t.Error("expected non-nil defaults in tool descriptions response")
+	}
+}
+
+func TestManage_ToolDescriptions_Put(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	body := strings.NewReader(`{
+		"searchDesc": "Custom search description",
+		"readDesc": "Custom read description"
+	}`)
+	w := doRequest(srv, "PUT", "/api/tool-descriptions", body)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_ToolDescriptions_PutInvalidJSON(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "PUT", "/api/tool-descriptions", strings.NewReader("not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestManage_ToolDescriptions_GetAfterPut(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	// First set
+	putBody := strings.NewReader(`{"searchDesc":"Updated search desc"}`)
+	w := doRequest(srv, "PUT", "/api/tool-descriptions", putBody)
+	mustGetBody(t, w, http.StatusOK)
+
+	// Then get and verify
+	w = doRequest(srv, "GET", "/api/tool-descriptions", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Custom struct {
+			SearchDesc string `json:"searchDesc"`
+		} `json:"custom"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Custom.SearchDesc != "Updated search desc" {
+		t.Errorf("expected custom searchDesc 'Updated search desc', got %q", resp.Custom.SearchDesc)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Restart ───────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Restart(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/restart", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if !resp.OK {
+		t.Error("expected ok: true")
+	}
+	if resp.Message == "" {
+		t.Error("expected restart message")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── GPU scheduler ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_GPUScheduler_NotConfigured(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/gpu-scheduler", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Enabled bool   `json:"enabled"`
+		Message string `json:"message,omitempty"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Enabled {
+		t.Error("expected GPU scheduler disabled by default")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Logs ──────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Logs_Default(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/logs", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Lines []string `json:"lines"`
+		Tail  int      `json:"tail"`
+		Count int      `json:"count"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Count < 0 {
+		t.Errorf("unexpected count: %d", resp.Count)
+	}
+}
+
+func TestManage_Logs_WithTail(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/logs?tail=5", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Tail int `json:"tail"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Tail != 5 {
+		t.Errorf("expected tail 5, got %d", resp.Tail)
+	}
+}
+
+func TestManage_Logs_TailCapped(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/logs?tail=2000", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Tail int `json:"tail"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Tail > 1000 {
+		t.Errorf("expected tail capped at 1000, got %d", resp.Tail)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Metrics ───────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Metrics_JSON(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/metrics", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		UptimeSeconds      float64 `json:"uptimeSeconds"`
+		TotalRequests      int64   `json:"totalRequests"`
+		MemoryAllocMB      float64 `json:"memoryAllocMB"`
+		Goroutines         int     `json:"goroutines"`
+		NumCPU             int     `json:"numCPU"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.NumCPU <= 0 {
+		t.Error("expected numCPU > 0")
+	}
+	if resp.Goroutines < 0 {
+		t.Error("unexpected goroutines count")
+	}
+}
+
+func TestManage_Metrics_Prometheus(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/metrics?format=prometheus", nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "text/plain") {
+		t.Errorf("expected text/plain for prometheus format, got %q", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "knowledge_mcp_uptime_seconds") {
+		t.Error("expected prometheus metrics in response")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── System info ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_SystemInfo(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/system-info", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		GoVersion    string `json:"goVersion"`
+		NumCPU       int    `json:"numCPU"`
+		NumGoroutine int    `json:"numGoroutine"`
+		Memory       struct {
+			AllocMB      float64 `json:"allocMB"`
+			TotalAllocMB float64 `json:"totalAllocMB"`
+			SysMB        float64 `json:"sysMB"`
+			NumGC        uint32  `json:"numGC"`
+			HeapObjects  uint64  `json:"heapObjects"`
+		} `json:"memory"`
+		UptimeSeconds float64 `json:"uptimeSeconds"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.GoVersion == "" {
+		t.Error("expected goVersion")
+	}
+	if resp.NumCPU <= 0 {
+		t.Error("expected numCPU > 0")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Vector stats & index ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_VectorStats(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/vector-stats", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		TotalDocs     int `json:"totalDocs"`
+		DocsWithVecs  int `json:"docsWithVecs"`
+		DocsMissing   int `json:"docsMissing"`
+		TotalChunks   int `json:"totalChunks"`
+		ChunksWithVec int `json:"chunksWithVec"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.TotalDocs != 1 {
+		t.Errorf("expected 1 total doc, got %d", resp.TotalDocs)
+	}
+}
+
+func TestManage_VectorStats_WithKB(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/vector-stats?kb=test-kb", nil)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_VectorIndex(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/vector-index", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		KBName string `json:"kbName"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.KBName != "test-kb" {
+		t.Errorf("expected kbName test-kb, got %q", resp.KBName)
+	}
+}
+
+func TestManage_VectorIndex_WithKB(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/vector-index?kb=test-kb", nil)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── KB export/import (MockBackend — error paths) ──────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_KBExport_RequiresMySQL(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/knowledge-bases/test-kb/export", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for non-MySQL export, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestManage_KBExport_NotFound(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/knowledge-bases/nonexistent-kb/export", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestManage_KBExport_InvalidName(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/knowledge-bases/test..bad/export", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid name, got %d", w.Code)
+	}
+}
+
+func TestManage_KBImport_RequiresMySQL(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	// Create a minimal valid zip so body parsing passes.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	// Add a dummy file to make it valid.
+	f, _ := zw.Create("dummy.txt")
+	f.Write([]byte("test"))
+	zw.Close()
+	w := doRequest(srv, "POST", "/api/knowledge-bases/import?name=test-kb", bytes.NewReader(buf.Bytes()))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for non-MySQL import, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestManage_KBImport_MissingName(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/knowledge-bases/import", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing name, got %d", w.Code)
+	}
+}
+
+func TestManage_KBImport_InvalidName(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "POST", "/api/knowledge-bases/import?name=test..bad", strings.NewReader("not a zip"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid name, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Auth / API token ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Auth_WithoutToken(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	// Build mux directly without auth header.
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("GET", "/api/documents", nil)
+	// Deliberately no Authorization header.
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without token, got %d", w.Code)
+	}
+}
+
+func TestManage_Auth_WithToken(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("GET", "/api/documents", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with token, got %d", w.Code)
+	}
+}
+
+func TestManage_Auth_WrongToken(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("GET", "/api/documents", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong token, got %d", w.Code)
+	}
+}
+
+func TestManage_Auth_HealthWithoutToken(t *testing.T) {
+	_, srv, _, _ := newTestStoreWithConfig(t)
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	// Health endpoint should be accessible without auth.
+	if w.Code != http.StatusOK {
+		t.Errorf("health endpoint should allow unauthenticated access, got %d", w.Code)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge cases — search ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Search_Unicode(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/search?q=测试中文&limit=5", nil)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+func TestManage_Search_TooLongQuery(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	longQuery := strings.Repeat("a", 2001)
+	w := doRequest(srv, "GET", "/api/search?q="+longQuery+"&limit=5", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for too long query, got %d", w.Code)
+	}
+}
+
+func TestManage_Search_EmptyQuery(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/search?q=&limit=5", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty query, got %d", w.Code)
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge cases — upload ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Upload_WithKBParam(t *testing.T) {
+	_, srv, tmp, _ := newTestStore(t)
+	src := filepath.Join(tmp, "upload-kb.md")
+	os.WriteFile(src, []byte("# KB upload test"), 0644)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("files", "upload-kb.md")
+	part.Write([]byte("# KB upload test"))
+	mw.Close()
+
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("POST", "/api/upload?kb=test-kb", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge cases — pagination boundary ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_ListDocuments_OffsetBeyondTotal(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents?offset=1000&limit=20", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Documents []any `json:"documents"`
+		Total     int   `json:"total"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if len(resp.Documents) != 0 {
+		t.Errorf("expected empty page for offset beyond total, got %d docs", len(resp.Documents))
+	}
+}
+
+func TestManage_ListDocuments_NegativeOffset(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/api/documents?offset=-1&limit=20", nil)
+	mustGetBody(t, w, http.StatusOK)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge cases — health endpoint ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_Health(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	w := doRequest(srv, "GET", "/health", nil)
+	mustGetBody(t, w, http.StatusOK)
+
+	var resp struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	json.Unmarshal([]byte(w.Body.String()), &resp)
+	if resp.Status != "ok" {
+		t.Errorf("expected status ok, got %q", resp.Status)
+	}
+	if resp.Version == "" {
+		t.Error("expected version")
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Edge cases — CORS headers ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func TestManage_CORS_Headers(t *testing.T) {
+	_, srv, _, _ := newTestStore(t)
+	mux := manage.BuildMux(srv)
+	req := httptest.NewRequest("OPTIONS", "/api/documents", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code < 200 || w.Code >= 300 {
+		t.Errorf("expected 2xx for OPTIONS preflight, got %d", w.Code)
 	}
 }

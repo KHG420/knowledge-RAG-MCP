@@ -2,6 +2,7 @@
 package manage
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -95,12 +96,27 @@ func BuildMux(srv *Server) http.Handler {
 			writeError(w, http.StatusBadRequest, "invalid name: "+err.Error())
 			return
 		}
+
+		// Check if KB already exists.
+		kbs, listErr := svc.ListKBsInfo()
+		if listErr == nil {
+			for _, kb := range kbs {
+				if kb.Name == body.Name {
+					writeJSON(w, http.StatusConflict, map[string]string{
+						"message": "knowledge base already exists",
+						"name":    body.Name,
+					})
+					return
+				}
+			}
+		}
+
 		if err := svc.CreateKB(body.Name, body.Description); err != nil {
 			log.Errorf("CreateKB(%q) failed: %v", body.Name, err)
 			writeError(w, http.StatusInternalServerError, "create KB failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"message": "created", "name": body.Name})
+		writeJSON(w, http.StatusCreated, map[string]string{"message": "created", "name": body.Name})
 	})
 	mux.HandleFunc("DELETE /api/knowledge-bases/{name}", func(w http.ResponseWriter, r *http.Request) {
 		svc := srv.Service()
@@ -114,6 +130,26 @@ func BuildMux(srv *Server) http.Handler {
 			writeError(w, http.StatusBadRequest, "invalid name: "+err.Error())
 			return
 		}
+
+		// Check if KB exists before attempting deletion.
+		kbs, listErr := svc.ListKBsInfo()
+		if listErr == nil {
+			found := false
+			for _, kb := range kbs {
+				if kb.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				writeJSON(w, http.StatusNotFound, map[string]string{
+					"message": "knowledge base not found",
+					"name":    name,
+				})
+				return
+			}
+		}
+
 		if err := svc.DeleteKB(name); err != nil {
 			log.Errorf("DeleteKB(%q) failed: %v", name, err)
 			writeError(w, http.StatusInternalServerError, "delete KB failed: "+err.Error())
@@ -186,28 +222,49 @@ func BuildMux(srv *Server) http.Handler {
 }
 
 // Start starts the HTTP management server on the given port.
+// The parentCtx is used to trigger graceful shutdown of background goroutines
+// and the HTTP server when the context is cancelled.
 func Start(srv *Server, port string) error {
+	return StartWithContext(context.Background(), srv, port)
+}
+
+// StartWithContext starts the HTTP management server with a parent context
+// for graceful shutdown coordination.
+func StartWithContext(parentCtx context.Context, srv *Server, port string) error {
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
 	handler := BuildMux(srv)
 
 	// ── Background goroutines ──
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			if tm := srv.TaskManager(); tm != nil {
-				tm.Cleanup(30 * time.Minute)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if tm := srv.TaskManager(); tm != nil {
+					tm.Cleanup(30 * time.Minute)
+				}
 			}
 		}
 	}()
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleaned, err := srv.Service().CleanExpiredTombstones()
-			if err != nil {
-				srv.Logger().Warnf("background tombstone cleanup failed: %v", err)
-			} else if cleaned > 0 {
-				srv.Logger().Infof("background tombstone cleanup: %d expired removed", cleaned)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleaned, err := srv.Service().CleanExpiredTombstones()
+				if err != nil {
+					srv.Logger().Warnf("background tombstone cleanup failed: %v", err)
+				} else if cleaned > 0 {
+					srv.Logger().Infof("background tombstone cleanup: %d expired removed", cleaned)
+				}
 			}
 		}
 	}()
