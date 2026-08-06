@@ -1959,9 +1959,19 @@ func (s *Store) GetVectorIndexInfo() (map[string]any, error) {
 		info["embedder"] = s.EmbedderInfo()
 	}
 	if s.vectorIndex != nil {
+		stats := s.vectorIndex.Stats()
 		info["index"] = map[string]any{
-			"loaded": true,
-			"len":    s.vectorIndex.Len(),
+			"loaded":          true,
+			"nodeCount":       stats.NodeCount,
+			"dim":             stats.Dim,
+			"m":               stats.M,
+			"efSearch":        stats.EfSearch,
+			"efConstruction":  stats.EfConstruction,
+			"maxLevel":        stats.MaxLevel,
+			"entryId":         stats.EntryID,
+			"layerNodeCounts": stats.LayerNodeCounts,
+			"totalEdges":      stats.TotalEdges,
+			"avgDegree":       stats.AvgDegree,
 		}
 	} else {
 		info["index"] = map[string]any{
