@@ -79,3 +79,9 @@ mariadb-extract/
 
 # Documentation build artifacts
 docs/_build/
+
+# Playwright
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+e2e/playwright/.cache/
