@@ -373,6 +373,13 @@ func (s *Store) WithKB(name string) *Store {
 	cp := *s
 	cp.kbName = name
 
+	// Sync the shared singleton components (search engine, chunk store, ingest
+	// engine) to this KB *before* any early return. These are shared across all
+	// Store views, so their per-KB state must be re-scoped on every switch.
+	// Doing it up front fixes the bug where the vector-index cache fast path
+	// returned early and left the search engine scoped to a stale KB.
+	s.syncComponentsToKB(name)
+
 	// Check in-memory cache first to avoid repeated disk I/O.
 	if s.vecState.Cache() != nil {
 		s.vecState.Lock()
@@ -402,28 +409,30 @@ func (s *Store) WithKB(name string) *Store {
 		s.vecState.WUnlock()
 	}
 
-	// Keep the ingest engine in sync with the current KB.
-	if cp.ingestSvc != nil {
-		if eng, ok := cp.ingestSvc.(interface{ SetKBName(string) }); ok {
+	return &cp
+}
+
+// syncComponentsToKB re-scopes the shared singleton components to the given KB
+// name. The search engine, chunk store, and ingest engine are single instances
+// shared across every Store view; their per-KB state (kbName) must be set on
+// each switch. Callers must invoke this before delegating retrieval so the
+// engine never reads a stale KB left behind by an earlier request.
+func (s *Store) syncComponentsToKB(name string) {
+	if s.ingestSvc != nil {
+		if eng, ok := s.ingestSvc.(interface{ SetKBName(string) }); ok {
 			eng.SetKBName(name)
 		}
 	}
-
-	// Keep the search engine in sync with the current KB.
-	if cp.searchEngine != nil {
-		if se, ok := cp.searchEngine.(interface{ SetKBName(string) }); ok {
+	if s.searchEngine != nil {
+		if se, ok := s.searchEngine.(interface{ SetKBName(string) }); ok {
 			se.SetKBName(name)
 		}
 	}
-
-	// Keep the chunk store in sync with the current KB.
-	if cp.chunkStore != nil {
-		if cs, ok := cp.chunkStore.(interface{ SetKBName(string) }); ok {
+	if s.chunkStore != nil {
+		if cs, ok := s.chunkStore.(interface{ SetKBName(string) }); ok {
 			cs.SetKBName(name)
 		}
 	}
-
-	return &cp
 }
 
 // SetLogger sets the logger on the Store.
