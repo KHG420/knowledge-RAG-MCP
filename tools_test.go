@@ -51,6 +51,16 @@ func TestSearchMultiKB_ScoreSorting(t *testing.T) {
 	}
 }
 
+func TestSearchHitKnowledgeBaseProvenanceIsSerialized(t *testing.T) {
+	raw, err := json.Marshal(knowledge.SearchHit{KBName: "横摇论文"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"kb_name":"横摇论文"`) {
+		t.Fatalf("missing KB provenance: %s", raw)
+	}
+}
+
 func TestSearchMultiKB_Truncation(t *testing.T) {
 	// Edge: fewer hits than limit
 	hits := []knowledge.SearchHit{{Score: 0.5}}

@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -25,6 +26,33 @@ func TestContainsCJK(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("containsCJK(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestDefaultConstraintsUseDeployedKnowledgeBaseName(t *testing.T) {
+	constraints := defaultConstraints()
+	if len(constraints["横摇论文"]) == 0 {
+		t.Fatal("roll-domain constraints are not bound to the deployed KB name")
+	}
+	if _, stale := constraints["ship_motion"]; stale {
+		t.Fatal("constraints still target a non-existent KB name")
+	}
+}
+
+func TestRouteSelectsOnlyTheExplicitlyMatchedDomain(t *testing.T) {
+	router := NewKBRouter(nil)
+	router.SetKBDescs([]KBDesc{
+		{Name: "横摇论文", Desc: "船舶横摇动力学与稳性专业论文"},
+		{Name: "航海知识库", Desc: "航海通用与海事专业知识"},
+	})
+
+	roll := router.Route(context.Background(), "横摇阻尼和遭遇频率如何影响参数横摇？", nil)
+	if !reflect.DeepEqual(roll.Selected, []string{"横摇论文"}) {
+		t.Fatalf("unexpected roll route: %v", roll.Selected)
+	}
+	legal := router.Route(context.Background(), "London arbitration 航速油耗索赔", nil)
+	if !reflect.DeepEqual(legal.Selected, []string{"航海知识库"}) {
+		t.Fatalf("unexpected maritime-law route: %v", legal.Selected)
 	}
 }
 

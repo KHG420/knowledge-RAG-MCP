@@ -13,7 +13,6 @@ import (
 func (s *Store) SearchVector(query string, limit int) ([]SearchHit, error) {
 	// Delegate to search engine when available.
 	if s.searchEngine != nil {
-		s.syncComponentsToKB(s.kbName)
 		return s.searchEngine.SearchVector(context.Background(), query, limit, SearchFilter{})
 	}
 
@@ -130,7 +129,6 @@ func (s *Store) SearchDocuments(query string, limit int, filters ...SearchFilter
 
 	// Delegate to search engine when available.
 	if s.searchEngine != nil {
-		s.syncComponentsToKB(s.kbName)
 		return s.searchEngine.SearchDocuments(context.Background(), query, limit, filter)
 	}
 

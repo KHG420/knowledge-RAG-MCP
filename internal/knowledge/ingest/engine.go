@@ -110,6 +110,20 @@ func (e *Engine) SetKBName(name string)                                     { e.
 func (e *Engine) SetDataDir(dir string)                                     { e.dataDir = dir }
 func (e *Engine) SetBuildChunksIndex(fn func(string, []knowledge.ChunkWithMeta, []knowledge.ChunkWithMeta) error) { e.buildChunksIndex = fn }
 
+// WithKB returns an independently scoped ingestion view so concurrent uploads
+// cannot overwrite another request's KB identity or chunk destination.
+func (e *Engine) WithKB(
+	kbName string,
+	chunks knowledge.ChunkStore,
+	buildChunksIndex func(string, []knowledge.ChunkWithMeta, []knowledge.ChunkWithMeta) error,
+) knowledge.Ingester {
+	clone := *e
+	clone.kbName = kbName
+	clone.chunkStore = chunks
+	clone.buildChunksIndex = buildChunksIndex
+	return &clone
+}
+
 // ── Basic accessors ───────────────────────────────────────────────────────────
 
 func (e *Engine) TaskManager() *knowledge.UploadTaskManager  { return e.taskManager }

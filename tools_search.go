@@ -107,6 +107,11 @@ func registerSearch(s *server.MCPServer, store *knowledge.Store, logger *logging
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
 		}
+		if kbName != "" {
+			for i := range hits {
+				hits[i].KBName = kbName
+			}
+		}
 		tlog := logger.WithModule("tool")
 		tlog.Debugf("knowledge_research: query=%q limit=%d kb=%q routed=%v hits=%d", searchKW, limit, kbName, routedKBs, len(hits))
 		if len(hits) == 0 {
@@ -138,6 +143,9 @@ func searchMultiKB(store *knowledge.Store, query string, limit int, filter knowl
 			// Log and continue — one KB failure shouldn't block others.
 			lastErr = fmt.Errorf("search KB %q: %w", kb, err)
 			continue
+		}
+		for i := range hits {
+			hits[i].KBName = kb
 		}
 		allHits = append(allHits, hits...)
 	}

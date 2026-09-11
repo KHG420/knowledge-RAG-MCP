@@ -22,7 +22,6 @@ func (s *Store) Search(query string, limit int, filters ...SearchFilter) ([]Sear
 
 	// Delegate to search engine when available (REFACTOR_PLAN Phase 3.2).
 	if s.searchEngine != nil {
-		s.syncComponentsToKB(s.kbName)
 		return s.searchEngine.Search(context.Background(), query, limit, filter)
 	}
 
@@ -233,7 +232,6 @@ func (s *Store) searchImpl(query string, limit int, filter SearchFilter) ([]Sear
 func (s *Store) SearchBM25(query string, limit int) ([]SearchHit, error) {
 	// Delegate to search engine when available.
 	if s.searchEngine != nil {
-		s.syncComponentsToKB(s.kbName)
 		return s.searchEngine.SearchBM25(context.Background(), query, limit, SearchFilter{})
 	}
 
@@ -384,7 +382,8 @@ func (s *Store) SearchAll(query string, limit int, filters ...SearchFilter) ([]S
 			continue
 		}
 		for _, h := range hits {
-			key := VectorID(h.Document.ID, h.Location.ChunkID)
+			h.KBName = kb
+			key := kb + "|" + VectorID(h.Document.ID, h.Location.ChunkID)
 			if seen[key] {
 				continue
 			}
@@ -430,7 +429,6 @@ func (s *Store) HybridSearch(query string, limit int, filters ...SearchFilter) (
 
 	// Delegate to search engine when available.
 	if s.searchEngine != nil {
-		s.syncComponentsToKB(s.kbName)
 		return s.searchEngine.HybridSearch(context.Background(), query, limit, filter)
 	}
 

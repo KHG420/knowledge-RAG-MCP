@@ -22,6 +22,7 @@ import (
 // hybrid search with optional coarse-to-fine filtering. The implementation
 // lives in internal/knowledge/search/.
 type Searcher interface {
+	WithKB(kbName string, chunks ChunkStore) Searcher
 	Search(ctx context.Context, question string, limit int, filter SearchFilter) ([]SearchHit, error)
 	SearchBM25(ctx context.Context, question string, limit int, filter SearchFilter) ([]SearchHit, error)
 	HybridSearch(ctx context.Context, question string, limit int, filter SearchFilter) ([]SearchHit, error)
@@ -132,6 +133,7 @@ type ChunkStore interface {
 // Ingester handles document upload: parse → chunk → embed → persist.
 // The implementation lives in internal/knowledge/ingest/.
 type Ingester interface {
+	WithKB(kbName string, chunks ChunkStore, buildChunksIndex func(string, []ChunkWithMeta, []ChunkWithMeta) error) Ingester
 	UploadDocument(filePath string, tags ...string) (*DocumentMeta, error)
 	UploadDocumentWithProgress(filePath string, tags ...string) (*DocumentMeta, error)
 	UploadDirectory(dirPath string, recursive bool) (string, error)

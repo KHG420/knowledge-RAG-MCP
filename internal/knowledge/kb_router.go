@@ -60,12 +60,17 @@ func NewKBRouter(embedder Embedder) *KBRouter {
 // certain KBs when the query contains those keywords.
 func defaultConstraints() map[string][]string {
 	return map[string][]string{
-		"ship_motion": {
+		"横摇论文": {
 			"横摇", "roll", "阻尼", "damping", "舭龙骨", "bilge keel",
 			"参数横摇", "parametric roll", "同步横摇", "synchronous roll",
 			"减摇", "stabilizer", "耐波性", "seakeeping", "倾覆", "capsize",
 			"CFD", "Ikeda", "遭遇频率", "encounter frequency",
 			"非线性", "nonlinear", "横浪", "beam sea", "横甩", "broaching",
+		},
+		"航海知识库": {
+			"航海", "navigation", "助航", "aids to navigation", "海事法规", "maritime law",
+			"仲裁", "arbitration", "租船", "charterparty", "航速", "speed claim",
+			"油耗", "bunker consumption", "好天气", "good weather", "船舶作业", "ship operation",
 		},
 	}
 }
@@ -193,7 +198,7 @@ func (r *KBRouter) Route(ctx context.Context, query string, candidates []string)
 				}
 			}
 			if matchCount > 0 {
-				constraintScore = float64(matchCount) / float64(len(keywords))
+				constraintScore = float64(matchCount) / 5.0
 				// Scale: up to 5 matches saturates the 0.15 weight.
 				if constraintScore > 1.0 {
 					constraintScore = 1.0
@@ -231,7 +236,7 @@ func (r *KBRouter) Route(ctx context.Context, query string, candidates []string)
 	}
 
 	top1, top2 := scored[0].total, scored[1].total
-	if top1-top2 > 0.25 {
+	if (scored[0].constraint > 0 && scored[1].constraint == 0) || top1-top2 > 0.25 {
 		result.Selected = []string{scored[0].name}
 	} else {
 		n := min(3, len(scored))

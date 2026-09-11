@@ -372,31 +372,29 @@ func (s *Store) WithKB(name string) *Store {
 	}
 	cp := *s
 	cp.kbName = name
-
-	// Sync the shared singleton components (search engine, chunk store, ingest
-	// engine) to this KB *before* any early return. These are shared across all
-	// Store views, so their per-KB state must be re-scoped on every switch.
-	// Doing it up front fixes the bug where the vector-index cache fast path
-	// returned early and left the search engine scoped to a stale KB.
-	s.syncComponentsToKB(name)
+	if s.chunkStore != nil {
+		cp.chunkStore = s.chunkStore.WithKB(name)
+	}
 
 	// Check in-memory cache first to avoid repeated disk I/O.
+	foundCachedIndex := false
 	if s.vecState.Cache() != nil {
 		s.vecState.Lock()
 		if idx, ok := s.vecState.Cache()[name]; ok {
-			s.vecState.Unlock()
 			cp.vectorIndex = idx
-			return &cp
+			foundCachedIndex = true
 		}
 		s.vecState.Unlock()
 	}
 
 	// Try loading the persisted HNSW index for this KB.
 	// Each KB has its own VECTOR.gob; if present, use it.
-	if idx, err := cp.loadVectorIndex(); err == nil && idx != nil {
-		cp.vectorIndex = idx
-	} else {
-		cp.vectorIndex = nil
+	if !foundCachedIndex {
+		if idx, err := cp.loadVectorIndex(); err == nil && idx != nil {
+			cp.vectorIndex = idx
+		} else {
+			cp.vectorIndex = nil
+		}
 	}
 
 	// Store in cache for future WithKB calls.
@@ -409,30 +407,14 @@ func (s *Store) WithKB(name string) *Store {
 		s.vecState.WUnlock()
 	}
 
-	return &cp
-}
-
-// syncComponentsToKB re-scopes the shared singleton components to the given KB
-// name. The search engine, chunk store, and ingest engine are single instances
-// shared across every Store view; their per-KB state (kbName) must be set on
-// each switch. Callers must invoke this before delegating retrieval so the
-// engine never reads a stale KB left behind by an earlier request.
-func (s *Store) syncComponentsToKB(name string) {
-	if s.ingestSvc != nil {
-		if eng, ok := s.ingestSvc.(interface{ SetKBName(string) }); ok {
-			eng.SetKBName(name)
-		}
-	}
 	if s.searchEngine != nil {
-		if se, ok := s.searchEngine.(interface{ SetKBName(string) }); ok {
-			se.SetKBName(name)
-		}
+		cp.searchEngine = s.searchEngine.WithKB(name, cp.chunkStore)
 	}
-	if s.chunkStore != nil {
-		if cs, ok := s.chunkStore.(interface{ SetKBName(string) }); ok {
-			cs.SetKBName(name)
-		}
+	if s.ingestSvc != nil {
+		cp.ingestSvc = s.ingestSvc.WithKB(name, cp.chunkStore, cp.BuildChunksIndex)
 	}
+
+	return &cp
 }
 
 // SetLogger sets the logger on the Store.

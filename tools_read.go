@@ -188,6 +188,7 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 		// Degrade gracefully: return content without metadata.
 		feats := knowledge.ExtractEvidenceFeatures(text)
 		data, _ := json.MarshalIndent(knowledge.EvidenceChunk{
+			KBName:     kbName,
 			Document:   knowledge.DocumentInfo{ID: docSlug},
 			Location:   knowledge.LocationInfo{ChunkID: chunkID},
 			Content:    text,
@@ -219,6 +220,7 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 	}
 
 	evidence := knowledge.EvidenceChunk{
+		KBName: kbName,
 		Document: knowledge.DocumentInfo{
 			ID:           meta.Slug,
 			Title:        meta.Title,

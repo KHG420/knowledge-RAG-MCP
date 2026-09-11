@@ -106,8 +106,40 @@ func (e *Engine) SetBackend(b knowledge.StorageBackend) { e.backend = b }
 // SetGPUScheduler sets the shared GPU scheduler.
 func (e *Engine) SetGPUScheduler(gs *knowledge.GPUScheduler) { e.gpuScheduler = gs }
 
-// SetKBName sets the current knowledge base name.
-func (e *Engine) SetKBName(name string) { e.kbName = name }
+// SetKBName sets the current knowledge base name and binds the matching HNSW
+// index from the shared per-KB cache. Clearing vectorIndex on a cache miss is
+// intentional: retaining the previous KB's index would leak cross-KB results.
+func (e *Engine) SetKBName(name string) {
+	e.kbName = name
+	e.vectorIndex = nil
+	if e.vecState == nil {
+		return
+	}
+
+	e.vecState.Lock()
+	if cache := e.vecState.Cache(); cache != nil {
+		e.vectorIndex = cache[name]
+	}
+	e.vecState.Unlock()
+}
+
+// WithKB returns an independently scoped search view. Infrastructure and
+// immutable configuration remain shared, while request-specific KB identity,
+// chunk access, and vector index are bound on the clone.
+func (e *Engine) WithKB(kbName string, chunks knowledge.ChunkStore) knowledge.Searcher {
+	clone := *e
+	clone.kbName = kbName
+	clone.chunkStore = chunks
+	clone.vectorIndex = nil
+	if clone.vecState != nil {
+		clone.vecState.Lock()
+		if cache := clone.vecState.Cache(); cache != nil {
+			clone.vectorIndex = cache[kbName]
+		}
+		clone.vecState.Unlock()
+	}
+	return &clone
+}
 
 // KBName returns the current knowledge base name.
 func (e *Engine) KBName() string { return e.kbName }
@@ -341,7 +373,7 @@ func (e *Engine) Search(ctx context.Context, question string, limit int, filter 
 
 	// Check query cache.
 	if e.cacheEnabled() && limit > 0 {
-		qhash := cacheQueryHash(question, "bm25", limit, filter.SourceType, filter.Section)
+		qhash := cacheQueryHash(question, "bm25", limit, filter)
 		ckey := cacheQueryKey(e.kbName, qhash)
 		if raw, cerr := e.cacheClient.Get(ctx, ckey); cerr == nil && raw != nil {
 			var hits []knowledge.SearchHit
@@ -360,7 +392,7 @@ func (e *Engine) Search(ctx context.Context, question string, limit int, filter 
 
 	// Store in query cache.
 	if e.cacheEnabled() && limit > 0 && len(hits) > 0 {
-		qhash := cacheQueryHash(question, "bm25", limit, filter.SourceType, filter.Section)
+		qhash := cacheQueryHash(question, "bm25", limit, filter)
 		ckey := cacheQueryKey(e.kbName, qhash)
 		if raw, jerr := json.Marshal(hits); jerr == nil {
 			if setErr := e.cacheClient.Set(ctx, ckey, raw, e.queryCacheTTL); setErr != nil {
@@ -595,7 +627,7 @@ func (e *Engine) HybridSearch(ctx context.Context, question string, limit int, f
 
 	// Check query cache.
 	if e.cacheEnabled() && limit > 0 {
-		qhash := cacheQueryHash(question, "hybrid", limit, filter.SourceType, filter.Section)
+		qhash := cacheQueryHash(question, "hybrid", limit, filter)
 		ckey := cacheQueryKey(e.kbName, qhash)
 		if raw, cerr := e.cacheClient.Get(ctx, ckey); cerr == nil && raw != nil {
 			var cachedHits []knowledge.SearchHit
@@ -610,22 +642,6 @@ func (e *Engine) HybridSearch(ctx context.Context, question string, limit int, f
 	entries, err := e.collectEntries(filter, queryTerms)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search: %w", err)
-	}
-	if len(entries) == 0 {
-		return nil, nil
-	}
-
-	// G14: coarse-to-fine filter
-	if filter.Coarse {
-		log.Debugf("coarseToFineFilter: entries before=%d", len(entries))
-		entries, err = e.coarseToFineFilter(question, entries)
-		if err != nil {
-			log.Warnf("coarseToFineFilter failed: %v, falling back to unfiltered", err)
-		}
-		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
-		if len(entries) == 0 {
-			return nil, nil
-		}
 	}
 
 	// Phase 1.5: vector-side independent recall via HNSW ANN.
@@ -665,21 +681,25 @@ func (e *Engine) HybridSearch(ctx context.Context, question string, limit int, f
 			for _, en := range entries {
 				existingKeys[knowledge.VectorID(en.docSlug, en.chunkID)] = true
 			}
-			merged := 0
+			vectorOnly := make(map[string]map[string]bool)
 			for _, h := range hits {
 				if !existingKeys[h.ID] {
 					parts := strings.SplitN(h.ID, "/", 2)
 					if len(parts) == 2 {
-						entries = append(entries, searchEntry{
-							docSlug: parts[0],
-							chunkID: parts[1],
-						})
-						merged++
+						if vectorOnly[parts[0]] == nil {
+							vectorOnly[parts[0]] = make(map[string]bool)
+						}
+						vectorOnly[parts[0]][parts[1]] = true
 					}
 				}
 			}
-			if merged > 0 {
-				log.Debugf("[search] hybrid: merged %d vector-only candidates (total=%d)", merged, len(entries))
+			if len(vectorOnly) > 0 {
+				vectorEntries, collectErr := e.collectEntriesFromCandidates(vectorOnly, filter)
+				if collectErr != nil {
+					return nil, fmt.Errorf("hybrid search vector recall: %w", collectErr)
+				}
+				entries = append(entries, vectorEntries...)
+				log.Debugf("[search] hybrid: merged %d hydrated vector-only candidates (total=%d)", len(vectorEntries), len(entries))
 			}
 		} else {
 			log.Infof("[search] hybrid: embedding failed, dense recall skipped")
@@ -688,6 +708,23 @@ func (e *Engine) HybridSearch(ctx context.Context, question string, limit int, f
 
 		if restoreEmb != nil {
 			restoreEmb()
+		}
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// Apply coarse-to-fine after vector recall so semantic-only candidates do
+	// not bypass the selected sections or lose their source metadata.
+	if filter.Coarse {
+		log.Debugf("coarseToFineFilter: entries before=%d", len(entries))
+		entries, err = e.coarseToFineFilter(question, entries)
+		if err != nil {
+			log.Warnf("coarseToFineFilter failed: %v, falling back to unfiltered", err)
+		}
+		log.Debugf("coarseToFineFilter: entries after=%d", len(entries))
+		if len(entries) == 0 {
+			return nil, nil
 		}
 	}
 
@@ -937,7 +974,7 @@ func (e *Engine) HybridSearch(ctx context.Context, question string, limit int, f
 	}
 
 	if e.cacheEnabled() && limit > 0 && len(hits) > 0 {
-		qhash := cacheQueryHash(question, "hybrid", limit, filter.SourceType, filter.Section)
+		qhash := cacheQueryHash(question, "hybrid", limit, filter)
 		ckey := cacheQueryKey(e.kbName, qhash)
 		if raw, jerr := json.Marshal(hits); jerr == nil {
 			if setErr := e.cacheClient.Set(ctx, ckey, raw, e.queryCacheTTL); setErr != nil {
@@ -1200,7 +1237,7 @@ func keepTopRelativeScore(results []rankedEntry, fraction float64) []rankedEntry
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
 
-func cacheQueryHash(query, mode string, limit int, sourceType, section string) string {
+func cacheQueryHash(query, mode string, limit int, filter knowledge.SearchFilter) string {
 	// Hash using SHA-256 to keep Redis keys bounded regardless of query length.
 	h := sha256.New()
 	h.Write([]byte(query))
@@ -1209,9 +1246,8 @@ func cacheQueryHash(query, mode string, limit int, sourceType, section string) s
 	h.Write([]byte("|"))
 	h.Write([]byte(fmt.Sprintf("%d", limit)))
 	h.Write([]byte("|"))
-	h.Write([]byte(sourceType))
-	h.Write([]byte("|"))
-	h.Write([]byte(section))
+	filterJSON, _ := json.Marshal(filter)
+	h.Write(filterJSON)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

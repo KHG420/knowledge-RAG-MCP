@@ -222,7 +222,11 @@ func sortByRerankScores(entries []searchEntry, scores []float64) ([]searchEntry,
 	}
 	combined := make([]reranked, n)
 	for i := 0; i < n; i++ {
-		combined[i] = reranked{entry: entries[i], score: scores[i]}
+		score := scores[i]
+		if entries[i].sectionRole == "references" {
+			score *= 0.8
+		}
+		combined[i] = reranked{entry: entries[i], score: score}
 	}
 	sort.Slice(combined, func(i, j int) bool {
 		return combined[i].score > combined[j].score

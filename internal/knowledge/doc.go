@@ -73,6 +73,7 @@ type HitContent struct {
 // EvidenceChunk is a full read result with complete source attribution —
 // returned by knowledge_read so the LLM never loses track of where text came from.
 type EvidenceChunk struct {
+	KBName     string       `json:"kb_name,omitempty"`
 	Document   DocumentInfo `json:"document"`
 	Location   LocationInfo `json:"location"`
 	Content    string       `json:"content"`
@@ -202,6 +203,7 @@ type ChunkWithMeta struct {
 // that an LLM can correctly attribute every piece of evidence.
 type SearchHit struct {
 	Score      float64      `json:"score"`
+	KBName     string       `json:"kb_name,omitempty"`
 	Document   DocumentInfo `json:"document"`
 	Location   LocationInfo `json:"location"`
 	Content    HitContent   `json:"content"`
