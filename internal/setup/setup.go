@@ -22,6 +22,12 @@ import (
 // isn't lost between steps.
 var stdIn *bufio.Scanner
 
+// inputEOF records that the shared scanner hit end-of-input. This lets callers
+// distinguish a real blank line (user pressed Enter, defaults apply) from a
+// closed/truncated stdin, which must abort the wizard instead of silently
+// accepting defaults and saving a bogus configuration.
+var inputEOF bool
+
 // step represents one interactive configuration step.
 type step struct {
 	name string
@@ -40,13 +46,20 @@ func Run() {
 	fmt.Println("  2) English")
 	fmt.Print("Enter 1 or 2 [1]: ")
 	stdIn = bufio.NewScanner(os.Stdin)
+	inputEOF = false
 	if stdIn.Scan() {
 		ch := strings.TrimSpace(stdIn.Text())
 		if ch == "2" {
 			setLang(LangEN)
 		}
+	} else {
+		inputEOF = true
 	}
 	fmt.Println()
+	if inputEOF {
+		fmt.Println(T().CancelMsg)
+		return
+	}
 
 	lt := T()
 	fmt.Println("===========================================")
@@ -56,7 +69,6 @@ func Run() {
 	fmt.Println()
 
 	cfg := config.DefaultConfig()
-	stdIn = bufio.NewScanner(os.Stdin)
 
 	// Try loading existing config first so step prompts default to
 	// the user's previously configured values.
@@ -94,6 +106,9 @@ func Run() {
 		case result == errQuit:
 			fmt.Println(lt.CancelMsg)
 			return
+		case result == errEOF:
+			fmt.Println(lt.CancelMsg)
+			return
 		default:
 			fmt.Printf(lt.ErrorRetry, result)
 			stdIn.Scan()
@@ -102,6 +117,13 @@ func Run() {
 
 	// Summary and confirmation.
 	lt = T()
+	// MySQL is a hard startup requirement (see init.go). Never save a config
+	// that omits it while presenting the setup as complete.
+	if !mysqlConfigured(cfg) {
+		fmt.Println()
+		fmt.Println(lt.MySQLRequired)
+		return
+	}
 	showSummary(cfg)
 	if !confirmSave() {
 		fmt.Println(lt.CancelMsg)
@@ -123,9 +145,11 @@ func Run() {
 
 var errBack = fmt.Errorf("back")
 var errQuit = fmt.Errorf("quit")
+var errEOF = fmt.Errorf("eof")
 
 func readLine() string {
 	if !stdIn.Scan() {
+		inputEOF = true
 		return ""
 	}
 	return strings.TrimSpace(stdIn.Text())
@@ -138,6 +162,9 @@ func prompt(text, defaultVal string) string {
 		fmt.Printf("%s: ", text)
 	}
 	input := readLine()
+	if inputEOF {
+		return "__EOF__"
+	}
 	switch strings.ToLower(input) {
 	case "b", "back":
 		return "__BACK__"
@@ -150,7 +177,7 @@ func prompt(text, defaultVal string) string {
 	return input
 }
 
-// promptYN returns "yes", "no", or "back".
+// promptYN returns "yes", "no", "back", "quit", or "eof".
 func promptYN(text string, defaultVal bool) string {
 	def := "n"
 	if defaultVal {
@@ -158,9 +185,14 @@ func promptYN(text string, defaultVal bool) string {
 	}
 	fmt.Printf("%s (y/n) [%s]: ", text, def)
 	input := strings.ToLower(readLine())
+	if inputEOF {
+		return "eof"
+	}
 	switch input {
 	case "b", "back":
 		return "back"
+	case "q", "quit", "exit":
+		return "quit"
 	case "y", "yes":
 		return "yes"
 	default:
@@ -177,8 +209,16 @@ func checkBackQuit(val string) error {
 		return errBack
 	case "__QUIT__":
 		return errQuit
+	case "__EOF__":
+		return errEOF
 	}
 	return nil
+}
+
+// mysqlConfigured mirrors the startup requirement in init.go: a DSN, host, or
+// unix socket path must be present for the server to start.
+func mysqlConfigured(cfg *config.Config) bool {
+	return cfg.MySQLDSN != "" || cfg.MySQLHost != "" || cfg.MySQLSocketPath != ""
 }
 
 // --- Step implementations ---
@@ -215,6 +255,10 @@ func stepEmbedder(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "no":
 		return nil
 	}
@@ -260,6 +304,10 @@ func stepReranker(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "no":
 		return nil
 	}
@@ -316,6 +364,10 @@ func stepDocParser(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "no":
 		return nil
 	}
@@ -354,6 +406,10 @@ func stepGPUScheduler(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "no":
 		return nil
 	}
@@ -608,7 +664,7 @@ func orNone(s string) string {
 }
 
 func storageBackend(cfg *config.Config) string {
-	if cfg.MySQLHost != "" || cfg.MySQLDSN != "" {
+	if mysqlConfigured(cfg) {
 		return "MySQL"
 	}
 	return T().SummaryNone
@@ -623,6 +679,10 @@ func stepMySQL(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "no":
 		return nil
 	}
@@ -685,6 +745,10 @@ func stepMinerU(cfg *config.Config) error {
 	switch enable {
 	case "back":
 		return errBack
+	case "quit":
+		return errQuit
+	case "eof":
+		return errEOF
 	case "yes":
 		cfg.MinerUEnabled = true
 	}
@@ -707,7 +771,15 @@ func stepServePort(cfg *config.Config) error {
 func confirmSave() bool {
 	fmt.Print(T().SavePrompt)
 	input := strings.ToLower(readLine())
-	return input != "n" && input != "no"
+	if inputEOF {
+		// No confirmation input (EOF): never save implicitly.
+		return false
+	}
+	switch input {
+	case "n", "no", "q", "quit", "exit":
+		return false
+	}
+	return true
 }
 
 func findSetupConfigPath() string {

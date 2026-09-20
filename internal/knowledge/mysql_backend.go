@@ -364,9 +364,9 @@ func (mb *MySQLBackend) Exists(kbName, slug string) (bool, error) {
 func (mb *MySQLBackend) ListDocSlugs(kbName string) ([]string, error) {
 	rows, err := mb.db.Query("SELECT slug FROM documents WHERE kb_name = ? ORDER BY slug", kbName)
 	if err != nil {
-		if isTableNotExists(err) {
-			return nil, nil // KB doesn't exist yet
-		}
+		// The documents table is a global table created at startup. A failure
+		// here (including a missing table) is a storage fault, not proof that
+		// the KB has no documents, so it must be reported to the caller.
 		return nil, fmt.Errorf("list doc slugs: %w", err)
 	}
 	defer rows.Close()

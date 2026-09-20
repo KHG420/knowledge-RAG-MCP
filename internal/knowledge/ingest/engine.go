@@ -141,7 +141,12 @@ func (e *Engine) Backend() knowledge.StorageBackend           { return e.backend
 func (e *Engine) UploadDocument(filePath string, tags ...string) (*knowledge.DocumentMeta, error) {
 	meta, err := e.uploadDocumentWithProgress(filePath, nil, tags...)
 	if err != nil {
-		return nil, err
+		// Preserve metadata generated after the slug was derived so callers
+		// can clean up a partial upload; pre-slug failures stay nil.
+		if meta.Slug == "" {
+			return nil, err
+		}
+		return &meta, err
 	}
 	return &meta, nil
 }
@@ -150,7 +155,10 @@ func (e *Engine) UploadDocument(filePath string, tags ...string) (*knowledge.Doc
 func (e *Engine) UploadDocumentWithProgress(filePath string, tags ...string) (*knowledge.DocumentMeta, error) {
 	meta, err := e.uploadDocumentWithProgress(filePath, nil, tags...)
 	if err != nil {
-		return nil, err
+		if meta.Slug == "" {
+			return nil, err
+		}
+		return &meta, err
 	}
 	return &meta, nil
 }
@@ -255,34 +263,63 @@ func (e *Engine) uploadDocumentWithProgress(path string, progress knowledge.Prog
 	// Step 4: persist chunks, section chunks, and metadata.
 	emit(knowledge.StageWriting, "started", "")
 	if err := e.writeChunks(slug, chunks); err != nil {
+		// Chunk files may have been partially replaced: evict any stale
+		// cached views of this document before surfacing the failure.
+		e.invalidateDoc(slug)
 		emit(knowledge.StageWriting, "error", err.Error())
-		return knowledge.DocumentMeta{}, fmt.Errorf("upload: write chunks: %w", err)
+		// Return the generated metadata so a replacement caller can remove
+		// the slug it just created without touching the original document.
+		return meta, fmt.Errorf("upload: write chunks: %w", err)
 	}
 	if len(coarseChunks) > 0 {
 		_ = e.writeSectionChunks(slug, coarseChunks) // non-fatal
 	}
 	if err := e.writeMeta(slug, &meta); err != nil {
+		e.invalidateDoc(slug)
 		emit(knowledge.StageWriting, "error", err.Error())
-		return knowledge.DocumentMeta{}, fmt.Errorf("upload: write meta: %w", err)
+		return meta, fmt.Errorf("upload: write meta: %w", err)
 	}
 	emit(knowledge.StageWriting, "done", fmt.Sprintf("%d 分块已写入", len(chunks)))
 
 	// Step 5: write CHUNKS.toml search index with section chunk links.
+	// A missing index builder means the document would be stored but never
+	// searchable — that must be reported as a failure, not a silent success.
 	emit(knowledge.StageIndexing, "started", "")
-	if e.buildChunksIndex != nil {
-		if idxErr := e.buildChunksIndex(slug, fineChunks, coarseChunks); idxErr != nil && log != nil {
-			log.Warnf("buildChunksIndex for %q: %v", slug, idxErr)
-		}
+	if e.buildChunksIndex == nil {
+		e.invalidateDoc(slug)
+		err := fmt.Errorf("upload: search index builder not configured — document was not indexed")
+		emit(knowledge.StageIndexing, "error", err.Error())
+		return meta, err
+	}
+	if idxErr := e.buildChunksIndex(slug, fineChunks, coarseChunks); idxErr != nil {
+		e.invalidateDoc(slug)
+		emit(knowledge.StageIndexing, "error", idxErr.Error())
+		return meta, fmt.Errorf("upload: build search index: %w", idxErr)
 	}
 
-	// Step 6: optionally copy source file for traceability.
-	_ = e.copySource(path, slug) // non-fatal
+	// Step 6: copy the original source file for traceability. Losing the
+	// source means the ingestion cannot be audited, so this is fatal.
+	if err := e.copySource(path, slug); err != nil {
+		e.invalidateDoc(slug)
+		emit(knowledge.StageWriting, "error", fmt.Sprintf("persist source: %v", err))
+		return meta, fmt.Errorf("upload: persist source: %w", err)
+	}
 
-	// Step 7: write the full raw markdown text.
-	_ = e.backend.WriteRawText(e.kbName, slug, text) // non-fatal
+	// Step 7: write the full raw markdown text. Like the source file, this is
+	// part of what makes the ingestion auditable, so failures are fatal.
+	if err := e.backend.WriteRawText(e.kbName, slug, text); err != nil {
+		e.invalidateDoc(slug)
+		emit(knowledge.StageWriting, "error", fmt.Sprintf("persist raw text: %v", err))
+		return meta, fmt.Errorf("upload: persist raw text: %w", err)
+	}
 
-	// Step 8: update INDEX.md.
-	_ = e.updateIndex(slug, meta) // non-fatal
+	// Step 8: update INDEX.md. This is a convenience summary that can be
+	// rebuilt from meta.json, so a failure stays a warning.
+	if err := e.updateIndex(slug, meta); err != nil {
+		if log != nil {
+			log.Warnf("updateIndex %q: %v", slug, err)
+		}
+	}
 
 	emit(knowledge.StageIndexing, "done", "搜索索引已建立")
 
@@ -360,28 +397,30 @@ func (e *Engine) invalidateDoc(docSlug string) {
 	if e.cacheClient == nil {
 		return
 	}
+	ctx := context.Background()
+	kb := e.kbName
 
-	// We need the cache key patterns. These use package-level functions from the cache package.
-	// For now, use the backend to access the raw cache operations.
-	// The patterns are: "chunk:<kb>:<slug>:*" and "query:<kb>:*"
-	prefix := e.kbName
-	if prefix == "" {
-		prefix = "default"
+	// Unversioned meta/index keys (chunkstore) carry no trailing colon or
+	// version, so the prefix patterns below cannot match them. Delete them
+	// exactly.
+	if err := e.cacheClient.Delete(ctx,
+		fmt.Sprintf("meta:%s:%s", kb, docSlug),
+		fmt.Sprintf("index:%s:%s", kb, docSlug),
+	); err != nil && e.logger != nil {
+		e.logger.WithModule("cache").Warnf("invalidate doc %q exact keys FAILED: err=%v", docSlug, err)
 	}
 
-	// Chunk-level pattern: chunk:<kb>:<slug>:*
-	chunkPattern := fmt.Sprintf("chunk:%s:%s:*", prefix, docSlug)
-	if _, err := e.cacheClient.DeletePattern(context.Background(), chunkPattern); err != nil {
-		if e.logger != nil {
-			e.logger.WithModule("cache").Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, chunkPattern, err)
-		}
+	// MemCache.DeletePattern supports a single "*" wildcard, so each key
+	// family is evicted with its own explicit prefix pattern.
+	patterns := []string{
+		fmt.Sprintf("chunk:%s:%s:*", kb, docSlug),
+		fmt.Sprintf("meta:%s:%s:*", kb, docSlug),
+		fmt.Sprintf("index:%s:%s:*", kb, docSlug),
+		fmt.Sprintf("query:%s:*", kb),
 	}
-
-	// Query-level pattern: query:<kb>:*
-	queryPattern := fmt.Sprintf("query:%s:*", prefix)
-	if _, err := e.cacheClient.DeletePattern(context.Background(), queryPattern); err != nil {
-		if e.logger != nil {
-			e.logger.WithModule("cache").Warnf("invalidate query cache for KB %q FAILED: pattern=%q err=%v", prefix, queryPattern, err)
+	for _, pattern := range patterns {
+		if _, err := e.cacheClient.DeletePattern(ctx, pattern); err != nil && e.logger != nil {
+			e.logger.WithModule("cache").Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, pattern, err)
 		}
 	}
 }

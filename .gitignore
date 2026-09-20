@@ -26,9 +26,6 @@ go.work.sum
 .go-cache/
 .go-bin/
 
-# Go vendor
-vendor/
-
 # IDE / editor
 .idea/
 .vscode/

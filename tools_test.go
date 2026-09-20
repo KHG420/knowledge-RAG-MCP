@@ -374,32 +374,23 @@ func TestSortByScore_NegativeAndPositive(t *testing.T) {
 // ─── Per-KB limit calculation logic ─────────────────────────────────────────
 
 func TestSearchMultiKB_PerKBLimit(t *testing.T) {
-	// The perKB calculation: limit/KB count, minimum 3.
-	tests := []struct {
-		limit    int
-		numKB    int
-		expected int
-	}{
-		{20, 1, 20},  // single KB: full limit
-		{20, 2, 10},  // 20/2 = 10
-		{20, 3, 6},   // 20/3 = 6 (integer division)
-		{10, 5, 3},   // 10/5 = 2, clamped to 3
-		{5, 3, 3},    // 5/3 = 1, clamped to 3
-		{8, 1, 8},    // single KB
-		{8, 4, 3},    // 8/4 = 2, clamped to 3
+	// AC3: each searched KB is asked for the full final limit — there is no
+	// limit/N reduction and no "minimum 3" cap. The regression over the real
+	// function lives in TestSearchMultiKB_ReturnsFullLimitFromOneKB; this case
+	// exercises the same policy with a smaller fixture.
+	store := newTestResearchStore(t)
+	backend := store.Backend()
+	for _, kb := range []string{"a", "b", "c"} {
+		seedKB(t, backend, kb, 0)
 	}
+	addTestDoc(t, backend, "a", "doc", "Doc", dampingChunks(5))
 
-	for _, tc := range tests {
-		perKB := tc.limit
-		if tc.numKB > 1 {
-			perKB = tc.limit / tc.numKB
-			if perKB < 3 {
-				perKB = 3
-			}
-		}
-		if perKB != tc.expected {
-			t.Errorf("limit=%d numKB=%d → perKB=%d, want %d", tc.limit, tc.numKB, perKB, tc.expected)
-		}
+	out := searchMultiKB(store, "roll damping", 5, knowledge.SearchFilter{}, []string{"a", "b", "c"})
+	if len(out.Hits) != 5 {
+		t.Fatalf("each KB must be asked for the full limit=5; got %d hits", len(out.Hits))
+	}
+	if len(out.Failed) != 0 {
+		t.Fatalf("unexpected failures: %+v", out.Failed)
 	}
 }
 

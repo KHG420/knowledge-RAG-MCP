@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"knowledge-mcp/internal/config"
+	"knowledge-mcp/internal/setup"
 )
 
 func main() {
@@ -46,6 +47,15 @@ func main() {
 		store, logger, mgmtSrv := initStoreAndLogger(cfg)
 		defer logger.Close()
 		runServe(cfg, store, logger, mgmtSrv, mcpOnly)
+		return
+	}
+
+	// Subcommand: setup — interactive configuration wizard. The wizard reads
+	// from stdin and writes knowledge-mcp.toml next to the executable (or the
+	// current directory) only after the user confirms the summary. It never
+	// touches MySQL or any other service.
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		setup.Run()
 		return
 	}
 

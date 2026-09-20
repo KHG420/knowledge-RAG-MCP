@@ -26,10 +26,15 @@ func (e *Engine) collectEntries(filter knowledge.SearchFilter, queryTerms []stri
 		log.Debugf("collectEntries done: terms=%d path=%s elapsed=%v", nTerms, pathLabel, time.Since(start))
 	}()
 
-	// G7: try inverted-index fast path.
+	// G7: try inverted-index fast path. A failed or absent inverted index is not
+	// proof that the KB is empty: fall through to the full scan, whose own
+	// read errors are propagated below. This keeps the optimization a pure
+	// optimization — correctness never depends on the index being readable.
 	if len(queryTerms) > 0 && e.backend != nil {
 		candidates, candErr := e.queryCandidates(queryTerms)
-		if candErr == nil && candidates != nil {
+		if candErr != nil {
+			log.Debugf("collectEntries: inverted index unavailable (%v); falling back to full scan", candErr)
+		} else if candidates != nil {
 			if len(candidates) == 0 {
 				return nil, nil
 			}
@@ -54,8 +59,10 @@ func (e *Engine) collectEntries(filter knowledge.SearchFilter, queryTerms []stri
 
 		meta, metaErr := e.chunkStore.ReadMeta(slug)
 		if metaErr != nil {
-			log.Debugf("collectEntries: skipping %q: %v", slug, metaErr)
-			continue
+			return nil, fmt.Errorf("read meta %q: %w", slug, metaErr)
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("read meta %q: empty metadata", slug)
 		}
 		if e.chunkStore.IsTombstoned(slug) {
 			continue
@@ -75,7 +82,7 @@ func (e *Engine) collectEntries(filter knowledge.SearchFilter, queryTerms []stri
 
 		index, idxErr := e.chunkStore.ReadChunksIndex(slug)
 		if idxErr != nil {
-			continue
+			return nil, fmt.Errorf("read chunks index %q: %w", slug, idxErr)
 		}
 		if index != nil {
 			for _, ce := range index.Chunks {
@@ -101,14 +108,16 @@ func (e *Engine) collectEntries(filter knowledge.SearchFilter, queryTerms []stri
 				})
 			}
 		} else {
+			// Legitimate fallback: a document with no stored chunk index is
+			// still searchable as long as its raw chunks are readable.
 			ids, listErr := e.chunkStore.ListChunks(slug)
 			if listErr != nil {
-				continue
+				return nil, fmt.Errorf("list chunks %q: %w", slug, listErr)
 			}
 			for _, id := range ids {
 				text, readErr := e.chunkStore.ReadChunk(slug, id)
 				if readErr != nil {
-					continue
+					return nil, fmt.Errorf("read chunk %q/%q: %w", slug, id, readErr)
 				}
 				tokens := retrieval.Tokens(text)
 				entries = append(entries, searchEntry{
@@ -139,7 +148,10 @@ func (e *Engine) collectEntriesFromCandidates(candidates map[string]map[string]b
 		}
 		meta, metaErr := e.chunkStore.ReadMeta(slug)
 		if metaErr != nil {
-			continue
+			return nil, fmt.Errorf("read meta %q: %w", slug, metaErr)
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("read meta %q: empty metadata", slug)
 		}
 		if e.chunkStore.IsTombstoned(slug) {
 			continue
@@ -157,9 +169,14 @@ func (e *Engine) collectEntriesFromCandidates(candidates map[string]map[string]b
 			continue
 		}
 		index, idxErr := e.chunkStore.ReadChunksIndex(slug)
-		if idxErr != nil || index == nil {
-			e.logger.WithModule("search").Debugf("collectEntriesFromCandidates: skipping doc %q (index missing or corrupt)", slug)
-			continue
+		if idxErr != nil {
+			return nil, fmt.Errorf("read chunks index %q: %w", slug, idxErr)
+		}
+		if index == nil {
+			// The document is present in the inverted index, so its chunk
+			// index is expected to exist. Treating it as "no match" would
+			// silently under-report a real storage fault.
+			return nil, fmt.Errorf("read chunks index %q: index missing for indexed candidate", slug)
 		}
 		for _, ce := range index.Chunks {
 			if !chunkSet[ce.ID] {
@@ -204,7 +221,10 @@ func (e *Engine) queryCandidates(queryTerms []string) (map[string]map[string]boo
 		return nil, nil
 	}
 	idx, err := e.loadInvertedIndex()
-	if err != nil || idx == nil {
+	if err != nil {
+		return nil, fmt.Errorf("load inverted index: %w", err)
+	}
+	if idx == nil {
 		return nil, nil
 	}
 	candidates := make(map[string]map[string]bool)

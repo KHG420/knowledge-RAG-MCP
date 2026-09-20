@@ -264,6 +264,14 @@ Legacy SSE clients can use `http://localhost:8086/sse` instead.
 | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | MCP HTTP server listen port |
 | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | MCP server base URL (reverse proxy) |
 
+### Authentication
+
+`api_token` is set in `knowledge-mcp.toml` (it has no environment-variable
+mapping). When non-empty, the same `Authorization: Bearer <token>` check
+protects **both** the management API and the MCP HTTP endpoints (`/mcp`, `/sse`,
+`/message`). An empty `api_token` leaves them open. The stdio transport does not
+require the token.
+
 ### Logging
 
 | Variable | Default | Description |
@@ -305,53 +313,52 @@ Legacy SSE clients can use `http://localhost:8086/sse` instead.
 
 ## MCP Tools
 
-### `knowledge_research` — Semantic search
+Only three tools are registered with the MCP server.
+
+### `knowledge_research` — Search for evidence
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `question` | **yes** | User's original natural language question |
-| `limit` | no (default 5) | Maximum results (1–20) |
-| `kbName` | no | KB to search. When omitted, searches all KBs |
-| `searchMode` | no | Override search mode (`bm25` / `hybrid`) |
+| `question` | **yes** | The question or a focused search query |
+| `limit` | no (default 8, max 20) | Maximum results |
+| `kbName` | no | Force a specific KB. Omitted → route/search automatically |
+| `sourceType`, `section`, `tags`, `addedAfter`, `addedBefore`, `coarse` | no | Optional filters |
 
-### `knowledge_read` — Read document chunk
+Returns a JSON envelope: `results` (always an array), `searched_kbs`,
+`failed_kbs` (name + safe actionable message), `warnings`, and `coverage`
+(`complete` / `partial`). `coverage` describes the search operation — not
+whether the results answer the question. `complete` means every knowledge base
+the server selected and attempted was searched successfully; it does **not**
+mean all available KBs were searched, so an empty `results` array is not proof
+that nothing exists. If every searched KB fails the tool returns an MCP error;
+if some fail, `coverage` is `partial` and the successful results are still
+returned. With no KBs configured, `results` is an empty array and a warning is
+included. A warning also notes that runtime success/fallback of optional
+embedding/reranking models is not reported.
+
+### `knowledge_read` — Read a chunk or section
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `docSlug` | **yes** | Document slug identifier |
-| `chunkID` | no | Specific chunk ID. If omitted, returns document overview |
-| `context` | no (default 0) | Number of surrounding chunks for context |
-| `sectionID` | no | Read a specific section chunk |
-| `kbName` | no | KB name |
+| `docSlug` | **yes** | `result.document.id` from a search hit |
+| `chunkID` | **yes** | `result.location.chunk_id` from the same hit |
+| `kbName` | no | `result.kb_name` from the same hit |
+| `context` | no (default 0, max 5) | Adjacent chunks to include |
+| `level` | no | `chunk` (default) or `section` |
 
-### `knowledge_list` — List documents
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `limit` | no (default 20) | Max documents to list |
-| `kbName` | no | KB name |
-| `tag` | no | Filter by tag |
+Returns document/location/citation provenance plus the content. `source_confidence`
+describes the location that was read. `answer_relevance` and `completeness` are
+reported as `unknown` by design — the agent must judge them against its own
+question. A search `score` is a rank signal, not a confidence or truth score.
 
 ### `knowledge_list_kbs` — List knowledge bases
 
-No required parameters. Returns all KBs with their descriptions.
+No parameters. Returns each KB's name and description.
 
-### `knowledge_upload` — Upload document
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `filePath` | conditional | Absolute path to a single file. Mutually exclusive with `directory` |
-| `directory` | conditional | Directory path for batch upload. Mutually exclusive with `filePath` |
-| `kbName` | no | Target KB name |
-| `tags` | no | Comma-separated tags |
-
-### `knowledge_remove` — Remove document
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `docSlug` | **yes** | Document slug to remove |
-| `kbName` | no | KB name |
-| `ttlSeconds` | no (default 604800, 7 days) | Tombstone TTL in seconds |
+> **Not registered as MCP tools** in this build: `knowledge_upload`,
+> `knowledge_remove`, and `knowledge_list`. Create knowledge bases and
+> upload/remove documents from the management UI (`http://localhost:8085`); the
+> agent-facing tools are search and read only.
 
 ---
 
@@ -395,7 +402,7 @@ Query
   │
   └─ Post-processing
        → cap to limit → snippet generation → deduplicate
-       → evidence quality scoring → return
+       → attach provenance (answer_relevance/completeness = unknown) → return
 ```
 
 **Graceful degradation**:
@@ -405,33 +412,45 @@ Query
 | No embedding endpoint configured | Falls back to pure BM25 keyword search |
 | No reranker configured | Skips Phase 2, returns RRF/BM25 scores directly |
 | Reranker timeout/failure | Falls back to vector cosine similarity scores from Phase 1 |
-| Neither configured | Pure BM25, zero external dependencies |
+| Neither configured | Pure BM25; MySQL/MariaDB is still required as the storage backend |
 
 ---
 
 ## Storage Layout
 
+knowledge-mcp requires a MySQL/MariaDB backend. Documents, chunks, chunk
+metadata, the per-document search index, KB descriptions, and tombstones live
+in database tables (see [Database Schema (MySQL backend)](#database-schema-mysql-backend)).
+There is no filesystem-only storage mode.
+
+Only a few local artifacts remain on disk:
+
+- `<data-dir>/<kb-name>/VECTOR.gob` — HNSW vector index for a KB, when
+  vector/hybrid indexing is enabled
+- `<data-dir>/.searchlog.jsonl` — optional search log
+
+> ⚠️ The `data_dir` setting is currently **not wired into the running server**:
+> startup uses the built-in default `~/knowledge_base` (see `NewStoreWithBackend`).
+> The setup wizard and config loader accept `data_dir`, but changing it does not
+> move the artifacts above.
+
+The tree below is the **historical filesystem-backend layout**, kept for
+reference only. It is not what the MySQL backend uses.
+
 ```
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
-│   ├── INVERTED.gob        # Global inverted index for accelerated candidate lookup
-│   ├── kb.json             # KB description (set at creation time)
-│   ├── LIST_SNAPSHOT.json
-│   ├── .searchlog.jsonl
+│   ├── INVERTED.gob        # Legacy: global inverted index (historical layout)
+│   ├── kb.json             # Legacy: KB description (historical layout)
+│   ├── LIST_SNAPSHOT.json  # Legacy: document list snapshot (historical layout)
+│   ├── .searchlog.jsonl    # Search log
 │   └── <document-slug>/
-│       ├── meta.json          # OriginalName, SourceType, AddedAt, Title, Authors, Abstract
-│       ├── CHUNKS.toml        # Per-chunk: terms, vector, section, offset, sectionRole
-│       ├── source.<ext>       # Original file copy
-│       └── chunks/
-│           ├── 000.md         # Fine-grained chunks
-│           ├── 001.md
-│           └── sections/
-│               ├── S00.md     # Coarse section-level chunks
-│               └── S01.md
-├── <another-kb>/
-│   └── ...
-└── (legacy flat documents live at the root level)
+│       ├── meta.json          # Legacy: document metadata (historical layout)
+│       ├── CHUNKS.toml        # Legacy: per-chunk terms/vector (historical layout)
+│       ├── source.<ext>       # Legacy: original file copy (historical layout)
+│       └── chunks/            # Legacy: fine/coarse chunk files (historical layout)
+└── (legacy flat documents lived at the root level)
 ```
 
 ---
@@ -621,11 +640,12 @@ The search index references chunks that don't exist. Fix: run `go run ./cmd/clea
 2. Check `embed_dim` matches your model
 3. Check if the vector index is empty in search logs
 
-**Q: How to switch from file backend to MySQL?**
+**Q: How do I point the server at a different MySQL database?**
 
-1. Back up source files from `data_dir`
-2. Configure MySQL connection and restart
-3. Re-import documents via the web UI or `knowledge_upload`
+1. Create the target database and set `mysql_dsn` (or the individual `mysql_*`
+   fields) in `knowledge-mcp.toml`
+2. Restart the server; the required tables are created on first startup
+3. Re-import documents via the management UI
 
 **Q: Can I restore a soft-deleted document?**
 

@@ -81,12 +81,15 @@ type EvidenceChunk struct {
 	Evidence   EvidenceMeta `json:"evidence,omitempty"` // v4: feature-based evidence quality metadata
 }
 
-// EvidenceMeta records lightweight evidence-quality signals computed from the
-// chunk text with pure text rules (no LLM, no embedding).
+// EvidenceMeta records lightweight evidence-provenance signals for a read
+// result. SourceConfidence describes *where* the text was read from. The
+// AnswerRelevance and Completeness fields depend on the caller's question,
+// which the read path does not know, so it reports "unknown" for both and
+// leaves the judgement to the agent rather than guessing from text structure.
 type EvidenceMeta struct {
 	SourceConfidence string `json:"source_confidence"` // "exact_section" | "related_section" | "semantic_match"
-	AnswerRelevance  string `json:"answer_relevance"`  // "high" | "medium" | "low"
-	Completeness     string `json:"completeness"`      // "complete" | "partial" | "context_only"
+	AnswerRelevance  string `json:"answer_relevance"`  // "unknown" (agent must judge)
+	Completeness     string `json:"completeness"`      // "unknown" (agent must judge)
 }
 
 // evidenceFeatures captures structural signals extracted from a chunk of text.
@@ -146,6 +149,10 @@ func ExtractEvidenceFeatures(text string) evidenceFeatures {
 
 // ClassifyCompleteness maps evidenceFeatures to a completeness label.
 //
+// Deprecated: text structure cannot establish whether a passage answers a
+// caller's question, so the MCP read path no longer uses this heuristic and
+// reports "unknown" instead. Do not use it to assert completeness.
+//
 //	"complete"      — has definition AND (mechanism OR quantitative data)
 //	"partial"       — has definition OR mechanism
 //	"context_only"  — none of the above (pure descriptive text)
@@ -161,6 +168,10 @@ func ClassifyCompleteness(feats evidenceFeatures) string {
 
 // ClassifyAnswerRelevance estimates how directly the chunk answers a question
 // based on the presence of structural evidence signals.
+//
+// Deprecated: text structure cannot establish question relevance, so the MCP
+// read path no longer uses this heuristic and reports "unknown" instead. Do not
+// use it to assert relevance.
 func ClassifyAnswerRelevance(feats evidenceFeatures) string {
 	count := 0
 	if feats.hasDefinition {

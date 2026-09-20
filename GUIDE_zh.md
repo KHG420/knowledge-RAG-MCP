@@ -197,6 +197,9 @@ cache_kblist_ttl = 60
 | `manage_port` | `MANAGE_PORT` | `8085` | Web 管理页面端口 |
 | `serve_port` | `KNOWLEDGE_MCP_SERVE_PORT` | `8086` | MCP HTTP 服务器监听端口（SSE + Streamable HTTP） |
 | `serve_base_url` | `KNOWLEDGE_MCP_SERVE_BASE_URL` | — | MCP 服务器基础 URL（反向代理场景） |
+| `api_token` | — | — | 非空时同时保护管理 API 与 MCP HTTP 端点（`/mcp`、`/sse`、`/message`）；stdio 不需要 |
+
+> `api_token` 只能通过 `knowledge-mcp.toml` 设置（没有环境变量映射）。所有受保护端点使用同一个 `Authorization: Bearer <token>` 校验；留空则保持开放。
 
 #### 日志
 
@@ -350,57 +353,47 @@ MANAGE_PORT=8080 knowledge-mcp serve
 
 ## MCP 工具
 
-### `knowledge_research` — 语义搜索
+服务只注册三个 MCP 工具。
+
+### `knowledge_research` — 证据检索
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `question` | **是** | 用户的原始自然语言问题 |
-| `limit` | 否（默认 5） | 返回结果数（1–20） |
-| `kbName` | 否 | 指定 KB 名称。不填则搜索所有 KB |
-| `searchMode` | 否 | 覆盖默认搜索模式（`bm25` / `hybrid`） |
+| `question` | **是** | 问题或聚焦后的检索查询 |
+| `limit` | 否（默认 8，最大 20） | 返回结果数 |
+| `kbName` | 否 | 强制指定单个 KB。不填则自动路由/搜索 |
+| `sourceType`、`section`、`tags`、`addedAfter`、`addedBefore`、`coarse` | 否 | 可选过滤条件 |
 
-**返回结果中每个 `source_uri` 格式**：`<kb-name>/<slug>/<chunk-id>`
+返回 JSON 信封：`results`（始终为数组）、`searched_kbs`、`failed_kbs`
+（名称 + 安全的可操作信息）、`warnings` 和 `coverage`（`complete` / `partial`）。
+`coverage` 描述的是检索过程，而不是结果是否回答了问题。`complete` 表示服务
+端所选并实际尝试的每个知识库都检索成功；它**不**表示所有可用 KB 都已检索，
+因此 `results` 为空并不能证明"完全不存在相关内容"。若所有被检索的 KB 都失败，
+工具返回 MCP 错误；若只有部分失败，`coverage` 为 `partial`，成功的结果仍会返回。
+未配置任何 KB 时，`results` 为空数组并附带警告。警告中还会说明：可选的
+embedding/reranking 模型在运行时的成功或回退状态不会被上报。
 
-Agent 应将 `source_uri` 和 `docSlug`/`chunkID` 原样传递给后续的 `knowledge_read` 调用。
-
-### `knowledge_read` — 读取文档分块
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `docSlug` | **是** | 文档 slug 标识符 |
-| `chunkID` | 否 | 指定分块 ID。不填则返回文档概览 |
-| `context` | 否（默认 0） | 返回该分块前后各 N 个分块，提供更完整的上下文 |
-| `sectionID` | 否 | 读取指定章节分块 |
-| `kbName` | 否 | KB 名称 |
-
-### `knowledge_list` — 列出文档
+### `knowledge_read` — 读取分块或章节
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `limit` | 否（默认 20） | 返回文档数上限 |
-| `kbName` | 否 | KB 名称 |
-| `tag` | 否 | 按标签过滤 |
+| `docSlug` | **是** | 搜索命中结果中的 `result.document.id` |
+| `chunkID` | **是** | 同一命中结果中的 `result.location.chunk_id` |
+| `kbName` | 否 | 同一命中结果中的 `result.kb_name` |
+| `context` | 否（默认 0，最大 5） | 附带的前后相邻分块数量 |
+| `level` | 否 | `chunk`（默认）或 `section` |
+
+返回文档/位置/citation 溯源信息以及正文内容。`source_confidence` 描述读取的位置来源。
+`answer_relevance` 与 `completeness` 固定返回 `unknown`，需要 Agent 结合自己的问题判断。
+检索 `score` 只是排序信号，不是置信度或真实性评分。
 
 ### `knowledge_list_kbs` — 列出知识库
 
 无需参数。返回所有 KB 及其描述信息。
 
-### `knowledge_upload` — 上传文档
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `filePath` | 条件 | 单个文件的绝对路径。与 `directory` 互斥 |
-| `directory` | 条件 | 目录路径，用于批量上传。与 `filePath` 互斥 |
-| `kbName` | 否 | 目标 KB 名称 |
-| `tags` | 否 | 逗号分隔的标签 |
-
-### `knowledge_remove` — 删除文档
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `docSlug` | **是** | 要删除的文档 slug |
-| `kbName` | 否 | KB 名称 |
-| `ttlSeconds` | 否（默认 604800，7天） | 墓碑 TTL（秒） |
+> **本版本未注册为 MCP 工具**：`knowledge_upload`、`knowledge_remove`、
+> `knowledge_list`。创建知识库、上传/删除文档请在管理界面
+> （`http://localhost:8085`）完成；面向 Agent 的工具只有检索与读取。
 
 ---
 
@@ -427,7 +420,7 @@ Agent 应将 `source_uri` 和 `docSlug`/`chunkID` 原样传递给后续的 `know
   │
   └─ 后处理
         → 截断至 limit → 片段生成 → 去重
-        → 证据质量评分 → 返回
+        → 附加溯源信息（answer_relevance/completeness = unknown）→ 返回
 ```
 
 **优雅降级**：
@@ -437,58 +430,47 @@ Agent 应将 `source_uri` 和 `docSlug`/`chunkID` 原样传递给后续的 `know
 | 未配置嵌入端点 | 回退到纯 BM25 关键词搜索 |
 | 未配置重排序器 | 跳过精排阶段，直接返回 RRF/BM25 结果 |
 | 重排序器超时/失败 | 回退到阶段一的向量余弦相似度评分 |
-| 两者均未配置 | 纯 BM25，零外部依赖，开箱即用 |
+| 两者均未配置 | 纯 BM25；MySQL/MariaDB 仍是必需的存储后端 |
 
 ---
 
 ## 存储后端
 
-knowledge-mcp 支持两种存储后端，通过 TOML/环境变量切换：
+knowledge-mcp 使用 **MySQL/MariaDB 作为必需的存储后端**：文档元数据、分块与搜索索引都存储在关系型数据库表中。不存在纯文件系统运行模式。
 
-### 文件系统（默认）
-
-数据存储在 `data_dir` 下，按 KB → 文档结构组织。目录布局见下方存储布局章节。
+### MySQL / MariaDB（必需）
 
 | 优点 | 注意事项 |
 |------|----------|
-| 零外部依赖，开箱即用 | 不支持集群部署 |
-| 文件可读性强（TOML/YAML/Markdown/JSON） | 多 KB 场景需手动管理磁盘空间 |
+| 支持并发访问 | 需自行准备并维护 MySQL 实例 |
+| 易于集成到现有基础设施 | 需先创建数据库，首次启动会自动建表 |
+| 大容量场景性能更好 | 向量文件（VECTOR.gob）存储在本地数据目录（见下方说明） |
 
-### MySQL / MariaDB（可选）
+**本地文件**：只有少量产物保留在磁盘上：
 
-所有文档（元数据、分块、搜索索引）存储到关系型数据库表中。
+- `<data-dir>/<kb-name>/VECTOR.gob` — 启用向量/混合检索时，该知识库的 HNSW 向量索引
+- `<data-dir>/.searchlog.jsonl` — 可选的搜索日志
 
-| 优点 | 注意事项 |
-|------|----------|
-| 支持并发访问 | 需自行管理 MySQL 实例 |
-| 易于集成到现有基础设施 | 首次启动需要建表权限 |
-| 大容量场景性能更好 | 向量文件（VECTOR.gob）仍存储于 `data_dir` |
+> ⚠️ `data_dir` 目前**并未接入运行中的服务**：启动时使用内置默认值 `~/knowledge_base`（见 `NewStoreWithBackend`）。配置向导与配置加载器会接受 `data_dir`，但修改它不会改变上述产物的位置。
 
-**存储布局**（文件系统后端）：
+下面的目录树是**历史文件系统后端布局**，仅作参考，并非 MySQL 后端实际使用的布局。
 
 ```
 <data-dir>/
 ├── <kb-name>/
 │   ├── INDEX.md
-│   ├── INVERTED.gob        # 全局倒排索引，加速候选查找
-│   ├── VECTOR.gob          # HNSW 向量索引
-│   ├── .tombstones.gob     # 软删除墓碑记录
-│   ├── kb.json             # KB 描述信息
-│   ├── LIST_SNAPSHOT.json  # 文档列表快照
+│   ├── INVERTED.gob        # 历史布局：全局倒排索引
+│   ├── VECTOR.gob          # 历史布局：HNSW 向量索引
+│   ├── .tombstones.gob     # 历史布局：软删除墓碑
+│   ├── kb.json             # 历史布局：KB 描述
+│   ├── LIST_SNAPSHOT.json  # 历史布局：文档列表快照
 │   ├── .searchlog.jsonl    # 搜索日志
 │   └── <document-slug>/
-│       ├── meta.json          # 文档元数据（原始名、类型、标题、作者、摘要等）
-│       ├── CHUNKS.toml        # 逐块信息（词项、向量、章节、偏移量、章节角色）
-│       ├── source.<ext>       # 原始文件副本
-│       └── chunks/
-│           ├── 000.md         # 细粒度分块
-│           ├── 001.md
-│           └── sections/
-│               ├── S00.md     # 粗粒度章节块
-│               └── S01.md
-├── <another-kb>/
-│   └── ...
-└── （根级存放扁平文档，兼容旧版无 KB 的数据）
+│       ├── meta.json          # 历史布局：文档元数据
+│       ├── CHUNKS.toml        # 历史布局：逐块词项/向量
+│       ├── source.<ext>       # 历史布局：原始文件副本
+│       └── chunks/            # 历史布局：细/粗粒度分块文件
+└── （历史：根级扁平文档）
 ```
 
 ---
@@ -805,13 +787,11 @@ rm ~/knowledge_base/<kb-name>/VECTOR.gob
 
 解决：运行清理工具 `go run ./cmd/cleanup-vector/`，或删除 VECTOR.gob 让它重建。
 
-### Q: 如何切换文件后端到 MySQL 后端？
+### Q: 如何让服务连接到另一个 MySQL 数据库？
 
-MySQL 后端和文件后端的存储格式不同，需要重新导入所有文档：
-
-1. 备份 `data_dir` 下的源文件
-2. 配置 MySQL 连接参数并重启服务
-3. 通过 Web 界面或 `knowledge_upload` 重新导入文档
+1. 创建目标数据库，并在 `knowledge-mcp.toml` 中设置 `mysql_dsn`（或各个 `mysql_*` 字段）
+2. 重启服务，首次启动会自动创建所需的表
+3. 通过管理界面重新导入文档
 
 ### Q: 向量搜索返回空结果？
 

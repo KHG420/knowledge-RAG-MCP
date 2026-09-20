@@ -13,6 +13,11 @@ import (
 	"knowledge-mcp/internal/logging"
 )
 
+// evidenceUnknown is reported for evidence dimensions the read path cannot
+// evaluate without the caller's question (answer relevance and completeness).
+// Reporting a structural guess as "high"/"complete" would be a false claim.
+const evidenceUnknown = "unknown"
+
 func registerRead(s *server.MCPServer, store *knowledge.Store, logger *logging.Logger) {
 	tool := mcp.NewTool("knowledge_read",
 		mcp.WithDescription(store.ToolReadDesc()),
@@ -165,6 +170,13 @@ func tryReadSection(store *knowledge.Store, kbName, docSlug, chunkID string) (st
 
 // buildEvidenceJSON constructs an EvidenceChunk JSON string that wraps the
 // content with full source attribution so the LLM never loses context.
+//
+// Provenance (document id, location, citation_id, source_confidence) is filled
+// from stored metadata. answer_relevance and completeness are always
+// "unknown": they depend on the question, which this function does not receive,
+// so any text-structure-based guess would be a false claim. The agent must
+// judge them from the returned content, and the search score is only a rank
+// signal rather than a truth or confidence score.
 func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text string) (string, error) {
 	// Resolve the correct store view.
 	s := store
@@ -186,7 +198,6 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 	meta, metaErr := s.ReadMeta(docSlug)
 	if metaErr != nil {
 		// Degrade gracefully: return content without metadata.
-		feats := knowledge.ExtractEvidenceFeatures(text)
 		data, _ := json.MarshalIndent(knowledge.EvidenceChunk{
 			KBName:     kbName,
 			Document:   knowledge.DocumentInfo{ID: docSlug},
@@ -195,8 +206,8 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 			CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
 			Evidence: knowledge.EvidenceMeta{
 				SourceConfidence: "exact_section",
-				AnswerRelevance:  knowledge.ClassifyAnswerRelevance(feats),
-				Completeness:     knowledge.ClassifyCompleteness(feats),
+				AnswerRelevance:  evidenceUnknown,
+				Completeness:     evidenceUnknown,
 			},
 		}, "", "  ")
 		return string(data), nil
@@ -238,12 +249,16 @@ func buildEvidenceJSON(store *knowledge.Store, kbName, docSlug, chunkID, text st
 		CitationID: fmt.Sprintf("%s_%s", docSlug, chunkID),
 	}
 
-	// v4: Feature-based evidence quality signals (pure rules, 0 extra cost).
-	feats := knowledge.ExtractEvidenceFeatures(text)
+	// Evidence quality signals. The read path can establish *location*
+	// provenance (source_confidence=exact_section), but it cannot determine
+	// whether the passage actually answers the caller's question or is
+	// complete without knowing that question. Answer relevance and
+	// completeness are therefore reported as "unknown" and left for the agent
+	// to judge; the search score is only a rank signal, not a truth score.
 	evidence.Evidence = knowledge.EvidenceMeta{
 		SourceConfidence: "exact_section", // read path always targets an exact section/chunk
-		AnswerRelevance:  knowledge.ClassifyAnswerRelevance(feats),
-		Completeness:     knowledge.ClassifyCompleteness(feats),
+		AnswerRelevance:  evidenceUnknown,
+		Completeness:     evidenceUnknown,
 	}
 
 	data, err := json.MarshalIndent(evidence, "", "  ")

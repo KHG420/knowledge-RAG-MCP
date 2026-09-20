@@ -576,19 +576,37 @@ func (srv *Server) handleDocReplace(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Remove old document first
-	if err := svc.RemoveDocument(slug); err != nil {
-		log.Errorf("DocReplace: remove old doc %q failed: %v", slug, err)
-		writeError(w, http.StatusInternalServerError, "failed to remove old document: "+err.Error())
-		return
-	}
-
-	// Upload new file
+	// Upload the new file BEFORE removing the old document. A failed
+	// replacement must leave the original metadata, source, chunks and search
+	// results intact; the old slug is only removed once the new content is
+	// fully persisted.
 	meta, err := saveFile(svc, file, header.Filename)
 	if err != nil {
+		// Best-effort cleanup of a partially created replacement. The
+		// generated slug is removed only when it is available and distinct
+		// from the original, so the old slug is never touched. A cleanup
+		// failure is logged and still reported as a failed replacement.
+		if meta.Slug != "" && meta.Slug != slug {
+			if rmErr := svc.RemoveDocument(meta.Slug); rmErr != nil {
+				log.Errorf("DocReplace: cleanup partial replacement slug=%q failed: %v", meta.Slug, rmErr)
+			}
+		} else if meta.Slug == slug {
+			log.Errorf("DocReplace: upload failed after reusing slug=%q; original may be partial", slug)
+		}
 		log.Errorf("DocReplace: upload new file failed: %v", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// The new content is fully persisted. Remove the old document last: if
+	// removal fails, keep the new (good) document and surface the error rather
+	// than reporting a false success.
+	if meta.Slug != slug {
+		if err := svc.RemoveDocument(slug); err != nil {
+			log.Errorf("DocReplace: new slug=%q persisted but removing old slug=%q failed: %v", meta.Slug, slug, err)
+			writeError(w, http.StatusInternalServerError, "new document saved but failed to remove old document: "+err.Error())
+			return
+		}
 	}
 
 	log.Infof("DocReplace: slug=%q old replaced by new slug=%q", slug, meta.Slug)

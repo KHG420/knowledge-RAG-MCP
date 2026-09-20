@@ -4,9 +4,9 @@
 
 > ⚡ **No need to build a knowledge base from scratch — just connect MCP, and your agent gets an intelligent knowledge base instantly.**
 >
-> Drop in documents → auto chunk & index → BM25 + vector hybrid search + cross-encoder rerank → plug & play, zero ops.
+> Drop in documents → auto chunk & index → BM25 keyword search, with optional hybrid (vector) retrieval and cross-encoder rerank → requires an existing MySQL/MariaDB database.
 
-MCP (Model Context Protocol) server that provides a local, file-based knowledge base with BM25 keyword search, hybrid (BM25 + vector) retrieval, and optional two-stage Cross-Encoder reranking.
+MCP (Model Context Protocol) server that provides a knowledge base on a MySQL/MariaDB storage backend, with BM25 keyword search, optional hybrid (BM25 + vector) retrieval, and optional two-stage Cross-Encoder reranking. Embedding and reranking models are opt-in; the server never assumes they are available.
 
 ---
 
@@ -38,69 +38,84 @@ MCP (Model Context Protocol) server that provides a local, file-based knowledge 
 - **Multi-knowledge-base** — organize documents into isolated KBs; cross-KB search and listing; create/delete KBs via management UI
 - **Intelligent KB routing** — auto-route queries to the most relevant knowledge base(s) using four-dimension weighted scoring
 - **Domain dictionary support** — load YAML-based domain synonym dictionaries for query expansion
-- **MySQL/MariaDB backend** — optional database storage backend replacing the default filesystem
+- **MySQL/MariaDB backend** — required storage backend for documents, chunks, and KB metadata
 - **Redis cache** — optional exact-match query result cache; built-in LRU memory cache always on
 - **Soft delete (tombstone)** — document removal uses a TTL tombstone pattern
 - **Incremental indexing & versioning** — re-uploading a document only re-indexes changed chunks
-- **Evidence quality signals** — each result carries source_confidence, answer_relevance, and completeness metadata
+- **Evidence provenance** — each read result carries source_confidence plus document/location/citation_id; answer_relevance and completeness are reported as `unknown` so the agent judges them instead of trusting a heuristic
 
 ---
 
 ## Installation
 
+Requirements: Go 1.24+ and an existing MySQL/MariaDB database.
+
 ```bash
 go build -o knowledge-mcp .
 ```
 
-The resulting `knowledge-mcp` binary is self-contained and ready to run.
+Dependencies are vendored under `vendor/`, so the default build works without
+network access. MySQL/MariaDB is **required at runtime** — there is no
+filesystem-only or zero-external-dependency mode.
 
 ---
 
 ## Quick Start
 
-### Minimal (BM25 only, zero dependencies)
+This is the single supported onboarding path. For a copy-paste verification
+script, see [docs/onboarding.md](docs/onboarding.md).
+
+### 1. Build
 
 ```bash
-export KNOWLEDGE_MCP_DATA_DIR=./kb-data
-knowledge-mcp serve
+go build -o knowledge-mcp .
 ```
 
-Web management UI auto-starts at `http://localhost:8085`.
+### 2. Provision MySQL and configure
 
-### Full stack (BM25 + embeddings + reranker)
+Create a database (and user) in an existing MySQL/MariaDB instance. The server
+creates its tables on first startup; it does not create the database itself.
 
-See [docs/deployment-models.md](docs/deployment-models.md) / [中文版](docs/deployment-models_zh.md) for detailed model deployment instructions.
+Then run the interactive wizard, which writes `knowledge-mcp.toml` next to the
+executable. The wizard does not connect to MySQL and does not modify any
+service:
 
 ```bash
-# Embedding service (Ollama + BGE-M3)
-ollama pull bge-m3
-
-# Reranker service (Infinity + gte-multilingual-reranker-base)
-pip install infinity-emb[all]
-infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
-
-# knowledge-mcp
-EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
-EMBED_MODEL=bge-m3 \
-RERANK_API_ENDPOINT=http://localhost:7997/rerank \
-RERANK_CANDIDATE_LIMIT=100 \
-KNOWLEDGE_MCP_DATA_DIR=./kb-data \
-  knowledge-mcp serve
+./knowledge-mcp setup
 ```
 
-### MySQL/MariaDB backend
+You can also write the file directly. Minimal example:
+
+```toml
+mysql_dsn = "user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true"
+```
+
+Configuration precedence:
+
+1. `knowledge-mcp.toml` next to the executable (highest priority)
+2. Environment variables, only when no TOML file exists
+3. Built-in defaults
+
+### 3. Start the server
 
 ```bash
-# Connect via DSN
-MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
-  knowledge-mcp serve
+./knowledge-mcp serve          # management UI (:8085) + MCP HTTP (:8086)
+./knowledge-mcp serve --mcp    # MCP HTTP only
+./knowledge-mcp manage         # management UI only (use alongside stdio)
+./knowledge-mcp stdio          # stdio MCP (Reasonix / Claude Desktop / Cline)
 ```
 
-On first startup, the required tables are created automatically.
+### 4. Create a KB and upload documents
 
-### MCP client integration (stdio)
+Open `http://localhost:8085`, create a knowledge base, and upload documents.
+Ingestion and KB creation are done from the management UI; the MCP tools exposed
+to agents are read/search only.
 
-For **Reasonix**, **Claude Desktop**, **Cline**, etc., use `.mcp.json` in your project root:
+### 5. Connect an MCP client
+
+- **HTTP (Streamable)**: `http://localhost:8086/mcp`
+- **HTTP (legacy SSE)**: `/sse` + `/message` on port 8086
+- **stdio**: configure `.mcp.json` in your project root:
 
 ```json
 {
@@ -113,6 +128,50 @@ For **Reasonix**, **Claude Desktop**, **Cline**, etc., use `.mcp.json` in your p
 }
 ```
 
+If `api_token` is set in the TOML, both the MCP HTTP endpoints (`/mcp`, `/sse`,
+`/message`) and the management API require `Authorization: Bearer <token>`.
+stdio does not use the token. Do not expose the HTTP port without a token.
+
+### Registered MCP tools
+
+Exactly three tools are registered:
+
+| Tool | Purpose |
+| --- | --- |
+| `knowledge_research` | Search for ranked evidence passages |
+| `knowledge_read` | Read one chunk/section with provenance |
+| `knowledge_list_kbs` | List knowledge bases |
+
+`knowledge_research` returns a JSON envelope: `results` (always an array),
+`searched_kbs`, `failed_kbs`, `warnings`, and `coverage` (`complete` or
+`partial`, describing the search — not whether the results answer the
+question). `complete` means every knowledge base the server selected and
+attempted was searched successfully; it does not mean all knowledge bases were
+searched, so an empty `results` array is not proof that nothing exists. This
+replaces the older bare JSON array / plain-string behavior.
+
+### Optional embedding and reranking
+
+BM25 search works with no extra services. Hybrid retrieval and cross-encoder
+reranking are opt-in and only activate when their endpoints are configured in
+`knowledge-mcp.toml` (or, with no TOML file, the corresponding environment
+variables). See [docs/deployment-models.md](docs/deployment-models.md) /
+[中文版](docs/deployment-models_zh.md).
+
+```bash
+# Example: embedding via Ollama, reranking via Infinity
+ollama pull bge-m3
+pip install infinity-emb[all]
+infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
+```
+
+```toml
+embed_endpoint = "http://localhost:11434/v1/embeddings"
+embed_model = "bge-m3"
+rerank_endpoint = "http://localhost:7997/rerank"
+rerank_candidate_limit = 100
+```
+
 ---
 
 ## Architecture
@@ -121,9 +180,9 @@ The project follows a **Facade pattern**: `Store` is the unified entry point, de
 (search, chunkstore, kb, dict, ingest, manage) that each implement a well-defined interface from `interfaces.go`.
 
 ```
-main.go                     — CLI entry point, subcommands (stdio / serve / manage / dict), tool registration
+main.go                     — CLI entry point, subcommands (serve / stdio / manage / setup / dict), tool registration
 init.go                     — Dependency injection: assembles all sub-package engines into the Store facade
-tools.go / tools_*.go       — MCP tool registration (knowledge_research/read/list/list_kbs/upload/remove)
+tools_*.go                  — MCP tool registration (only knowledge_research, knowledge_read, knowledge_list_kbs are registered)
 serve.go / stdio.go          — HTTP SSE / Streamable HTTP / stdio MCP transports
 dict.go                     — Dictionary management subcommands (mine / gen)
 manage_run.go               — Web management UI launcher

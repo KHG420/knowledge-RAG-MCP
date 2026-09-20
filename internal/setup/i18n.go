@@ -26,6 +26,9 @@ type langStr struct {
 	SaveOK     string
 	NoMCPJSON  string
 
+	// --- Validation ---
+	MySQLRequired string
+
 	// --- Data dir ---
 	DataDirTitle  string
 	DataDirPrompt string
@@ -163,6 +166,8 @@ var zhStrs = langStr{
 	SaveOK:     "✓ 配置已保存到 %s\n",
 	NoMCPJSON:  "(未找到 .mcp.json，跳过更新)",
 
+	MySQLRequired: "\n✗ 未配置 MySQL。knowledge-mcp 需要 MySQL 存储后端（mysql_dsn、mysql_host 或 mysql_socket_path）。配置未保存，请重新运行 setup 并完成 MySQL 步骤。",
+
 	// --- Data dir ---
 	DataDirTitle:  "\n--- 数据目录 ---",
 	DataDirPrompt: "知识库数据存储目录",
@@ -299,6 +304,8 @@ var enStrs = langStr{
 	SaveFailed: "Failed to save config file: %v\n",
 	SaveOK:     "✓ Configuration saved to %s\n",
 	NoMCPJSON:  "(No .mcp.json found, skipping update)",
+
+	MySQLRequired: "\n✗ MySQL is not configured. knowledge-mcp requires a MySQL storage backend (mysql_dsn, mysql_host, or mysql_socket_path). Configuration was NOT saved; re-run setup and complete the MySQL step.",
 
 	// --- Data dir ---
 	DataDirTitle:  "\n--- Data Directory ---",

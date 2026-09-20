@@ -597,30 +597,37 @@ func (s *Store) InvalidateDoc(docSlug string) {
 		return
 	}
 	log := s.logger.WithModule("cache")
+	ctx := context.Background()
 
-	// 1) Document-level caches: chunks, meta, index.
-	pattern := cache.DocInvalidatePattern(s.kbName, docSlug)
-	n, err := s.cacheClient.DeletePattern(context.Background(), pattern)
-	if err != nil {
-		log.Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, pattern, err)
-		// Continue — query cache invalidation is independent.
-	} else if n > 0 {
-		log.Infof("invalidate doc %q: deleted %d keys (pattern=%q)", docSlug, n, pattern)
-	} else {
-		log.Debugf("invalidate doc %q: no keys matched (pattern=%q)", docSlug, pattern)
+	// Chunkstore meta/index keys are unversioned and have no trailing colon,
+	// so prefix patterns cannot match them. Delete them exactly.
+	if err := s.cacheClient.Delete(ctx,
+		fmt.Sprintf("meta:%s:%s", s.kbName, docSlug),
+		fmt.Sprintf("index:%s:%s", s.kbName, docSlug),
+	); err != nil {
+		log.Warnf("invalidate doc %q exact keys FAILED: err=%v", docSlug, err)
 	}
 
-	// 2) Query-level caches for the entire KB.
-	//    Any document mutation can invalidate cached search results, so we
-	//    evict all query-cache entries scoped to this KB.
-	qpattern := cache.DocQueryInvalidatePattern(s.kbName)
-	qn, qerr := s.cacheClient.DeletePattern(context.Background(), qpattern)
-	if qerr != nil {
-		log.Warnf("invalidate query cache for KB %q FAILED: pattern=%q err=%v", s.kbName, qpattern, qerr)
-	} else if qn > 0 {
-		log.Infof("invalidate query cache for KB %q: deleted %d keys (pattern=%q)", s.kbName, qn, qpattern)
-	} else {
-		log.Debugf("invalidate query cache for KB %q: no keys matched (pattern=%q)", s.kbName, qpattern)
+	// MemCache.DeletePattern supports a single "*" wildcard, so each key
+	// family is evicted with its own explicit prefix pattern. The KB name is
+	// used verbatim (including the empty default).
+	patterns := []string{
+		fmt.Sprintf("chunk:%s:%s:*", s.kbName, docSlug),
+		fmt.Sprintf("meta:%s:%s:*", s.kbName, docSlug),
+		fmt.Sprintf("index:%s:%s:*", s.kbName, docSlug),
+		cache.DocQueryInvalidatePattern(s.kbName),
+	}
+	for _, pattern := range patterns {
+		n, err := s.cacheClient.DeletePattern(ctx, pattern)
+		if err != nil {
+			log.Warnf("invalidate doc %q FAILED: pattern=%q err=%v", docSlug, pattern, err)
+			continue
+		}
+		if n > 0 {
+			log.Infof("invalidate doc %q: deleted %d keys (pattern=%q)", docSlug, n, pattern)
+		} else {
+			log.Debugf("invalidate doc %q: no keys matched (pattern=%q)", docSlug, pattern)
+		}
 	}
 }
 

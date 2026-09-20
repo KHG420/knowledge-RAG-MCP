@@ -162,10 +162,13 @@ func (m *UploadTaskManager) saveTask(task *UploadTask) {
 	}
 }
 
-// loadTasks reads all persisted task files from disk and returns only
-// recoverable (terminal-state) tasks. Non-terminal tasks (pending/processing)
-// are unrecoverable because their processing goroutine no longer exists;
-// their files are deleted to avoid polluting the UI with zombie errors.
+// loadTasks reads all persisted task files from disk. Terminal tasks
+// (done/error) are restored as-is. Non-terminal tasks (pending/processing)
+// cannot be resumed: the goroutine that was processing them no longer exists,
+// and the temporary upload directory does not survive a restart. Instead of
+// silently deleting user-visible history, they are transitioned to error with
+// explicit re-upload guidance, their Done() channel is closed, and the
+// transition is persisted so the result is stable across repeated reloads.
 func (m *UploadTaskManager) loadTasks() []*UploadTask {
 	if m.dir == "" {
 		return nil
@@ -203,12 +206,23 @@ func (m *UploadTaskManager) loadTasks() []*UploadTask {
 		t.tmpDir = "" // temp dirs do not survive restart
 
 		// Non-terminal tasks: the processing goroutine is gone and the task
-		// cannot be recovered. Delete the file and skip loading.
+		// cannot be resumed. Preserve the record as a terminal error so the
+		// user can see what was interrupted and re-upload the file.
 		if t.Status != "done" && t.Status != "error" {
-			m.logger.Warnf("TaskManager: discarding unrecoverable task %s (%q)", t.ID, t.FileName)
-			os.Remove(path)
+			previous := t.Status
+			t.Status = "error"
+			t.Error = fmt.Sprintf(
+				"upload interrupted by a service restart (previous status: %q); "+
+					"the uploaded file was not completed and cannot be resumed — re-upload it to retry",
+				previous,
+			)
+			m.logger.Warnf("TaskManager: marked interrupted task %s (%q) as error", t.ID, t.FileName)
+			close(t.doneCh)
+			tasks = append(tasks, &t)
+			m.saveTask(&t) // persist the terminal transition
 			continue
 		}
+
 		// Terminal tasks get a closed doneCh so Done() never blocks.
 		close(t.doneCh)
 

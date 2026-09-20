@@ -7,7 +7,7 @@ knowledge-mcp relies on two optional external model services for hybrid retrieva
 ```
 User query
   ↓
-knowledge_search (MCP tool)
+knowledge_research (MCP tool)
   ↓
 ┌─ Phase 1: Fast Recall (BM25 + vector) ────────────┐
 │  EMBED_API_ENDPOINT → Embedding model              │
@@ -26,7 +26,12 @@ knowledge_search (MCP tool)
 Returned to user
 ```
 
-Without external models, the system degrades to pure BM25 keyword search.
+Without external models, the system degrades to pure BM25 keyword search. MySQL/MariaDB is still required as the storage backend — these model services are optional, the database is not.
+
+> Configuration precedence: `knowledge-mcp.toml` next to the executable wins;
+> environment variables are only read when that file does not exist, and the
+> wizard-managed TOML always contains your MySQL settings. Prefer editing the
+> TOML file rather than mixing in environment variables.
 
 ---
 
@@ -46,13 +51,17 @@ ollama pull bge-m3
 # Ollama listens on http://localhost:11434 by default
 ```
 
-Inject environment variables when starting knowledge-mcp:
+Add these keys to `knowledge-mcp.toml` next to the executable (keep the
+existing `mysql_dsn`/`mysql_host` entry), then start the server:
+
+```toml
+embed_endpoint = "http://localhost:11434/v1/embeddings"
+embed_model = "bge-m3"
+embed_dim = 1024
+```
 
 ```bash
-EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
-EMBED_MODEL=bge-m3 \
-EMBED_DIM=1024 \
-  knowledge-mcp
+./knowledge-mcp serve
 ```
 
 ### Alternatives
@@ -71,6 +80,9 @@ EMBED_DIM=1024 \
 | `EMBED_MODEL` | No | `text-embedding-ada-002` | Model name |
 | `EMBED_API_KEY` | No | — | API key (not needed for Ollama) |
 | `EMBED_DIM` | No | auto-detect | Vector dimension |
+
+These variables apply only when no `knowledge-mcp.toml` exists. The equivalent
+TOML keys are `embed_endpoint`, `embed_model`, `embed_api_key`, `embed_dim`.
 
 ---
 
@@ -100,11 +112,16 @@ curl -X POST http://localhost:7997/rerank \
   -d '{"query":"chunking parameters","documents":["long paragraph threshold 2000 chars","short paragraph threshold 200 chars"],"top_n":2}'
 ```
 
-Inject environment variables when starting knowledge-mcp:
+Add these keys to `knowledge-mcp.toml` (alongside your existing MySQL entry),
+then start the server:
+
+```toml
+rerank_endpoint = "http://localhost:7997/rerank"
+rerank_model = "gte-multilingual-reranker-base"
+```
 
 ```bash
-RERANK_API_ENDPOINT=http://localhost:7997/rerank \
-  knowledge-mcp
+./knowledge-mcp serve
 ```
 
 ### Alternatives
@@ -123,6 +140,10 @@ RERANK_API_ENDPOINT=http://localhost:7997/rerank \
 | `RERANK_MODEL` | No | `gte-multilingual-reranker-base` | Model name |
 | `RERANK_API_KEY` | No | — | API key (not needed for self-hosted) |
 | `RERANK_CANDIDATE_LIMIT` | No | `100` | How many Phase 1 candidates to feed the reranker |
+
+These variables apply only when no `knowledge-mcp.toml` exists. The equivalent
+TOML keys are `rerank_endpoint`, `rerank_model`, `rerank_api_key`,
+`rerank_candidate_limit`.
 
 ### Hardware Requirements
 
@@ -146,12 +167,23 @@ infinity_emb v2 \
   --port 7997
 
 # Terminal 3: knowledge-mcp
-EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
-EMBED_MODEL=bge-m3 \
-EMBED_DIM=1024 \
-RERANK_API_ENDPOINT=http://localhost:7997/rerank \
-RERANK_CANDIDATE_LIMIT=100 \
-  knowledge-mcp
+# Add the model keys below to knowledge-mcp.toml, together with your required
+# mysql_dsn (or mysql_host) entry, then serve. The TOML file takes precedence
+# over environment variables.
+```
+
+```toml
+# knowledge-mcp.toml (next to the executable)
+mysql_dsn = "user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true"
+embed_endpoint = "http://localhost:11434/v1/embeddings"
+embed_model = "bge-m3"
+embed_dim = 1024
+rerank_endpoint = "http://localhost:7997/rerank"
+rerank_candidate_limit = 100
+```
+
+```bash
+./knowledge-mcp serve
 ```
 
 ## 4. Degradation Behavior
@@ -161,7 +193,7 @@ RERANK_CANDIDATE_LIMIT=100 \
 | `EMBED_API_ENDPOINT` not set | Falls back to pure BM25 keyword search |
 | `RERANK_API_ENDPOINT` not set | Skips reranking, returns BM25/RRF scores directly |
 | Reranker call timeout/failure | Graceful degradation, returns BM25-ranked results |
-| Neither configured | Pure BM25, zero external dependencies |
+| Neither configured | Pure BM25; MySQL/MariaDB still required |
 
 ## 5. API Contract
 

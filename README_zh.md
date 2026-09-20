@@ -4,9 +4,9 @@
 
 > ⚡ **无需自己费心搭建知识库 — 只需连接 MCP，你的 Agent 即刻拥有智能知识库。**
 >
-> 拖入文档 → 自动分块索引 → BM25 + 向量混合检索 + 交叉编码器精排 → 即插即用，零运维。
+> 拖入文档 → 自动分块索引 → BM25 关键词检索（可选混合向量检索与交叉编码器精排）→ 需要一个已存在的 MySQL/MariaDB 数据库。
 
-基于 MCP (Model Context Protocol) 协议的本地知识库服务，提供 BM25 关键词搜索、混合检索（BM25 + 向量）以及可选的两阶段交叉编码器重排序。
+基于 MCP (Model Context Protocol) 协议的知识库服务，使用 MySQL/MariaDB 作为存储后端，提供 BM25 关键词搜索、可选的混合检索（BM25 + 向量）以及可选的两阶段交叉编码器重排序。嵌入与重排序模型均为可选，服务不会假定它们一定可用。
 
 ---
 
@@ -36,10 +36,10 @@
 - **多知识库** — 将文档组织到独立的知识库中；跨知识库搜索和列表
 - **智能知识库路由** — 四维度加权评分自动路由查询到最相关的知识库
 - **领域词典支持** — 加载 YAML 格式的领域同义词词典进行查询扩展
-- **MySQL/MariaDB 后端** — 可选的数据库存储后端；内置 MemCache，不依赖 Redis 也可使用 LRU 内存缓存
+- **MySQL/MariaDB 后端** — 必需的存储后端，用于存储文档、分块与知识库元数据
 - **软删除（Tombstone）** — 文档删除采用 TTL 墓碑模式，删除后立即从搜索中隐藏
 - **增量索引与版本管理** — 重新上传文档时仅对变更的分块重新建索引
-- **证据质量信号** — 每个结果附带 source_confidence、answer_relevance 和 completeness 元数据
+- **证据溯源** — 读取结果附带 source_confidence 以及 document/location/citation_id；answer_relevance 与 completeness 固定返回 `unknown`，由 Agent 自行判断，而不是信任启发式猜测
 - **页码感知** — PDF 分块标记页码，搜索结果中透传
 - **健康检查** — `/health` 端点返回服务状态 + MySQL 连接健康
 - **并发安全** — 分块参数支持运行时热更新（atomic.Value），零锁开销
@@ -48,60 +48,71 @@
 
 ## 安装
 
+环境要求：Go 1.24+，以及一个已存在的 MySQL/MariaDB 数据库。
+
 ```bash
-cd knowledge-RAG-MCP
 go build -o knowledge-mcp .
 ```
 
-生成的二进制文件 `knowledge-mcp` 即可独立运行。
+依赖已 vendor 到 `vendor/` 目录，默认构建无需联网。运行时 **必须** 提供
+MySQL/MariaDB —— 不存在仅文件系统或零外部依赖的运行模式。
 
 ---
 
 ## 快速开始
 
-### 最小配置（仅 BM25，零外部依赖）
+这是唯一受支持的上手路径。可直接复制执行的验证脚本见
+[docs/onboarding.md](docs/onboarding.md)。
+
+### 1. 构建
 
 ```bash
-export KNOWLEDGE_MCP_DATA_DIR=./kb-data
-./knowledge-mcp serve
+go build -o knowledge-mcp .
 ```
 
-Web 管理界面自动在 `http://localhost:8085` 启动，可直接上传文档并搜索。
+### 2. 准备 MySQL 并配置
 
-### 完整配置（BM25 + 向量嵌入 + 重排序）
+在已有的 MySQL/MariaDB 中创建数据库和用户。表会在首次启动时自动创建，
+但数据库本身不会被自动创建。
 
-详见 [docs/deployment-models_zh.md](docs/deployment-models_zh.md) / [English](docs/deployment-models.md)。
+然后运行交互式向导，它会把 `knowledge-mcp.toml` 写到可执行文件旁边。
+向导不会连接 MySQL，也不会修改任何服务：
 
 ```bash
-# 嵌入服务 (Ollama + BGE-M3)
-ollama pull bge-m3
-
-# 重排序服务 (Infinity + gte-multilingual-reranker-base)
-pip install infinity-emb[all]
-infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
-
-# knowledge-mcp
-EMBED_API_ENDPOINT=http://localhost:11434/v1/embeddings \
-EMBED_MODEL=bge-m3 \
-RERANK_API_ENDPOINT=http://localhost:7997/rerank \
-RERANK_CANDIDATE_LIMIT=100 \
-KNOWLEDGE_MCP_DATA_DIR=./kb-data \
-  ./knowledge-mcp serve
+./knowledge-mcp setup
 ```
 
-### MySQL/MariaDB 后端
+也可以直接手写配置文件，最小示例：
+
+```toml
+mysql_dsn = "user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true"
+```
+
+配置优先级：
+
+1. 可执行文件旁的 `knowledge-mcp.toml`（最高优先级）
+2. 环境变量（仅当 TOML 文件不存在时生效）
+3. 内置默认值
+
+### 3. 启动服务
 
 ```bash
-# 通过 DSN 连接
-MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
-  ./knowledge-mcp serve
+./knowledge-mcp serve          # 管理界面 (:8085) + MCP HTTP (:8086)
+./knowledge-mcp serve --mcp    # 仅启动 MCP HTTP
+./knowledge-mcp manage         # 仅启动管理界面（配合 stdio 使用）
+./knowledge-mcp stdio          # stdio MCP（Reasonix / Claude Desktop / Cline）
 ```
 
-首次启动时自动创建所需的数据库表。
+### 4. 创建知识库并上传文档
 
-### MCP 客户端集成（stdio 模式）
+打开 `http://localhost:8085`，创建知识库并上传文档。
+创建知识库与上传文档在管理界面完成；暴露给 Agent 的 MCP 工具只负责检索与读取。
 
-在项目根目录放置 `.mcp.json`，适用于 **Reasonix**、**Claude Desktop**、**Cline** 等：
+### 5. 连接 MCP 客户端
+
+- **HTTP（Streamable）**：`http://localhost:8086/mcp`
+- **HTTP（旧版 SSE）**：8086 端口的 `/sse` + `/message`
+- **stdio**：在项目根目录配置 `.mcp.json`：
 
 ```json
 {
@@ -114,6 +125,47 @@ MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
 }
 ```
 
+如果在 TOML 中设置了 `api_token`，则 MCP HTTP 端点（`/mcp`、`/sse`、
+`/message`）与管理 API 都需要 `Authorization: Bearer <token>`；
+stdio 不使用该 token。未设置 token 时不要将 HTTP 端口暴露到外部网络。
+
+### 已注册的 MCP 工具
+
+只注册三个工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `knowledge_research` | 检索排序后的证据段落 |
+| `knowledge_read` | 读取单个分块/章节及其溯源信息 |
+| `knowledge_list_kbs` | 列出知识库 |
+
+`knowledge_research` 返回 JSON 信封：`results`（始终为数组）、`searched_kbs`、
+`failed_kbs`、`warnings` 和 `coverage`（`complete` 或 `partial`，描述的是检索本身，
+而不是结果是否回答了问题）。`complete` 表示服务端所选并实际尝试的每个知识库都
+检索成功，但不代表所有可用知识库都已检索，因此 `results` 为空不等于"完全不存在"。
+这取代了旧版的裸 JSON 数组/纯文本行为。
+
+### 可选：向量嵌入与重排序
+
+BM25 检索无需额外服务即可使用。混合检索与交叉编码器重排序为可选项，
+只有在 `knowledge-mcp.toml` 中配置了相应端点时才会启用（若无 TOML 文件，
+则使用对应环境变量）。详见
+[docs/deployment-models_zh.md](docs/deployment-models_zh.md)。
+
+```bash
+# 示例：嵌入服务使用 Ollama，重排序服务使用 Infinity
+ollama pull bge-m3
+pip install infinity-emb[all]
+infinity_emb v2 --model-id Alibaba-NLP/gte-multilingual-reranker-base --port 7997
+```
+
+```toml
+embed_endpoint = "http://localhost:11434/v1/embeddings"
+embed_model = "bge-m3"
+rerank_endpoint = "http://localhost:7997/rerank"
+rerank_candidate_limit = 100
+```
+
 ---
 
 ## 架构总览
@@ -122,9 +174,9 @@ MYSQL_DSN="user:password@tcp(127.0.0.1:3306)/knowledge_rag?parseTime=true" \
 （search、chunkstore、kb、dict、ingest、manage），每个子包实现 `interfaces.go` 中定义的对应接口。
 
 ```
-main.go                     — CLI 入口点、子命令 (stdio / serve / manage / dict)、工具注册
+main.go                     — CLI 入口点、子命令 (serve / stdio / manage / setup / dict)、工具注册
 init.go                     — 依赖注入：将所有子包引擎装配到 Store 门面
-tools.go / tools_*.go       — MCP 工具注册 (knowledge_research/read/list/list_kbs/upload/remove)
+tools_*.go                  — MCP 工具注册（仅注册 knowledge_research、knowledge_read、knowledge_list_kbs）
 serve.go / stdio.go          — HTTP SSE / Streamable HTTP / stdio MCP 传输
 dict.go                     — 字典管理子命令 (mine / gen)
 manage_run.go               — Web 管理界面启动器

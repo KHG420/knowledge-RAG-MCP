@@ -38,7 +38,22 @@ func (s *Store) UploadDocument(path string, tags ...string) (DocumentMeta, error
 	if s.ingestSvc != nil {
 		meta, err := s.ingestSvc.UploadDocument(path, tags...)
 		if err != nil {
+			// The engine returns the generated metadata alongside a
+			// post-slug persistence error so callers can clean up the
+			// partial document. Never dereference a nil pointer here.
+			if meta != nil {
+				return *meta, err
+			}
 			return DocumentMeta{}, err
+		}
+		// A nil-error result with no metadata (or an empty slug) is not a
+		// usable upload. Treating it as success would let a replacement
+		// caller delete the original document while persisting nothing new.
+		if meta == nil {
+			return DocumentMeta{}, fmt.Errorf("upload: ingest engine reported success without document metadata")
+		}
+		if meta.Slug == "" {
+			return DocumentMeta{}, fmt.Errorf("upload: ingest engine reported success with empty document slug")
 		}
 		return *meta, nil
 	}
@@ -143,8 +158,13 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 	// Step 4: persist chunks, section chunks, and metadata.
 	emit(StageWriting, "started", "")
 	if err := s.WriteChunks(slug, chunks); err != nil {
+		// Chunk files may have been partially replaced: evict stale cached
+		// views of this document before surfacing the failure.
+		s.InvalidateDoc(slug)
 		emit(StageWriting, "error", err.Error())
-		return DocumentMeta{}, fmt.Errorf("upload: write chunks: %w", err)
+		// Return the partially written metadata so a replacement caller can
+		// remove the slug it just created without touching the old document.
+		return meta, fmt.Errorf("upload: write chunks: %w", err)
 	}
 	if len(coarseChunks) > 0 {
 		if err := s.WriteSectionChunks(slug, coarseChunks); err != nil {
@@ -153,32 +173,41 @@ func (s *Store) UploadDocumentWithProgress(path string, progress ProgressFunc, t
 		}
 	}
 	if err := s.WriteMeta(slug, meta); err != nil {
+		s.InvalidateDoc(slug)
 		emit(StageWriting, "error", err.Error())
-		return DocumentMeta{}, fmt.Errorf("upload: write meta: %w", err)
+		return meta, fmt.Errorf("upload: write meta: %w", err)
 	}
 	emit(StageWriting, "done", fmt.Sprintf("%d 分块已写入", len(chunks)))
 
 	// Step 5: write CHUNKS.toml search index with section chunk links.
+	// A failure here means the document would be stored but not searchable,
+	// so it is fatal rather than a warning.
 	emit(StageIndexing, "started", "")
 	if err := s.writeChunksIndexFromMetaWithSections(slug, fineChunks, coarseChunks); err != nil {
-		log.Warnf("writeChunksIndexFromMetaWithSections for %q: %v", slug, err)
+		s.InvalidateDoc(slug)
+		emit(StageIndexing, "error", err.Error())
+		return meta, fmt.Errorf("upload: build search index: %w", err)
 	}
 
-	// Step 6: optionally copy source file for traceability.
+	// Step 6: copy the original source file for traceability. Losing the
+	// source means the ingestion cannot be audited, so this is fatal.
 	if err := s.copySource(path, slug); err != nil {
-		// Non-fatal: the document is already ingested.
-		log.Warnf("copySource %q: %v", slug, err)
+		s.InvalidateDoc(slug)
+		emit(StageWriting, "error", fmt.Sprintf("persist source: %v", err))
+		return meta, fmt.Errorf("upload: persist source: %w", err)
 	}
 
-	// Step 7: write the full raw markdown text as document.md for reference.
+	// Step 7: write the full raw markdown text. Like the source file, this is
+	// part of what makes the ingestion auditable, so failures are fatal.
 	if err := s.WriteRawText(slug, text); err != nil {
-		// Non-fatal: the document is already ingested.
-		log.Warnf("WriteRawText %q: %v", slug, err)
+		s.InvalidateDoc(slug)
+		emit(StageWriting, "error", fmt.Sprintf("persist raw text: %v", err))
+		return meta, fmt.Errorf("upload: persist raw text: %w", err)
 	}
 
-	// Step 8: update INDEX.md.
+	// Step 8: update INDEX.md. This is a convenience summary that can be
+	// rebuilt from meta.json, so a failure stays a warning.
 	if err := s.updateIndex(slug, meta); err != nil {
-		// Non-fatal: re-index can be rebuilt.
 		log.Warnf("updateIndex %q: %v", slug, err)
 	}
 	emit(StageIndexing, "done", "搜索索引已建立")
